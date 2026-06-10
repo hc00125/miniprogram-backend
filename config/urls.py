@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.conf import settings
+from django.conf.urls.static import static
 from django.urls import include, path
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -21,6 +23,9 @@ urlpatterns = [
     path('api/chat/', include('apps.chat.urls')),
     path('api/admin/', include('apps.admin_api.urls')),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
 try:
     from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView

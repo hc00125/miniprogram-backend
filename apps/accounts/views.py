@@ -1,12 +1,16 @@
 import hashlib
 import json
+import uuid
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.files.storage import default_storage
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import parser_classes
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -114,3 +118,42 @@ def profile(request):
             profile_obj.nickname_customized = True
         profile_obj.save(update_fields=['nickname', 'avatar_url', 'nickname_customized', 'updated_at'])
     return Response(ClientProfileSerializer(profile_obj).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
+def avatar(request):
+    profile_obj = getattr(request.user, 'client_profile', None)
+    if not profile_obj:
+        return Response({'detail': '请先微信登录'}, status=status.HTTP_404_NOT_FOUND)
+
+    file_obj = request.FILES.get('file')
+    if not file_obj:
+        return Response({'detail': '缺少头像文件'}, status=status.HTTP_400_BAD_REQUEST)
+
+    allowed_types = {'image/jpeg', 'image/png', 'image/webp'}
+    if file_obj.content_type not in allowed_types:
+        return Response({'detail': '只支持 JPG/PNG/WEBP 图片'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if file_obj.size > 5 * 1024 * 1024:
+        return Response({'detail': '头像文件不能超过 5MB'}, status=status.HTTP_400_BAD_REQUEST)
+
+    extension = {
+        'image/jpeg': 'jpg',
+        'image/png': 'png',
+        'image/webp': 'webp',
+    }[file_obj.content_type]
+    path = default_storage.save(f'avatars/{request.user.id}_{uuid.uuid4().hex}.{extension}', file_obj)
+    media_url = default_storage.url(path)
+    if not media_url.startswith(('http://', 'https://', '/')):
+        media_url = f'/{media_url}'
+    avatar_url = request.build_absolute_uri(media_url)
+
+    profile_obj.avatar_url = avatar_url
+    profile_obj.save(update_fields=['avatar_url', 'updated_at'])
+
+    return Response({
+        'avatar_url': avatar_url,
+        'profile': ClientProfileSerializer(profile_obj).data,
+    })

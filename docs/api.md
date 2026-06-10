@@ -54,6 +54,31 @@ GET /api/client/me
 }
 ```
 
+### 1.3 上传用户头像
+```
+POST /api/client/avatar
+```
+**权限**：登录用户  
+**请求类型**：`multipart/form-data`  
+**字段**：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `file` | File | JPG/PNG/WEBP 图片，最大 5MB |
+
+**响应**：
+```json
+{
+  "avatar_url": "https://api.huc125.cn/media/avatars/xxx.jpg",
+  "profile": {
+    "id": 6,
+    "nickname": "test1",
+    "avatar_url": "https://api.huc125.cn/media/avatars/xxx.jpg",
+    "player_status": "approved"
+  }
+}
+```
+
 ---
 
 ## 二、陪玩师端 `/api/player/`
