@@ -7,6 +7,7 @@ from urllib.request import urlopen
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.files.storage import default_storage
+from django.db import IntegrityError, transaction
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.decorators import parser_classes
@@ -14,6 +15,8 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
+
+from apps.players.models import Player
 
 from .models import ClientProfile
 from .serializers import ClientProfileSerializer, WechatLoginSerializer
@@ -111,12 +114,40 @@ def profile(request):
     if not profile_obj:
         return Response({'detail': '请先微信登录'}, status=status.HTTP_404_NOT_FOUND)
     if request.method == 'PUT':
-        for field in ['nickname', 'avatar_url']:
-            if field in request.data:
-                setattr(profile_obj, field, request.data.get(field) or '')
-        if 'nickname' in request.data:
-            profile_obj.nickname_customized = True
-        profile_obj.save(update_fields=['nickname', 'avatar_url', 'nickname_customized', 'updated_at'])
+        nickname_provided = 'nickname' in request.data
+        avatar_provided = 'avatar_url' in request.data
+        player_obj = getattr(request.user, 'player_profile', None)
+
+        if nickname_provided:
+            nickname = (request.data.get('nickname') or '').strip()
+            if not nickname:
+                return Response({'detail': '昵称不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+            if len(nickname) > ClientProfile._meta.get_field('nickname').max_length:
+                return Response({'detail': '昵称过长'}, status=status.HTTP_400_BAD_REQUEST)
+            if player_obj and len(nickname) > Player._meta.get_field('name').max_length:
+                return Response({'detail': '陪玩师昵称不能超过50个字符'}, status=status.HTTP_400_BAD_REQUEST)
+            if ClientProfile.objects.filter(nickname=nickname).exclude(pk=profile_obj.pk).exists():
+                return Response({'detail': '昵称已被使用'}, status=status.HTTP_400_BAD_REQUEST)
+            if Player.objects.filter(name=nickname).exclude(user=request.user).exists():
+                return Response({'detail': '昵称已被陪玩师使用'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            with transaction.atomic():
+                profile_update_fields = []
+                if nickname_provided:
+                    profile_obj.nickname = nickname
+                    profile_obj.nickname_customized = True
+                    profile_update_fields.extend(['nickname', 'nickname_customized'])
+                if avatar_provided:
+                    profile_obj.avatar_url = request.data.get('avatar_url') or ''
+                    profile_update_fields.append('avatar_url')
+                if profile_update_fields:
+                    profile_obj.save(update_fields=[*profile_update_fields, 'updated_at'])
+                if nickname_provided and player_obj and player_obj.name != nickname:
+                    player_obj.name = nickname
+                    player_obj.save(update_fields=['name', 'updated_at'])
+        except IntegrityError:
+            return Response({'detail': '昵称已被使用'}, status=status.HTTP_400_BAD_REQUEST)
     return Response(ClientProfileSerializer(profile_obj).data)
 
 
