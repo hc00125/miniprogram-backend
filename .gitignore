@@ -1,0 +1,37 @@
+# Environment
+.env
+*.env
+
+# Database
+*.sqlite3
+db.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+
+# Logs
+*.log
+gunicorn.log
+
+# Staticfiles (can be regenerated)
+staticfiles/
+
+# Temp
+*.tmp
+*.bak
