@@ -92,16 +92,20 @@ POST /api/player/apply
 {
   "name": "陪玩师昵称",
   "contact_wechat": "微信号",
-  "player_type_id": 1,
+  "type_id": 1,
   "bio": "简介（可选）"
 }
 ```
+> `type_id` 为申请的陪玩类型 ID；后端也兼容旧字段名 `player_type_id`。
+
 **响应**：
 ```json
 {
   "id": 3,
   "status": "pending",
-  "name": "陪玩师昵称"
+  "name": "陪玩师昵称",
+  "type_id": 2,
+  "type_name": "技术陪"
 }
 ```
 

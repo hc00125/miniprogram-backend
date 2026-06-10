@@ -60,14 +60,15 @@ def player_applications(request):
 @api_view(['POST'])
 @permission_classes([IsAdminUser])
 def approve_application(request, application_id):
-    application = PlayerApplication.objects.filter(id=application_id).select_related('user').first()
+    application = PlayerApplication.objects.filter(id=application_id).select_related('user', 'player_type').first()
     if not application:
         return Response({'detail': '申请不存在'}, status=status.HTTP_404_NOT_FOUND)
     serializer = PlayerApplicationApproveSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    player_type = PlayerType.objects.filter(id=serializer.validated_data['player_type_id']).first()
+    player_type_id = serializer.validated_data.get('player_type_id')
+    player_type = PlayerType.objects.filter(id=player_type_id).first() if player_type_id else application.player_type
     if not player_type:
-        return Response({'detail': '打手类型不存在'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'detail': '请选择打手类型'}, status=status.HTTP_400_BAD_REQUEST)
 
     player, _ = Player.objects.update_or_create(
         user=application.user,

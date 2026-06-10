@@ -16,14 +16,14 @@ class PlayerAdmin(admin.ModelAdmin):
 
 @admin.register(PlayerApplication)
 class PlayerApplicationAdmin(admin.ModelAdmin):
-    list_display = ['id', 'name', 'contact_wechat', 'status', 'submitted_at', 'reviewed_at']
-    list_filter = ['status']
+    list_display = ['id', 'name', 'player_type', 'contact_wechat', 'status', 'submitted_at', 'reviewed_at']
+    list_filter = ['status', 'player_type']
     search_fields = ['name', 'contact_wechat']
     actions = ['approve_applications', 'reject_applications']
 
     @admin.action(description='批准选中的陪玩师申请')
     def approve_applications(self, request, queryset):
-        approved = queryset.filter(status=PlayerApplication.STATUS_PENDING).select_related('user')
+        approved = queryset.filter(status=PlayerApplication.STATUS_PENDING).select_related('user', 'player_type')
         approved_list = list(approved)
         user_ids = [app.user_id for app in approved_list]
 
@@ -46,7 +46,7 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
                 Player.objects.create(
                     user=app.user,
                     name=app.name,
-                    player_type=default_type,
+                    player_type=app.player_type or default_type,
                     contact_wechat=app.contact_wechat,
                     bio=app.bio or '',
                     status=Player.STATUS_APPROVED,

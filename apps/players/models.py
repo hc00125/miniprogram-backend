@@ -72,6 +72,7 @@ class PlayerApplication(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='player_applications')
     name = models.CharField(max_length=50)
+    player_type = models.ForeignKey('catalog.PlayerType', on_delete=models.PROTECT, blank=True, null=True, related_name='applications')
     contact_wechat = models.CharField(max_length=100)
     bio = models.TextField(blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
