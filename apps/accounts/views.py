@@ -42,8 +42,8 @@ def resolve_openid(code='', openid=''):
         if not data.get('openid'):
             raise ValueError(data.get('errmsg') or '微信登录失败')
         return data['openid'], data.get('unionid') or ''
-    digest = hashlib.sha256(code.encode('utf-8')).hexdigest()[:32]
-    return f'dev_{digest}', ''
+    # 生产环境不允许 dev_ fallback，配置缺失直接报错
+    raise ValueError('微信登录配置不完整，请联系管理员')
 
 
 def make_default_nickname():
