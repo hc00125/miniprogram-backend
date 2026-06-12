@@ -61,7 +61,7 @@ def online_players(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def create_order(request):
     serializer = OrderCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
