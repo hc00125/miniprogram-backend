@@ -57,14 +57,21 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
     @admin.action(description='拒绝选中的陪玩师申请')
     def reject_applications(self, request, queryset):
         rejected = queryset.filter(status=PlayerApplication.STATUS_PENDING)
-        user_ids = rejected.values_list('user_id', flat=True)
+
+        # values_list 返回懒加载 QuerySet，必须在修改申请状态前取出用户 ID。
+        # 否则 update 后原来的 pending 条件不再成立，后续会得到空集合。
+        user_ids = list(rejected.values_list('user_id', flat=True))
+        reviewed_at = timezone.now()
+
         updated = rejected.update(
             status=PlayerApplication.STATUS_REJECTED,
-            reviewed_at=timezone.now(),
+            reviewed_at=reviewed_at,
             reviewed_by=request.user
         )
+
         # 同步更新 client_profile.player_status
         ClientProfile.objects.filter(user_id__in=user_ids).update(
-            player_status=ClientProfile.PLAYER_STATUS_REJECTED
+            player_status=ClientProfile.PLAYER_STATUS_REJECTED,
+            updated_at=reviewed_at,
         )
         self.message_user(request, f'已拒绝 {updated} 条申请')
