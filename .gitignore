@@ -32,6 +32,11 @@ gunicorn.log
 # Staticfiles (can be regenerated)
 staticfiles/
 
+# WeChat Pay / certificates / secrets
+*.pem
+certs/
+secrets/
+
 # Temp
 *.tmp
 *.bak
