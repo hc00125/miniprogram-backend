@@ -152,4 +152,18 @@ SPECTACULAR_SETTINGS = {
 
 WECHAT_APP_ID = os.environ.get('WECHAT_APP_ID', '')
 WECHAT_APP_SECRET = os.environ.get('WECHAT_APP_SECRET', '')
+
+# Local development can keep mock payment enabled. Production must explicitly set it to false.
 ENABLE_MOCK_PAYMENT = os.environ.get('ENABLE_MOCK_PAYMENT', 'true').lower() in {'1', 'true', 'yes', 'on'}
+
+# WeChat Pay API v3 (ordinary merchant + Mini Program/JSAPI payment).
+WECHATPAY_MCH_ID = os.environ.get('WECHATPAY_MCH_ID', '')
+WECHATPAY_MERCHANT_SERIAL_NO = os.environ.get('WECHATPAY_MERCHANT_SERIAL_NO', '')
+WECHATPAY_MERCHANT_PRIVATE_KEY_PATH = os.environ.get('WECHATPAY_MERCHANT_PRIVATE_KEY_PATH', '')
+WECHATPAY_API_V3_KEY = os.environ.get('WECHATPAY_API_V3_KEY', '')
+WECHATPAY_PUBLIC_KEY_ID = os.environ.get('WECHATPAY_PUBLIC_KEY_ID', '')
+WECHATPAY_PUBLIC_KEY_PATH = os.environ.get('WECHATPAY_PUBLIC_KEY_PATH', '')
+WECHATPAY_NOTIFY_URL = os.environ.get('WECHATPAY_NOTIFY_URL', '')
+WECHATPAY_DESCRIPTION_PREFIX = os.environ.get('WECHATPAY_DESCRIPTION_PREFIX', '偷吃俱乐部-')
+WECHATPAY_HTTP_TIMEOUT = float(os.environ.get('WECHATPAY_HTTP_TIMEOUT', '10'))
+WECHATPAY_TIMESTAMP_TOLERANCE_SECONDS = int(os.environ.get('WECHATPAY_TIMESTAMP_TOLERANCE_SECONDS', '300'))
