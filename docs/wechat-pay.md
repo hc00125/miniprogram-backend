@@ -59,6 +59,19 @@ Content-Type: application/json
 3. 校验 AppID、商户号、支付单号、币种和金额；
 4. 使用数据库行锁幂等更新支付单与业务订单。
 
+## 管理后台接口
+
+以下接口需要管理员登录：
+
+- `GET /api/admin/payments`：支付流水列表，支持 `status/channel/scene/order_no/payment_no` 查询参数。
+- `GET /api/admin/payments/<payment_no>`：支付详情。
+- `GET /api/admin/payment-callbacks`：支付回调日志，支持 `payment_no/channel/verified` 查询参数。
+- `GET /api/admin/refunds`：退款列表，支持 `status/payment_no/order_no` 查询参数。
+- `POST /api/admin/refunds`：创建退款记录。
+- `GET /api/admin/refunds/<refund_no>`：退款详情。
+
+当前退款能力是本地退款记录，还没有调用微信支付退款 API。真实退款需要继续接入微信退款接口和退款回调。
+
 ## 小程序调用示例
 
 ```javascript
@@ -94,7 +107,9 @@ async function payOrder(orderNo) {
 
 ```bash
 pip install -r requirements.txt
+python manage.py migrate
 python manage.py check
+python manage.py test apps.payments
 ```
 
 回调地址必须公网可访问、使用 HTTPS、无需登录、没有额外跳转，并且反向代理必须原样转发请求体和 `Wechatpay-*` 请求头。
