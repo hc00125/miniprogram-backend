@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -41,3 +42,41 @@ class PaymentCallbackLog(models.Model):
         verbose_name = '支付回调日志'
         verbose_name_plural = '支付回调日志列表'
         ordering = ['-created_at']
+
+
+class Refund(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_PROCESSING = 'processing'
+    STATUS_SUCCEEDED = 'succeeded'
+    STATUS_FAILED = 'failed'
+    STATUS_CANCELLED = 'cancelled'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, '待处理'),
+        (STATUS_PROCESSING, '退款中'),
+        (STATUS_SUCCEEDED, '退款成功'),
+        (STATUS_FAILED, '退款失败'),
+        (STATUS_CANCELLED, '已取消'),
+    ]
+
+    refund_no = models.CharField(max_length=40, unique=True, db_index=True)
+    payment = models.ForeignKey(Payment, on_delete=models.PROTECT, related_name='refunds')
+    order = models.ForeignKey('orders.Order', to_field='order_no', db_column='order_no', on_delete=models.PROTECT, related_name='refunds')
+    amount = models.FloatField()
+    reason = models.CharField(max_length=200, blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    third_refund_no = models.CharField(max_length=80, blank=True, null=True)
+    notify_payload = models.JSONField(blank=True, null=True)
+    failed_reason = models.CharField(max_length=300, blank=True, default='')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name='created_refunds')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'payment_refunds'
+        verbose_name = '退款记录'
+        verbose_name_plural = '退款记录列表'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.refund_no
