@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.orders.models import Order
-from .models import Payment, PaymentCallbackLog
+from .models import Payment, PaymentCallbackLog, Refund
 from .wechatpay import WechatPayClient, WechatPayError
 
 PAYMENT_EXPIRE_MINUTES = 10
@@ -16,6 +16,10 @@ PAYMENT_EXPIRE_MINUTES = 10
 
 def generate_payment_no():
     return f"PAY{timezone.localtime().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:8].upper()}"
+
+
+def generate_refund_no():
+    return f"REF{timezone.localtime().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:8].upper()}"
 
 
 def get_order_amount(order):
@@ -360,6 +364,38 @@ def query_wechat_payment(payment_no, user):
         payment.updated_at = timezone.now()
         payment.save(update_fields=['status', 'notify_payload', 'updated_at'])
     return payment
+
+
+def create_refund(payment_no, amount, reason='', operator=None):
+    payment = Payment.objects.filter(payment_no=payment_no).select_related('order').first()
+    if not payment:
+        raise ValidationError({'detail': '支付单不存在'})
+    if payment.status != 'paid':
+        raise ValidationError({'detail': '只有已支付订单可以退款'})
+
+    try:
+        refund_amount = Decimal(str(amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValidationError({'detail': '退款金额不正确'}) from exc
+    if refund_amount <= 0:
+        raise ValidationError({'detail': '退款金额必须大于 0'})
+
+    active_statuses = [Refund.STATUS_PENDING, Refund.STATUS_PROCESSING, Refund.STATUS_SUCCEEDED]
+    existing_refunds = payment.refunds.filter(status__in=active_statuses)
+    refunded_amount = sum(Decimal(str(item.amount)) for item in existing_refunds)
+    payment_amount = Decimal(str(payment.amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    if refunded_amount + refund_amount > payment_amount:
+        raise ValidationError({'detail': '退款金额不能超过可退金额'})
+
+    return Refund.objects.create(
+        refund_no=generate_refund_no(),
+        payment=payment,
+        order=payment.order,
+        amount=float(refund_amount),
+        reason=reason or '',
+        status=Refund.STATUS_PENDING,
+        created_by=operator if getattr(operator, 'is_authenticated', False) else None,
+    )
 
 
 def log_callback(channel, payload, payment_no='', verified=False, result=''):
