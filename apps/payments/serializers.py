@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Payment
+from .models import Payment, PaymentCallbackLog, Refund
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -10,7 +10,26 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Payment
-        fields = ['payment_no', 'order_no', 'channel', 'scene', 'amount', 'status', 'qr_code', 'expires_at', 'paid_at', 'third_trade_no', 'order_status', 'mock']
+        fields = [
+            'payment_no', 'order_no', 'channel', 'scene', 'amount', 'status',
+            'qr_code', 'expires_at', 'paid_at', 'third_trade_no', 'order_status', 'mock'
+        ]
+
+
+class PaymentAdminSerializer(PaymentSerializer):
+    third_order_no = serializers.CharField(read_only=True)
+    notify_payload = serializers.JSONField(read_only=True)
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+
+    class Meta(PaymentSerializer.Meta):
+        fields = PaymentSerializer.Meta.fields + ['third_order_no', 'notify_payload', 'created_at', 'updated_at']
+
+
+class PaymentCallbackLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentCallbackLog
+        fields = ['id', 'payment_no', 'channel', 'payload', 'verify_result', 'handled_result', 'created_at']
 
 
 class PaymentCreateSerializer(serializers.Serializer):
@@ -22,3 +41,21 @@ class MiniProgramPaymentCreateSerializer(serializers.Serializer):
     order_no = serializers.CharField()
     code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     openid = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+
+class RefundSerializer(serializers.ModelSerializer):
+    payment_no = serializers.CharField(source='payment.payment_no', read_only=True)
+    order_no = serializers.CharField(source='order_id', read_only=True)
+
+    class Meta:
+        model = Refund
+        fields = [
+            'refund_no', 'payment_no', 'order_no', 'amount', 'reason', 'status',
+            'third_refund_no', 'notify_payload', 'failed_reason', 'created_at', 'updated_at'
+        ]
+
+
+class RefundCreateSerializer(serializers.Serializer):
+    payment_no = serializers.CharField()
+    amount = serializers.FloatField(min_value=0.01)
+    reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
