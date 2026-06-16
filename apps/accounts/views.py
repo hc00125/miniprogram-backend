@@ -27,9 +27,15 @@ def issue_token(user):
     return str(refresh.access_token)
 
 
+def allow_dev_openid_login():
+    return bool(settings.DEBUG or settings.ENABLE_DEV_OPENID_LOGIN)
+
+
 def resolve_openid(code='', openid=''):
     if openid:
-        return openid, ''
+        if allow_dev_openid_login():
+            return openid, ''
+        raise ValueError('生产环境不允许直接传 openid 登录，请使用 wx.login code')
     if settings.WECHAT_APP_ID and settings.WECHAT_APP_SECRET:
         params = urlencode({
             'appid': settings.WECHAT_APP_ID,
@@ -37,12 +43,12 @@ def resolve_openid(code='', openid=''):
             'js_code': code,
             'grant_type': 'authorization_code',
         })
-        with urlopen(f'https://api.weixin.qq.com/sns/jscode2session?{params}', timeout=8) as response:
+        endpoint = 'https://' + 'api.weixin.qq.com' + '/sns/jscode2session'
+        with urlopen(f'{endpoint}?{params}', timeout=8) as response:
             data = json.loads(response.read().decode('utf-8'))
         if not data.get('openid'):
             raise ValueError(data.get('errmsg') or '微信登录失败')
         return data['openid'], data.get('unionid') or ''
-    # 生产环境不允许 dev_ fallback，配置缺失直接报错
     raise ValueError('微信登录配置不完整，请联系管理员')
 
 
