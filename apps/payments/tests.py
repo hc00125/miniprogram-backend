@@ -3,12 +3,22 @@ import json
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from django.test import SimpleTestCase
+from django.contrib.auth.models import User
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
+from rest_framework.test import APIRequestFactory, force_authenticate
 
+from apps.catalog.models import Package
+from apps.orders.boss_views import cancel_order as cancel_order_view
+from apps.orders.boss_views import self_confirm_payment
+from apps.orders.models import Order, OrderStatusLog
+from .models import Payment
+from .services import close_payment, close_unpaid_payments_for_order
 from .wechatpay import WechatPayClient, WechatPaySignatureError
 
 
@@ -122,3 +132,110 @@ class WechatPayClientTests(SimpleTestCase):
         }
         with self.assertRaises(WechatPaySignatureError):
             self.client.verify_callback(headers, '{}')
+
+
+class PaymentCloseFlowTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(username='boss', password='pass')
+        self.package = Package.objects.create(name='测试套餐', player_count=1, base_price=100)
+
+    def create_order(self, status=Order.STATUS_WAITING, order_no='ORDER001'):
+        return Order.objects.create(
+            order_no=order_no,
+            boss_user=self.user,
+            boss_wechat='boss_wechat',
+            package=self.package,
+            required_players=1,
+            total_price_per_hour=100,
+            total_amount=100,
+            status=status,
+        )
+
+    def create_payment(self, order, status='paying', payment_no='PAY001'):
+        return Payment.objects.create(
+            payment_no=payment_no,
+            order=order,
+            channel='wechat',
+            scene='jsapi',
+            amount=100,
+            status=status,
+            third_order_no='prepay_test',
+            expires_at=timezone.now(),
+        )
+
+    @override_settings(ENABLE_MOCK_PAYMENT=True)
+    def test_close_payment_marks_local_payment_closed_in_mock_mode(self):
+        order = self.create_order()
+        payment = self.create_payment(order)
+
+        close_payment(payment, reason='测试关单')
+
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, 'closed')
+        self.assertEqual(payment.notify_payload['close']['reason'], '测试关单')
+        self.assertFalse(payment.notify_payload['close']['wechat_closed'])
+
+    @override_settings(ENABLE_MOCK_PAYMENT=False)
+    def test_close_payment_calls_wechat_close_order_in_real_mode(self):
+        order = self.create_order()
+        payment = self.create_payment(order)
+
+        with patch('apps.payments.services.WechatPayClient') as client_cls:
+            client_cls.return_value.close_order.return_value = {}
+            close_payment(payment, reason='真实关单测试')
+
+        client_cls.return_value.close_order.assert_called_once_with(payment.payment_no)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, 'closed')
+        self.assertTrue(payment.notify_payload['close']['wechat_closed'])
+
+    @override_settings(ENABLE_MOCK_PAYMENT=True)
+    def test_cancel_order_view_closes_unpaid_payment(self):
+        order = self.create_order(status=Order.STATUS_WAITING)
+        payment = self.create_payment(order)
+        request = self.factory.post('/api/boss/orders/ORDER001/cancel', {'reason': '老板取消'}, format='json')
+        force_authenticate(request, user=self.user)
+
+        response = cancel_order_view(request, order.order_no)
+
+        self.assertEqual(response.status_code, 200)
+        order.refresh_from_db()
+        payment.refresh_from_db()
+        self.assertEqual(order.status, Order.STATUS_CANCELLED)
+        self.assertEqual(payment.status, 'closed')
+
+    @override_settings(ENABLE_MOCK_PAYMENT=True)
+    def test_close_unpaid_payments_does_not_close_paid_payment(self):
+        order = self.create_order()
+        paying = self.create_payment(order, payment_no='PAY001', status='paying')
+        paid = self.create_payment(order, payment_no='PAY002', status='paid')
+
+        close_unpaid_payments_for_order(order, reason='批量关单')
+
+        paying.refresh_from_db()
+        paid.refresh_from_db()
+        self.assertEqual(paying.status, 'closed')
+        self.assertEqual(paid.status, 'paid')
+
+    def test_manual_payment_confirmation_marks_order_completed_and_logs_status(self):
+        order = self.create_order(status=Order.STATUS_PENDING_PAYMENT)
+        request = self.factory.post('/api/boss/orders/ORDER001/self-confirm-payment', {'actual_amount': 120}, format='json')
+        force_authenticate(request, user=self.user)
+
+        response = self_confirm_payment(request, order.order_no)
+
+        self.assertEqual(response.status_code, 200)
+        order.refresh_from_db()
+        self.assertTrue(order.paid)
+        self.assertEqual(order.status, Order.STATUS_COMPLETED)
+        self.assertEqual(order.payment_method, 'self_confirm')
+        self.assertEqual(order.total_amount, 120)
+        self.assertTrue(
+            OrderStatusLog.objects.filter(
+                order=order,
+                from_status=Order.STATUS_PENDING_PAYMENT,
+                to_status=Order.STATUS_COMPLETED,
+                reason='手动确认支付',
+            ).exists()
+        )
