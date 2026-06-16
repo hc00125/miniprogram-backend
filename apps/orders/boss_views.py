@@ -104,6 +104,8 @@ def cancel_order(request, order_no):
     order = Order.objects.filter(order_no=order_no).first()
     if not order:
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    if order.status not in {Order.STATUS_WAITING, Order.STATUS_IN_PROGRESS}:
+        return Response({'detail': '当前状态无法取消'}, status=status.HTTP_400_BAD_REQUEST)
     reason = request.data.get('reason')
     close_unpaid_payments_for_order(order, reason=reason or '订单取消')
     cancel_order_service(order, reason, request.user if getattr(request.user, 'is_authenticated', False) else None)
