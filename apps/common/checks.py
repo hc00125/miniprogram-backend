@@ -2,11 +2,9 @@ from django.conf import settings
 from django.core.checks import Error, Warning, Tags, register
 
 
-@register(Tags.security)
+@register(Tags.security, deploy=True)
 def production_security_settings_check(app_configs, **kwargs):
     messages = []
-    if settings.DEBUG:
-        return messages
 
     if '*' in settings.ALLOWED_HOSTS or not settings.ALLOWED_HOSTS:
         messages.append(Error(

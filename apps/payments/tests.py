@@ -218,6 +218,7 @@ class PaymentCloseFlowTests(TestCase):
         self.assertEqual(paying.status, 'closed')
         self.assertEqual(paid.status, 'paid')
 
+    @override_settings(ENABLE_MOCK_PAYMENT=True)
     def test_manual_payment_confirmation_marks_order_completed_and_logs_status(self):
         order = self.create_order(status=Order.STATUS_PENDING_PAYMENT)
         request = self.factory.post('/api/boss/orders/ORDER001/self-confirm-payment', {'actual_amount': 120}, format='json')

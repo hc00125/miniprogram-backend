@@ -94,18 +94,34 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'
 
-DATABASE_URL = os.environ.get('DATABASE_URL')
-if DATABASE_URL and DATABASE_URL.startswith('sqlite:///'):
-    db_name = DATABASE_URL.removeprefix('sqlite:///')
-else:
-    db_name = os.environ.get('SQLITE_DB_PATH', str(BASE_DIR / 'db.sqlite3'))
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': db_name,
+if DATABASE_URL:
+    from urllib.parse import urlparse, unquote
+    u = urlparse(DATABASE_URL)
+    engine_map = {
+        'postgres': 'django.db.backends.postgresql',
+        'postgresql': 'django.db.backends.postgresql',
+        'mysql': 'django.db.backends.mysql',
+        'sqlite': 'django.db.backends.sqlite3',
     }
-}
+    DATABASES = {
+        'default': {
+            'ENGINE': engine_map.get(u.scheme, 'django.db.backends.sqlite3'),
+            'NAME': u.path.lstrip('/'),
+            'USER': unquote(u.username) if u.username else '',
+            'PASSWORD': unquote(u.password) if u.password else '',
+            'HOST': u.hostname or '',
+            'PORT': str(u.port) if u.port else '',
+        }
+    }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': os.environ.get('SQLITE_DB_PATH', str(BASE_DIR / 'db.sqlite3')),
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
