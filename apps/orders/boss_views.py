@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -11,6 +12,27 @@ from apps.orders.serializers import BossOrderDetailSerializer, BossOrderListSeri
 from apps.orders.services import cancel_order as cancel_order_service, create_order as create_order_service, pause_order, resume_order
 from apps.payments.services import close_unpaid_payments_for_order
 from apps.players.models import Player
+
+
+def is_admin_user(user):
+    return bool(user and getattr(user, 'is_authenticated', False) and getattr(user, 'is_staff', False))
+
+
+def can_access_order(order, user):
+    if is_admin_user(user):
+        return True
+    return bool(user and getattr(user, 'is_authenticated', False) and order.boss_user_id == user.id)
+
+
+def forbidden_response():
+    return Response({'detail': '无权操作该订单'}, status=status.HTTP_403_FORBIDDEN)
+
+
+def get_order_or_response(order_no):
+    order = Order.objects.filter(order_no=order_no).select_related('package', 'addon', 'boss_user').prefetch_related('order_players__player__player_type').first()
+    if not order:
+        return None, Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    return order, None
 
 
 @api_view(['GET'])
@@ -76,18 +98,23 @@ def create_order(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def order_detail(request, order_no):
-    order = Order.objects.filter(order_no=order_no).select_related('package', 'addon').prefetch_related('order_players__player__player_type').first()
-    if not order:
-        return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    order, error_response = get_order_or_response(order_no)
+    if error_response:
+        return error_response
+    if not can_access_order(order, request.user):
+        return forbidden_response()
     return Response(BossOrderDetailSerializer(order).data)
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def boss_orders(request, boss_wechat):
-    qs = Order.objects.filter(boss_wechat=boss_wechat).select_related('package').order_by('-created_at')[:20]
+    if is_admin_user(request.user):
+        qs = Order.objects.filter(boss_wechat=boss_wechat).select_related('package').order_by('-created_at')[:20]
+    else:
+        qs = Order.objects.filter(boss_user=request.user).select_related('package').order_by('-created_at')[:20]
     return Response(BossOrderListSerializer(qs, many=True).data)
 
 
@@ -99,32 +126,38 @@ def my_orders(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def cancel_order(request, order_no):
-    order = Order.objects.filter(order_no=order_no).first()
-    if not order:
-        return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    order, error_response = get_order_or_response(order_no)
+    if error_response:
+        return error_response
+    if not can_access_order(order, request.user):
+        return forbidden_response()
     if order.status not in {Order.STATUS_WAITING, Order.STATUS_IN_PROGRESS}:
         return Response({'detail': '当前状态无法取消'}, status=status.HTTP_400_BAD_REQUEST)
     reason = request.data.get('reason')
     close_unpaid_payments_for_order(order, reason=reason or '订单取消')
-    cancel_order_service(order, reason, request.user if getattr(request.user, 'is_authenticated', False) else None)
+    cancel_order_service(order, reason, request.user)
     return Response({'message': '订单已取消', 'order_no': order_no})
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def rate_player(request, order_no):
-    order = Order.objects.filter(order_no=order_no).first()
-    if not order:
-        return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
-    if order.status not in {Order.STATUS_COMPLETED, Order.STATUS_PENDING_PAYMENT}:
-        return Response({'detail': '只能评价已完成的订单'}, status=status.HTTP_400_BAD_REQUEST)
+    order, error_response = get_order_or_response(order_no)
+    if error_response:
+        return error_response
+    if not can_access_order(order, request.user):
+        return forbidden_response()
+    if order.status != Order.STATUS_COMPLETED or not order.paid:
+        return Response({'detail': '只能评价已完成且已支付的订单'}, status=status.HTTP_400_BAD_REQUEST)
     serializer = RatingCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     player = Player.objects.filter(id=serializer.validated_data['player_id']).first()
     if not player:
         return Response({'detail': '打手不存在'}, status=status.HTTP_404_NOT_FOUND)
+    if not order.order_players.filter(player=player).exists():
+        return Response({'detail': '该打手不属于此订单'}, status=status.HTTP_400_BAD_REQUEST)
     if Rating.objects.filter(order=order, player=player).exists():
         return Response({'detail': '已评价过该打手'}, status=status.HTTP_400_BAD_REQUEST)
     Rating.objects.create(order=order, player=player, rating=serializer.validated_data['rating'], comment=serializer.validated_data.get('comment'))
@@ -136,11 +169,15 @@ def rate_player(request, order_no):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def self_confirm_payment(request, order_no):
-    order = Order.objects.filter(order_no=order_no).first()
-    if not order:
-        return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    order, error_response = get_order_or_response(order_no)
+    if error_response:
+        return error_response
+    if not can_access_order(order, request.user):
+        return forbidden_response()
+    if not is_admin_user(request.user) and not (settings.DEBUG or settings.ENABLE_MOCK_PAYMENT or settings.ENABLE_DEV_OPENID_LOGIN):
+        return Response({'detail': '生产环境仅管理员可以手动确认支付'}, status=status.HTTP_403_FORBIDDEN)
     if order.status != Order.STATUS_PENDING_PAYMENT:
         return Response({'detail': '订单状态不正确'}, status=status.HTTP_400_BAD_REQUEST)
     old_status = order.status
@@ -153,9 +190,8 @@ def self_confirm_payment(request, order_no):
     order.status = Order.STATUS_COMPLETED
     order.payment_method = 'self_confirm'
     order.payment_confirmed_at = timezone.now()
-    operator = request.user if getattr(request.user, 'is_authenticated', False) else None
     order.save(update_fields=['total_amount', 'paid', 'status', 'payment_method', 'payment_confirmed_at'])
-    OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=operator, reason='手动确认支付')
+    OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=request.user, reason='手动确认支付')
     return Response({'message': '支付确认成功', 'order_no': order_no, 'status': order.status})
 
 
