@@ -12,6 +12,8 @@ from .models import Payment, PaymentCallbackLog, Refund
 from .wechatpay import WechatPayClient, WechatPayError
 
 PAYMENT_EXPIRE_MINUTES = 10
+CLOSABLE_PAYMENT_STATUSES = {'created', 'paying'}
+TERMINAL_PAYMENT_STATUSES = {'paid', 'closed', 'failed', 'expired'}
 
 
 def generate_payment_no():
@@ -364,6 +366,52 @@ def query_wechat_payment(payment_no, user):
         payment.updated_at = timezone.now()
         payment.save(update_fields=['status', 'notify_payload', 'updated_at'])
     return payment
+
+
+@transaction.atomic
+def close_payment(payment, reason='订单取消', call_wechat=True):
+    payment = (
+        Payment.objects
+        .select_for_update()
+        .select_related('order')
+        .get(pk=payment.pk)
+    )
+    if payment.status in TERMINAL_PAYMENT_STATUSES:
+        return payment
+    if payment.status not in CLOSABLE_PAYMENT_STATUSES:
+        return payment
+
+    close_payload = {
+        'reason': reason or '订单取消',
+        'closed_at': timezone.now().isoformat(),
+    }
+    should_call_wechat = (
+        call_wechat
+        and not settings.ENABLE_MOCK_PAYMENT
+        and payment.channel == 'wechat'
+        and payment.scene == 'jsapi'
+    )
+    if should_call_wechat:
+        WechatPayClient().close_order(payment.payment_no)
+        close_payload['wechat_closed'] = True
+    else:
+        close_payload['wechat_closed'] = False
+        close_payload['mock'] = bool(settings.ENABLE_MOCK_PAYMENT)
+
+    current_payload = payment.notify_payload if isinstance(payment.notify_payload, dict) else {}
+    payment.notify_payload = {**current_payload, 'close': close_payload}
+    payment.status = 'closed'
+    payment.updated_at = timezone.now()
+    payment.save(update_fields=['status', 'notify_payload', 'updated_at'])
+    return payment
+
+
+def close_unpaid_payments_for_order(order, reason='订单取消'):
+    closed = []
+    qs = Payment.objects.filter(order=order, status__in=CLOSABLE_PAYMENT_STATUSES).order_by('-created_at')
+    for payment in qs:
+        closed.append(close_payment(payment, reason=reason))
+    return closed
 
 
 def create_refund(payment_no, amount, reason='', operator=None):
