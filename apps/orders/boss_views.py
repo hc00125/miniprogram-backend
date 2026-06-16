@@ -6,9 +6,10 @@ from rest_framework.response import Response
 
 from apps.catalog.models import Addon, Package, PackageGroup, PlayerType
 from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PlayerTypeSerializer
-from apps.orders.models import Order, Rating
+from apps.orders.models import Order, OrderStatusLog, Rating
 from apps.orders.serializers import BossOrderDetailSerializer, BossOrderListSerializer, OrderCreateSerializer, RatingCreateSerializer
 from apps.orders.services import cancel_order as cancel_order_service, create_order as create_order_service, pause_order, resume_order
+from apps.payments.services import close_unpaid_payments_for_order
 from apps.players.models import Player
 
 
@@ -103,7 +104,9 @@ def cancel_order(request, order_no):
     order = Order.objects.filter(order_no=order_no).first()
     if not order:
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
-    cancel_order_service(order, request.data.get('reason'), request.user if getattr(request.user, 'is_authenticated', False) else None)
+    reason = request.data.get('reason')
+    close_unpaid_payments_for_order(order, reason=reason or '订单取消')
+    cancel_order_service(order, reason, request.user if getattr(request.user, 'is_authenticated', False) else None)
     return Response({'message': '订单已取消', 'order_no': order_no})
 
 
@@ -138,16 +141,20 @@ def self_confirm_payment(request, order_no):
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
     if order.status != Order.STATUS_PENDING_PAYMENT:
         return Response({'detail': '订单状态不正确'}, status=status.HTTP_400_BAD_REQUEST)
+    old_status = order.status
     actual_amount = request.data.get('actual_amount')
     if actual_amount is not None and float(actual_amount) > 0:
         order.total_amount = round(float(actual_amount), 2)
     elif not order.total_amount:
         order.total_amount = order.total_price_per_hour
     order.paid = True
+    order.status = Order.STATUS_COMPLETED
     order.payment_method = 'self_confirm'
     order.payment_confirmed_at = timezone.now()
-    order.save(update_fields=['total_amount', 'paid', 'payment_method', 'payment_confirmed_at'])
-    return Response({'message': '支付确认成功', 'order_no': order_no})
+    operator = request.user if getattr(request.user, 'is_authenticated', False) else None
+    order.save(update_fields=['total_amount', 'paid', 'status', 'payment_method', 'payment_confirmed_at'])
+    OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=operator, reason='手动确认支付')
+    return Response({'message': '支付确认成功', 'order_no': order_no, 'status': order.status})
 
 
 @api_view(['POST'])
