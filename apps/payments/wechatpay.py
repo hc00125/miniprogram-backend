@@ -178,6 +178,9 @@ class WechatPayClient:
             raise WechatPayAPIError(503, message='连接微信支付接口失败') from exc
 
         response_body = response.text
+        if response.status_code == 204:
+            return {}
+
         signature_headers_present = all(
             response.headers.get(name)
             for name in ('Wechatpay-Serial', 'Wechatpay-Timestamp', 'Wechatpay-Nonce', 'Wechatpay-Signature')
@@ -198,6 +201,8 @@ class WechatPayClient:
                 message=error_data.get('message', ''),
                 response_body=response_body[:1000],
             )
+        if not response_body.strip():
+            return {}
         try:
             return response.json()
         except ValueError as exc:
@@ -222,6 +227,11 @@ class WechatPayClient:
         safe_trade_no = quote(out_trade_no, safe='')
         canonical_url = f'/v3/pay/transactions/out-trade-no/{safe_trade_no}?mchid={quote(self.mchid, safe="")}'
         return self.request('GET', canonical_url)
+
+    def close_order(self, out_trade_no):
+        safe_trade_no = quote(out_trade_no, safe='')
+        canonical_url = f'/v3/pay/transactions/out-trade-no/{safe_trade_no}/close'
+        return self.request('POST', canonical_url, {'mchid': self.mchid})
 
     def build_miniprogram_payment_params(self, prepay_id):
         timestamp = str(int(time.time()))
