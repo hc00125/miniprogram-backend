@@ -8,6 +8,18 @@
 - POST /api/pay/wechat/query/<payment_no>
 - POST /api/pay/wechat/callback
 
+## 关单逻辑
+
+- 后端已封装微信支付关单能力。
+- 本地支付单状态为 created 或 paying 时可以关闭。
+- 订单取消入口会先尝试关闭未支付支付单，再取消业务订单。
+- 生产环境关闭微信支付单时会调用微信关单接口；开发模拟支付模式只关闭本地支付单。
+
+## 手动确认支付
+
+- 手动确认支付后，订单会从待支付改为已完成。
+- 系统会设置 paid=true、payment_method=self_confirm、payment_confirmed_at，并写入订单状态日志。
+
 ## 管理后台接口
 
 - GET /api/admin/payments
