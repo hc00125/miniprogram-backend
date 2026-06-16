@@ -5,6 +5,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def env_bool(name, default='false'):
+    return os.environ.get(name, default).lower() in {'1', 'true', 'yes', 'on'}
+
+
 def load_local_env():
     env_path = BASE_DIR / '.env'
     if not env_path.exists():
@@ -23,7 +27,7 @@ def load_local_env():
 load_local_env()
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-production')
-DEBUG = os.environ.get('DJANGO_DEBUG', 'true').lower() in {'1', 'true', 'yes', 'on'}
+DEBUG = env_bool('DJANGO_DEBUG', 'true')
 ALLOWED_HOSTS = [host.strip() for host in os.environ.get('DJANGO_ALLOWED_HOSTS', '*').split(',') if host.strip()]
 
 INSTALLED_APPS = [
@@ -84,7 +88,7 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
             ],
         },
-    },
+    }
 ]
 
 WSGI_APPLICATION = 'config.wsgi.application'
@@ -152,9 +156,10 @@ SPECTACULAR_SETTINGS = {
 
 WECHAT_APP_ID = os.environ.get('WECHAT_APP_ID', '')
 WECHAT_APP_SECRET = os.environ.get('WECHAT_APP_SECRET', '')
+ENABLE_DEV_OPENID_LOGIN = env_bool('ENABLE_DEV_OPENID_LOGIN', 'false')
 
 # Local development can keep mock payment enabled. Production must explicitly set it to false.
-ENABLE_MOCK_PAYMENT = os.environ.get('ENABLE_MOCK_PAYMENT', 'true').lower() in {'1', 'true', 'yes', 'on'}
+ENABLE_MOCK_PAYMENT = env_bool('ENABLE_MOCK_PAYMENT', 'true')
 
 # WeChat Pay API v3 (ordinary merchant + Mini Program/JSAPI payment).
 WECHATPAY_MCH_ID = os.environ.get('WECHATPAY_MCH_ID', '')
