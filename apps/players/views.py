@@ -55,6 +55,24 @@ def logout(request):
     return Response({'message': '已退出登录'})
 
 
+@api_view(['POST'])
+@permission_classes([IsApprovedPlayer])
+def update_online_status(request):
+    """更新陪玩在线状态"""
+    player = current_player(request.user)
+    is_online = request.data.get('is_online')
+    if not isinstance(is_online, bool):
+        return Response({'detail': 'is_online 必须为布尔值 true/false'}, status=status.HTTP_400_BAD_REQUEST)
+    player.is_online = is_online
+    player.save(update_fields=['is_online', 'updated_at'])
+    return Response({
+        'id': player.id,
+        'name': player.name,
+        'is_online': player.is_online,
+        'status': '在线' if player.is_online else '离线',
+    })
+
+
 @api_view(['GET'])
 @permission_classes([IsApprovedPlayer])
 def me(request):
