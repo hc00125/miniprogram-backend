@@ -1,12 +1,13 @@
 from rest_framework import serializers
 
-from .models import Order, OrderPlayer, Rating
+from .models import CartItem, Order, OrderPlayer, Rating
 
 
 class OrderCreateSerializer(serializers.Serializer):
     boss_wechat = serializers.CharField(max_length=50)
     game_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     package_id = serializers.IntegerField()
+    spec_id = serializers.IntegerField(required=False, allow_null=True)
     required_players = serializers.IntegerField(required=False, min_value=1)
     addon_id = serializers.IntegerField(required=False, allow_null=True)
     addon_details = serializers.ListField(child=serializers.DictField(), required=False, allow_empty=True, allow_null=True)
@@ -37,7 +38,8 @@ class BossOrderDetailSerializer(serializers.ModelSerializer):
             'required_players', 'designated_types', 'designated_players', 'boss_note', 'total_price_per_hour',
             'status', 'start_time', 'end_time', 'duration_minutes', 'total_amount', 'paid', 'is_custom',
             'custom_price', 'created_at', 'booked_hours', 'timer_started_at', 'paused_duration', 'is_paused',
-            'last_paused_at', 'players'
+            'last_paused_at', 'players',
+            'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
         ]
 
     def get_players(self, obj):
@@ -113,7 +115,8 @@ class PlayerOrderDetailSerializer(BossOrderDetailSerializer):
         fields = [
             'order_no', 'game_id', 'package_name', 'addon_name', 'required_players', 'boss_note', 'status',
             'total_price_per_hour', 'start_time', 'end_time', 'duration_minutes', 'total_amount', 'booked_hours',
-            'timer_started_at', 'paused_duration', 'is_paused', 'last_paused_at', 'is_custom', 'created_at', 'players'
+            'timer_started_at', 'paused_duration', 'is_paused', 'last_paused_at', 'is_custom', 'created_at', 'players',
+            'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
         ]
 
 
@@ -126,3 +129,37 @@ class RatingCreateSerializer(serializers.Serializer):
     player_id = serializers.IntegerField()
     rating = serializers.IntegerField(min_value=1, max_value=5)
     comment = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+
+# ─── 购物车 ─────────────────────────────
+
+class CartItemSerializer(serializers.ModelSerializer):
+    package_id = serializers.IntegerField(source='package.id')
+    package_name = serializers.CharField(source='package.name')
+    group_name = serializers.CharField(source='package.group.name', allow_null=True)
+    product_type = serializers.CharField(source='package.product_type', allow_null=True)
+
+    class Meta:
+        model = CartItem
+        fields = [
+            'id', 'package_id', 'package_name', 'group_name', 'product_type',
+            'image_url', 'description',
+            'spec_id_snapshot', 'spec_name', 'spec_display_name',
+            'price', 'quantity',
+            'created_at', 'updated_at',
+        ]
+
+
+class CartItemCreateSerializer(serializers.Serializer):
+    package_id = serializers.IntegerField()
+    spec_id = serializers.IntegerField(required=False, allow_null=True)
+    spec_name = serializers.CharField(required=False, allow_blank=True, default='')
+    spec_display_name = serializers.CharField(required=False, allow_blank=True, default='')
+    price = serializers.FloatField(required=False, allow_null=True)
+    quantity = serializers.IntegerField(required=False, default=1, min_value=1)
+    image_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+
+class CartItemQuantitySerializer(serializers.Serializer):
+    quantity = serializers.IntegerField(min_value=1, max_value=99)

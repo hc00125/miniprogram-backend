@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Order, OrderEditLog, OrderPlayer, OrderStatusLog, Rating
+from .models import CartItem, Order, OrderEditLog, OrderPlayer, OrderStatusLog, Rating
 
 
 class OrderPlayerInline(admin.TabularInline):
@@ -29,3 +29,10 @@ class OrderStatusLogAdmin(admin.ModelAdmin):
 @admin.register(OrderEditLog)
 class OrderEditLogAdmin(admin.ModelAdmin):
     list_display = ['id', 'order', 'admin', 'field_name', 'created_at']
+
+
+@admin.register(CartItem)
+class CartItemAdmin(admin.ModelAdmin):
+    list_display = ['id', 'user', 'package', 'spec_name', 'price', 'quantity', 'updated_at']
+    list_filter = ['user']
+    search_fields = ['user__username', 'package__name', 'spec_name']

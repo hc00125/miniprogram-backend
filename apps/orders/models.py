@@ -22,6 +22,10 @@ class Order(models.Model):
     boss_wechat = models.CharField(max_length=50)
     game_id = models.CharField(max_length=100, blank=True, null=True)
     package = models.ForeignKey('catalog.Package', on_delete=models.PROTECT, related_name='orders')
+    spec_id = models.IntegerField(blank=True, null=True, verbose_name='规格ID')
+    package_name_snapshot = models.CharField(max_length=100, blank=True, null=True, verbose_name='下单时商品名快照')
+    spec_name_snapshot = models.CharField(max_length=100, blank=True, null=True, verbose_name='下单时规格名快照')
+    spec_price_snapshot = models.FloatField(blank=True, null=True, verbose_name='下单时规格价快照')
     addon = models.ForeignKey('catalog.Addon', on_delete=models.SET_NULL, blank=True, null=True, related_name='orders')
     addon_details = models.JSONField(blank=True, null=True)
     required_players = models.IntegerField()
@@ -115,3 +119,41 @@ class OrderEditLog(models.Model):
         db_table = 'order_edit_logs'
         verbose_name = '订单编辑日志'
         verbose_name_plural = '订单编辑日志列表'
+
+
+class CartItem(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='cart_items',
+    )
+    package = models.ForeignKey(
+        'catalog.Package',
+        on_delete=models.CASCADE,
+        related_name='cart_items',
+    )
+    spec = models.ForeignKey(
+        'catalog.PackageSpec',
+        on_delete=models.SET_NULL,
+        blank=True, null=True,
+        related_name='cart_items',
+    )
+    spec_id_snapshot = models.CharField(max_length=80, blank=True, default='')
+    spec_name = models.CharField(max_length=120, blank=True, default='')
+    spec_display_name = models.CharField(max_length=120, blank=True, default='')
+    price = models.FloatField()
+    quantity = models.PositiveIntegerField(default=1)
+    image_url = models.CharField(max_length=500, blank=True, null=True)
+    description = models.CharField(max_length=300, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'cart_items'
+        verbose_name = '购物车项'
+        verbose_name_plural = '购物车列表'
+        ordering = ['-updated_at']
+        unique_together = [('user', 'package', 'spec_id_snapshot')]
+
+    def __str__(self):
+        return f'{self.user.username} - {self.package.name} x{self.quantity}'

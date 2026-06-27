@@ -6,7 +6,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from apps.catalog.models import Addon, Package, PlayerType
+from apps.catalog.models import Addon, Package, PackageSpec, PlayerType
 from apps.common.money import money
 from apps.orders.models import Order, OrderPlayer, OrderStatusLog
 from apps.players.models import Player
@@ -20,6 +20,14 @@ def create_order(validated_data, user=None):
     package = Package.objects.filter(id=validated_data['package_id'], is_active=True).first()
     if not package:
         raise ValidationError({'detail': '套餐不存在'})
+
+    # 处理规格
+    spec = None
+    spec_id = validated_data.get('spec_id')
+    if spec_id:
+        spec = PackageSpec.objects.filter(id=spec_id, package=package, is_active=True).first()
+        if not spec:
+            raise ValidationError({'detail': '规格不存在或不属于该商品'})
 
     # 检查该老板是否有未完成的订单
     active_statuses = [Order.STATUS_WAITING, Order.STATUS_IN_PROGRESS, Order.STATUS_PENDING_PAYMENT]
@@ -90,6 +98,11 @@ def create_order(validated_data, user=None):
             designated_types.append({'type_id': player.player_type_id, 'count': 1})
 
     total_price = money(float(package.base_price) * required_players + addon_price + player_type_extra)
+
+    # 如果选择了规格，用规格价重新计算
+    if spec:
+        total_price = money(float(spec.price) + addon_price + player_type_extra)
+
     booked_hours = validated_data.get('booked_hours') or 1.0
 
     order = Order.objects.create(
@@ -98,6 +111,10 @@ def create_order(validated_data, user=None):
         boss_wechat=validated_data['boss_wechat'],
         game_id=validated_data.get('game_id'),
         package=package,
+        spec_id=spec.id if spec else None,
+        package_name_snapshot=package.name,
+        spec_name_snapshot=spec.name if spec else None,
+        spec_price_snapshot=spec.price if spec else None,
         addon=first_addon,
         addon_details=normalized_addons or None,
         required_players=required_players,

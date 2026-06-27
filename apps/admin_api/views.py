@@ -7,8 +7,15 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts.models import ClientProfile
-from apps.catalog.models import Addon, Package, PackageGroup, PlayerType
-from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PlayerTypeSerializer
+from apps.catalog.models import Addon, Package, PackageGroup, PackageSpec, PlayerType
+from apps.catalog.serializers import (
+    AddonSerializer,
+    PackageGroupSerializer,
+    PackageSerializer,
+    PackageSpecSerializer,
+    PackageWriteSerializer,
+    PlayerTypeSerializer,
+)
 from apps.common.permissions import IsAdminUser
 from apps.orders.models import Order
 from apps.orders.serializers import BossOrderDetailSerializer, BossOrderListSerializer
@@ -131,20 +138,21 @@ def order_detail(request, order_no):
     return Response(BossOrderDetailSerializer(order).data)
 
 
+# ──────────────────────────────────────────
+#  商品管理
+# ──────────────────────────────────────────
+
 @api_view(['GET', 'POST'])
 @permission_classes([IsAdminUser])
 def packages(request):
     if request.method == 'GET':
-        return Response(PackageSerializer(Package.objects.select_related('group').all(), many=True).data)
-    group = PackageGroup.objects.filter(id=request.data.get('group_id')).first() if request.data.get('group_id') else None
-    package = Package.objects.create(
-        name=request.data.get('name', ''),
-        player_count=request.data.get('player_count') or 1,
-        base_price=request.data.get('base_price') or 0,
-        description=request.data.get('description') or '',
-        is_custom=bool(request.data.get('is_custom', False)),
-        group=group,
-    )
+        qs = Package.objects.select_related('group').prefetch_related('specs').all()
+        return Response(PackageSerializer(qs, many=True).data)
+
+    # POST: 新建商品
+    serializer = PackageWriteSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    package = serializer.save()
     return Response(PackageSerializer(package).data, status=status.HTTP_201_CREATED)
 
 
@@ -153,22 +161,62 @@ def packages(request):
 def package_detail(request, package_id):
     package = Package.objects.filter(id=package_id).first()
     if not package:
-        return Response({'detail': '套餐不存在'}, status=status.HTTP_404_NOT_FOUND)
-    for field in ['name', 'player_count', 'base_price', 'description', 'is_custom', 'is_active']:
-        if field in request.data:
-            setattr(package, field, request.data[field])
-    if 'group_id' in request.data:
-        package.group = PackageGroup.objects.filter(id=request.data.get('group_id')).first()
-    package.save()
-    return Response(PackageSerializer(package).data)
+        return Response({'detail': '商品不存在'}, status=status.HTTP_404_NOT_FOUND)
+    serializer = PackageWriteSerializer(package, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    updated = serializer.save()
+    return Response(PackageSerializer(updated).data)
 
 
 @api_view(['POST'])
 @permission_classes([IsAdminUser])
 def disable_package(request, package_id):
     Package.objects.filter(id=package_id).update(is_active=False)
-    return Response({'message': '套餐已下架'})
+    return Response({'message': '商品已下架'})
 
+
+# ──────────────────────────────────────────
+#  规格管理
+# ──────────────────────────────────────────
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAdminUser])
+def specs(request, package_id):
+    if request.method == 'GET':
+        qs = PackageSpec.objects.filter(package_id=package_id).order_by('sort_order', 'id')
+        return Response(PackageSpecSerializer(qs, many=True).data)
+
+    # POST: 新建规格
+    if not Package.objects.filter(id=package_id).exists():
+        return Response({'detail': '商品不存在'}, status=status.HTTP_404_NOT_FOUND)
+    serializer = PackageSpecSerializer(data={**request.data, 'package_id': package_id})
+    serializer.is_valid(raise_exception=True)
+    spec = serializer.save()
+    return Response(PackageSpecSerializer(spec).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAdminUser])
+def spec_detail(request, package_id, spec_id):
+    spec = PackageSpec.objects.filter(id=spec_id, package_id=package_id).first()
+    if not spec:
+        return Response({'detail': '规格不存在'}, status=status.HTTP_404_NOT_FOUND)
+    serializer = PackageSpecSerializer(spec, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    updated = serializer.save()
+    return Response(PackageSpecSerializer(updated).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def disable_spec(request, package_id, spec_id):
+    PackageSpec.objects.filter(id=spec_id, package_id=package_id).update(is_active=False)
+    return Response({'message': '规格已禁用'})
+
+
+# ──────────────────────────────────────────
+#  分类 / 加价 / 陪玩类型
+# ──────────────────────────────────────────
 
 @api_view(['GET', 'POST'])
 @permission_classes([IsAdminUser])

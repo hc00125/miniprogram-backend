@@ -17,4 +17,8 @@ urlpatterns = [
     path('order/<str:order_no>/resume', boss_views.resume),
     path('order/<str:order_no>/self-confirm-payment', boss_views.self_confirm_payment),
     path('order/<str:order_no>/rate', boss_views.rate_player),
+    # 购物车
+    path('cart', boss_views.cart),
+    path('cart/clear', boss_views.clear_cart),
+    path('cart/<int:item_id>', boss_views.cart_item),
 ]

@@ -5,10 +5,18 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from apps.catalog.models import Addon, Package, PackageGroup, PlayerType
-from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PlayerTypeSerializer
-from apps.orders.models import Order, OrderStatusLog, Rating
-from apps.orders.serializers import BossOrderDetailSerializer, BossOrderListSerializer, OrderCreateSerializer, RatingCreateSerializer
+from apps.catalog.models import Addon, Package, PackageGroup, PackageSpec, PlayerType
+from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PackageSpecSerializer, PlayerTypeSerializer
+from apps.orders.models import CartItem, Order, OrderStatusLog, Rating
+from apps.orders.serializers import (
+    BossOrderDetailSerializer,
+    BossOrderListSerializer,
+    CartItemCreateSerializer,
+    CartItemQuantitySerializer,
+    CartItemSerializer,
+    OrderCreateSerializer,
+    RatingCreateSerializer,
+)
 from apps.orders.services import cancel_order as cancel_order_service, create_order as create_order_service, pause_order, resume_order
 from apps.payments.services import close_unpaid_payments_for_order
 from apps.players.models import Player
@@ -38,7 +46,7 @@ def get_order_or_response(order_no):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def packages(request):
-    qs = Package.objects.filter(is_active=True).select_related('group')
+    qs = Package.objects.filter(is_active=True).select_related('group').prefetch_related('specs')
     return Response(PackageSerializer(qs, many=True).data)
 
 
@@ -213,3 +221,92 @@ def resume(request, order_no):
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
     order = resume_order(order)
     return Response({'message': '计时已继续', 'paused_duration': order.paused_duration})
+
+
+# ─── 购物车 ─────────────────────────────
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def cart(request):
+    if request.method == 'GET':
+        qs = CartItem.objects.filter(user=request.user).select_related(
+            'package__group',
+        ).order_by('-updated_at')
+        return Response(CartItemSerializer(qs, many=True).data)
+
+    # POST — 加入购物车
+    serializer = CartItemCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    data = serializer.validated_data
+    package = Package.objects.filter(id=data['package_id'], is_active=True).first()
+    if not package:
+        return Response({'detail': '商品不存在或已下架'}, status=status.HTTP_404_NOT_FOUND)
+
+    spec = None
+    spec_id = data.get('spec_id')
+    if spec_id:
+        spec = PackageSpec.objects.filter(id=spec_id, package=package, is_active=True).first()
+        if not spec:
+            return Response({'detail': '规格不存在或不属于该商品'}, status=status.HTTP_404_NOT_FOUND)
+
+    # 价格以后端的商品/规格价格为准
+    actual_price = spec.price if spec else package.base_price
+
+    spec_id_snapshot = str(spec.id) if spec else ''
+    spec_name = data.get('spec_name') or (spec.name if spec else '')
+    spec_display_name = data.get('spec_display_name') or ''
+
+    # 查找是否已有同商品+同规格的购物车项
+    existing = CartItem.objects.filter(
+        user=request.user,
+        package=package,
+        spec_id_snapshot=spec_id_snapshot,
+    ).first()
+
+    if existing:
+        existing.quantity += data.get('quantity', 1)
+        existing.price = actual_price
+        existing.save(update_fields=['quantity', 'price', 'updated_at'])
+        item = existing
+    else:
+        item = CartItem.objects.create(
+            user=request.user,
+            package=package,
+            spec=spec,
+            spec_id_snapshot=spec_id_snapshot,
+            spec_name=spec_name,
+            spec_display_name=spec_display_name,
+            price=actual_price,
+            quantity=data.get('quantity', 1),
+            image_url=data.get('image_url') or package.cover_url,
+            description=data.get('description') or package.description,
+        )
+
+    return Response(CartItemSerializer(item).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def cart_item(request, item_id):
+    item = CartItem.objects.filter(id=item_id, user=request.user).first()
+    if not item:
+        return Response({'detail': '购物车项不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'DELETE':
+        item.delete()
+        return Response({'message': '已删除'})
+
+    # PUT — 修改数量
+    serializer = CartItemQuantitySerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    item.quantity = serializer.validated_data['quantity']
+    item.save(update_fields=['quantity', 'updated_at'])
+    return Response(CartItemSerializer(item).data)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def clear_cart(request):
+    CartItem.objects.filter(user=request.user).delete()
+    return Response({'message': '购物车已清空'})
