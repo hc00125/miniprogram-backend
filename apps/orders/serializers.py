@@ -20,7 +20,7 @@ class CartItemSerializer(serializers.ModelSerializer):
     package_id = serializers.IntegerField(source='package.id', read_only=True)
     package_name = serializers.CharField(source='package.name', read_only=True)
     group_name = serializers.CharField(source='package.group.name', read_only=True, allow_null=True)
-    product_type = serializers.CharField(source='package.product_type', read_only=True, allow_null=True, default='normal')
+    product_type = serializers.SerializerMethodField()
 
     class Meta:
         model = CartItem
@@ -28,6 +28,9 @@ class CartItemSerializer(serializers.ModelSerializer):
             'id', 'package_id', 'package_name', 'group_name', 'product_type', 'image_url', 'description',
             'spec_id', 'spec_name', 'spec_display_name', 'price', 'quantity', 'created_at', 'updated_at'
         ]
+
+    def get_product_type(self, obj):
+        return getattr(obj.package, 'product_type', None) or 'normal'
 
 
 class CartItemCreateSerializer(serializers.Serializer):
