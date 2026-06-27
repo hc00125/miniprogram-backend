@@ -40,7 +40,7 @@ class CartItemCreateSerializer(serializers.Serializer):
     spec_display_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=120)
     price = serializers.FloatField(min_value=0)
     quantity = serializers.IntegerField(required=False, min_value=1, max_value=99)
-    image_url = serializers.URLField(required=False, allow_blank=True, allow_null=True)
+    image_url = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
     description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=300)
 
 
