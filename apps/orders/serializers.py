@@ -1,18 +1,48 @@
 from rest_framework import serializers
 
-from .models import Order, OrderPlayer, Rating
+from .models import CartItem, Order, OrderPlayer, Rating
 
 
 class OrderCreateSerializer(serializers.Serializer):
     boss_wechat = serializers.CharField(max_length=50)
     game_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     package_id = serializers.IntegerField()
+    spec_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     required_players = serializers.IntegerField(required=False, min_value=1)
     addon_id = serializers.IntegerField(required=False, allow_null=True)
     addon_details = serializers.ListField(child=serializers.DictField(), required=False, allow_empty=True, allow_null=True)
     designated_players = serializers.ListField(child=serializers.IntegerField(), required=False, allow_empty=True, allow_null=True)
     boss_note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     booked_hours = serializers.FloatField(required=False, allow_null=True)
+
+
+class CartItemSerializer(serializers.ModelSerializer):
+    package_id = serializers.IntegerField(source='package.id', read_only=True)
+    package_name = serializers.CharField(source='package.name', read_only=True)
+    group_name = serializers.CharField(source='package.group.name', read_only=True, allow_null=True)
+    product_type = serializers.CharField(source='package.product_type', read_only=True, allow_null=True, default='normal')
+
+    class Meta:
+        model = CartItem
+        fields = [
+            'id', 'package_id', 'package_name', 'group_name', 'product_type', 'image_url', 'description',
+            'spec_id', 'spec_name', 'spec_display_name', 'price', 'quantity', 'created_at', 'updated_at'
+        ]
+
+
+class CartItemCreateSerializer(serializers.Serializer):
+    package_id = serializers.IntegerField()
+    spec_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    spec_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=120)
+    spec_display_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=120)
+    price = serializers.FloatField(min_value=0)
+    quantity = serializers.IntegerField(required=False, min_value=1, max_value=99)
+    image_url = serializers.URLField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=300)
+
+
+class CartItemQuantitySerializer(serializers.Serializer):
+    quantity = serializers.IntegerField(min_value=1, max_value=99)
 
 
 class OrderPlayerSerializer(serializers.ModelSerializer):
