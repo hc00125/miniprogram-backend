@@ -59,6 +59,30 @@ class Order(models.Model):
         return self.order_no
 
 
+class CartItem(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='cart_items')
+    package = models.ForeignKey('catalog.Package', on_delete=models.CASCADE, related_name='cart_items')
+    spec_id = models.CharField(max_length=80, blank=True, default='')
+    spec_name = models.CharField(max_length=120, blank=True, default='')
+    spec_display_name = models.CharField(max_length=120, blank=True, default='')
+    price = models.FloatField()
+    quantity = models.PositiveIntegerField(default=1)
+    image_url = models.URLField(blank=True, null=True)
+    description = models.CharField(max_length=300, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'cart_items'
+        verbose_name = '购物车商品'
+        verbose_name_plural = '购物车商品'
+        ordering = ['-updated_at']
+        unique_together = [('user', 'package', 'spec_id')]
+
+    def __str__(self):
+        return f'{self.user_id}-{self.package_id}-{self.spec_id or "default"}'
+
+
 class OrderPlayer(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='order_players')
     player = models.ForeignKey('players.Player', on_delete=models.CASCADE, related_name='order_players')
