@@ -35,7 +35,9 @@ class PackageSerializer(serializers.ModelSerializer):
         ]
 
     def get_specs(self, obj):
-        specs = obj.specs.filter(is_active=True).order_by('sort_order', 'id')
+        specs = getattr(obj, 'active_specs', None)
+        if specs is None:
+            specs = obj.specs.filter(is_active=True).order_by('sort_order', 'id')
         return PackageSpecSerializer(specs, many=True).data
 
 
