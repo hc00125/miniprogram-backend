@@ -22,7 +22,7 @@ class PackageSpecSerializer(serializers.ModelSerializer):
 class PackageSerializer(serializers.ModelSerializer):
     group_id = serializers.IntegerField(source='group.id', allow_null=True, read_only=True)
     group_name = serializers.CharField(source='group.name', allow_null=True, read_only=True)
-    specs = PackageSpecSerializer(many=True, read_only=True)
+    specs = serializers.SerializerMethodField()
 
     class Meta:
         model = Package
@@ -33,6 +33,10 @@ class PackageSerializer(serializers.ModelSerializer):
             'gallery_images', 'detail_images', 'detail_text', 'rules_text',
             'sold_count', 'sort_order', 'is_active', 'is_custom', 'specs',
         ]
+
+    def get_specs(self, obj):
+        specs = obj.specs.filter(is_active=True).order_by('sort_order', 'id')
+        return PackageSpecSerializer(specs, many=True).data
 
 
 class PackageWriteSerializer(serializers.ModelSerializer):
