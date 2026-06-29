@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -46,7 +47,13 @@ def get_order_or_response(order_no):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def packages(request):
-    qs = Package.objects.filter(is_active=True).select_related('group').prefetch_related('specs')
+    qs = Package.objects.filter(is_active=True).select_related('group').prefetch_related(
+        Prefetch(
+            'specs',
+            queryset=PackageSpec.objects.filter(is_active=True).order_by('sort_order', 'id'),
+            to_attr='active_specs',
+        )
+    )
     return Response(PackageSerializer(qs, many=True).data)
 
 
