@@ -68,6 +68,53 @@ class Package(models.Model):
         return self.name
 
 
+class PackageImage(models.Model):
+    IMAGE_TYPE_COVER = 'cover'
+    IMAGE_TYPE_GALLERY = 'gallery'
+    IMAGE_TYPE_DETAIL = 'detail'
+
+    IMAGE_TYPE_CHOICES = [
+        (IMAGE_TYPE_COVER, '封面图'),
+        (IMAGE_TYPE_GALLERY, '轮播图'),
+        (IMAGE_TYPE_DETAIL, '详情长图'),
+    ]
+
+    package = models.ForeignKey(
+        Package, on_delete=models.CASCADE,
+        related_name='images', verbose_name='所属商品',
+    )
+    image_type = models.CharField(
+        max_length=20, choices=IMAGE_TYPE_CHOICES,
+        default=IMAGE_TYPE_GALLERY, verbose_name='图片类型',
+    )
+    image = models.ImageField(
+        upload_to='packages/%Y/%m/', blank=True, null=True,
+        verbose_name='上传图片',
+    )
+    external_url = models.CharField(
+        max_length=500, blank=True, null=True,
+        verbose_name='外链图片URL',
+        help_text='可选。已经在 CDN/OSS 的图片可填这里；上传图片和外链二选一即可。',
+    )
+    sort_order = models.IntegerField(default=0, verbose_name='排序')
+    is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+
+    class Meta:
+        db_table = 'package_images'
+        verbose_name = '商品图片'
+        verbose_name_plural = '商品图片列表'
+        ordering = ['image_type', 'sort_order', 'id']
+
+    def __str__(self):
+        return f'{self.package.name} - {self.get_image_type_display()}'
+
+    def get_url(self):
+        if self.image:
+            return self.image.url
+        return self.external_url or ''
+
+
 class PackageSpec(models.Model):
     package = models.ForeignKey(
         Package, on_delete=models.CASCADE,
