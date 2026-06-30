@@ -6,8 +6,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from apps.catalog.models import Addon, Package, PackageGroup, PackageSpec, PlayerType
-from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PackageSpecSerializer, PlayerTypeSerializer
+from apps.catalog.models import Addon, Package, PackageGroup, PackageImage, PackageSpec, PlayerType
+from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PlayerTypeSerializer
 from apps.orders.models import CartItem, Order, OrderStatusLog, Rating
 from apps.orders.serializers import (
     BossOrderDetailSerializer,
@@ -52,9 +52,14 @@ def packages(request):
             'specs',
             queryset=PackageSpec.objects.filter(is_active=True).order_by('sort_order', 'id'),
             to_attr='active_specs',
-        )
+        ),
+        Prefetch(
+            'images',
+            queryset=PackageImage.objects.filter(is_active=True).order_by('image_type', 'sort_order', 'id'),
+            to_attr='active_images',
+        ),
     )
-    return Response(PackageSerializer(qs, many=True).data)
+    return Response(PackageSerializer(qs, many=True, context={'request': request}).data)
 
 
 @api_view(['GET'])
