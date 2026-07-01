@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from apps.catalog.models import Addon, Package, PackageGroup, PackageImage, PackageSpec, PlayerType
 from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PlayerTypeSerializer
+from apps.common.money import money
 from apps.orders.models import CartItem, Order, OrderStatusLog, Rating
 from apps.orders.serializers import (
     BossOrderDetailSerializer,
@@ -207,8 +208,8 @@ def self_confirm_payment(request, order_no):
         return Response({'detail': '订单状态不正确'}, status=status.HTTP_400_BAD_REQUEST)
     old_status = order.status
     actual_amount = request.data.get('actual_amount')
-    if actual_amount is not None and float(actual_amount) > 0:
-        order.total_amount = round(float(actual_amount), 2)
+    if actual_amount is not None and money(actual_amount) > 0:
+        order.total_amount = money(actual_amount)
     elif not order.total_amount:
         order.total_amount = order.total_price_per_hour
     order.paid = True
