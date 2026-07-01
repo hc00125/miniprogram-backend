@@ -1,11 +1,22 @@
 {% extends "admin/base.html" %}
+{% load i18n static %}
 
-{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | 偷吃电竞管理后台{% endblock %}
+
+{% block extrastyle %}
+{{ block.super }}
+<link rel="stylesheet" href="{% static 'admin/css/boss_admin.css' %}">
+{% endblock %}
 
 {% block branding %}
-<h1 id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></h1>
+<div id="site-name" class="boss-admin-brand">
+    <a href="{% url 'admin:index' %}">
+        <span class="boss-admin-logo">偷吃电竞</span>
+        <span class="boss-admin-subtitle">商品 / 订单 / 陪玩管理后台</span>
+    </a>
+</div>
 {% if user.is_anonymous %}
-  {% include "admin/color_theme_toggle.html" %}
+{% include "admin/color_theme_toggle.html" %}
 {% endif %}
 {% endblock %}
 
