@@ -1,5 +1,6 @@
 from django.contrib.auth.models import User
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -193,23 +194,31 @@ def pause(request, order_no):
 @permission_classes([AllowAny])
 def list(request):
     """获取陪玩师列表"""
-    queryset = Player.objects.filter(status=Player.STATUS_APPROVED).select_related('player_type', 'user')
-    
+    active_orders = Order.objects.filter(
+        order_players__player=OuterRef('pk'),
+        status=Order.STATUS_IN_PROGRESS,
+    )
+    queryset = Player.objects.filter(status=Player.STATUS_APPROVED).select_related(
+        'player_type', 'user', 'user__client_profile',
+    ).annotate(
+        has_active_order=Exists(active_orders),
+    )
+
     # 按类型筛选
     type_id = request.query_params.get('type_id')
     if type_id:
         queryset = queryset.filter(player_type_id=type_id)
-    
+
     # 按在线状态筛选
     is_online = request.query_params.get('is_online')
     if is_online is not None:
         queryset = queryset.filter(is_online=is_online.lower() == 'true')
-    
+
     # 搜索名字
     search = request.query_params.get('search')
     if search:
         queryset = queryset.filter(name__icontains=search)
-    
+
     # 排序
     ordering = request.query_params.get('ordering', '-avg_rating')
     if ordering in ['avg_rating', '-avg_rating', 'total_orders', '-total_orders', 'created_at', '-created_at']:
@@ -230,10 +239,9 @@ def list(request):
     else:
         # 默认按评分排序（通过Python计算）
         queryset = sorted(queryset, key=lambda p: p.avg_rating, reverse=True)
-    
+
     result = []
     for player in queryset:
-        active_order = player.order_players.filter(order__status=Order.STATUS_IN_PROGRESS).exists()
         avatar_url = None
         if hasattr(player, 'user') and player.user:
             profile = getattr(player.user, 'client_profile', None)
@@ -252,7 +260,7 @@ def list(request):
             'avg_rating': round(player.avg_rating, 1) if player.avg_rating else 0,
             'total_orders': player.total_orders or 0,
             'is_online': player.is_online,
-            'status': '接单中' if active_order else ('在线' if player.is_online else '离线'),
+            'status': '接单中' if player.has_active_order else ('在线' if player.is_online else '离线'),
             'created_at': player.created_at.isoformat() if player.created_at else None,
         })
     return Response(result)
@@ -269,4 +277,3 @@ def resume(request, order_no):
         return Response({'detail': '您不是这个订单的打手'}, status=status.HTTP_403_FORBIDDEN)
     order = resume_order(order)
     return Response({'message': '计时已继续', 'paused_duration': order.paused_duration})
-
