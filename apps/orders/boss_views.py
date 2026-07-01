@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from apps.catalog.models import Addon, Package, PackageGroup, PackageImage, PackageSpec, PlayerType
 from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PlayerTypeSerializer
 from apps.common.money import money
-from apps.orders.models import CartItem, Order, OrderStatusLog, Rating
+from apps.orders.models import CartItem, Order, OrderItem, OrderStatusLog, Rating
 from apps.orders.serializers import (
     BossOrderDetailSerializer,
     BossOrderListSerializer,
@@ -22,6 +22,14 @@ from apps.orders.serializers import (
 from apps.orders.services import cancel_order as cancel_order_service, create_order as create_order_service, pause_order, resume_order
 from apps.payments.services import close_unpaid_payments_for_order
 from apps.players.models import Player
+
+
+def order_items_prefetch():
+    return Prefetch(
+        'items',
+        queryset=OrderItem.objects.select_related('package', 'spec').order_by('sort_order', 'id'),
+        to_attr='prefetched_items',
+    )
 
 
 def is_admin_user(user):
@@ -39,7 +47,10 @@ def forbidden_response():
 
 
 def get_order_or_response(order_no):
-    order = Order.objects.filter(order_no=order_no).select_related('package', 'addon', 'boss_user').prefetch_related('order_players__player__player_type').first()
+    order = Order.objects.filter(order_no=order_no).select_related('package', 'addon', 'boss_user').prefetch_related(
+        'order_players__player__player_type',
+        order_items_prefetch(),
+    ).first()
     if not order:
         return None, Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
     return order, None
@@ -138,16 +149,16 @@ def order_detail(request, order_no):
 @permission_classes([IsAuthenticated])
 def boss_orders(request, boss_wechat):
     if is_admin_user(request.user):
-        qs = Order.objects.filter(boss_wechat=boss_wechat).select_related('package').order_by('-created_at')[:20]
+        qs = Order.objects.filter(boss_wechat=boss_wechat).select_related('package').prefetch_related(order_items_prefetch()).order_by('-created_at')[:20]
     else:
-        qs = Order.objects.filter(boss_user=request.user).select_related('package').order_by('-created_at')[:20]
+        qs = Order.objects.filter(boss_user=request.user).select_related('package').prefetch_related(order_items_prefetch()).order_by('-created_at')[:20]
     return Response(BossOrderListSerializer(qs, many=True).data)
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def my_orders(request):
-    qs = Order.objects.filter(boss_user=request.user).select_related('package').order_by('-created_at')[:50]
+    qs = Order.objects.filter(boss_user=request.user).select_related('package').prefetch_related(order_items_prefetch()).order_by('-created_at')[:50]
     return Response(BossOrderListSerializer(qs, many=True).data)
 
 
@@ -248,7 +259,7 @@ def resume(request, order_no):
 def cart(request):
     if request.method == 'GET':
         qs = CartItem.objects.filter(user=request.user).select_related(
-            'package__group',
+            'package__group', 'spec',
         ).order_by('-updated_at')
         return Response(CartItemSerializer(qs, many=True).data)
 
