@@ -28,10 +28,28 @@ def booked_seconds_from_hours(hours):
     return int(decimal_value(hours or 1) * Decimal('3600'))
 
 
+def normalize_quantity(value):
+    try:
+        return max(1, min(99, int(value or 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def append_quantity_note(note, quantity):
+    if quantity <= 1:
+        return note
+    quantity_note = f'购买数量：{quantity}'
+    if note:
+        return f'{quantity_note}\n{note}'
+    return quantity_note
+
+
 def create_order(validated_data, user=None):
     package = Package.objects.filter(id=validated_data['package_id'], is_active=True).first()
     if not package:
         raise ValidationError({'detail': '套餐不存在'})
+
+    quantity = normalize_quantity(validated_data.get('quantity'))
 
     # 处理规格
     spec = None
@@ -109,11 +127,11 @@ def create_order(validated_data, user=None):
         else:
             designated_types.append({'type_id': player.player_type_id, 'count': 1})
 
-    total_price = money(decimal_value(package.base_price) * required_players + addon_price + player_type_extra)
+    total_price = money((decimal_value(package.base_price) * required_players + addon_price + player_type_extra) * quantity)
 
     # 如果选择了规格，用规格价重新计算
     if spec:
-        total_price = money(decimal_value(spec.price) + addon_price + player_type_extra)
+        total_price = money((decimal_value(spec.price) + addon_price + player_type_extra) * quantity)
 
     booked_hours = validated_data.get('booked_hours') or 1.0
 
@@ -132,7 +150,7 @@ def create_order(validated_data, user=None):
         required_players=required_players,
         designated_types=designated_types or None,
         designated_players=designated_players or None,
-        boss_note=validated_data.get('boss_note'),
+        boss_note=append_quantity_note(validated_data.get('boss_note'), quantity),
         total_price_per_hour=total_price,
         total_amount=total_price,
         status=Order.STATUS_WAITING,
@@ -188,7 +206,7 @@ def assign_designated_slot(order, player):
 
 @transaction.atomic
 def grab_order(order_no, player, operator=None):
-    order = Order.objects.select_for_update(of=('self',)).select_related('package', 'addon').get(order_no=order_no)
+    order = Order.objects.select_for_update().select_related('package', 'addon').get(order_no=order_no)
     if order.status != Order.STATUS_WAITING:
         raise ValidationError({'detail': '订单已被抢或状态已变更'})
     if order.order_players.filter(player=player).exists():
