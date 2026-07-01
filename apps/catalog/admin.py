@@ -1,5 +1,5 @@
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.db import models
 from django.utils.html import format_html, format_html_join
 
@@ -21,6 +21,21 @@ GUARANTEE_SPEC_TEMPLATES = [
     ('电视台保底 10001w', '10001w档', '10001w', 9),
 ]
 
+SAFEBOX_SPEC_TEMPLATES = [
+    ('基础版-不包损耗', '基础不包损耗', 288, '预计3-4天内完成，不包损耗', 1),
+    ('基础版-包损耗', '基础包损耗', 308, '预计3-4天内完成，包损耗', 2),
+    ('进阶版-包损耗', '进阶版', 398, '预计2-3天内完成，包损耗', 3),
+    ('尊享版-包损耗', '尊享版', 488, '预计1-2天内完成，包损耗', 4),
+    ('至尊版-24小时内完成', '至尊版', 568, '保24小时内完成，超时按规则补偿', 5),
+]
+
+ESCORT_PACKAGE_TEMPLATES = [
+    ('四套四弹陪', 4, 35, '四套四弹陪玩套餐，适合轻量组队开局。', 10),
+    ('五套四弹陪', 5, 40, '五套四弹陪玩套餐，适合稳定车队。', 20),
+    ('五套五弹陪', 5, 45, '五套五弹陪玩套餐，适合高强度局。', 30),
+    ('六套五弹陪', 6, 50, '六套五弹陪玩套餐，适合满配车队。', 40),
+]
+
 
 def package_image_url(image_obj):
     if not image_obj:
@@ -29,7 +44,7 @@ def package_image_url(image_obj):
 
 
 def uploaded_image_urls(obj, image_type=None):
-    if not obj:
+    if not obj or not getattr(obj, 'pk', None):
         return []
     images = getattr(obj, 'active_images', None)
     if images is None:
@@ -45,7 +60,7 @@ def uploaded_image_urls(obj, image_type=None):
 
 
 def active_specs(obj):
-    if not obj:
+    if not obj or not getattr(obj, 'pk', None):
         return []
     specs = getattr(obj, 'active_specs', None)
     if specs is None:
@@ -142,12 +157,54 @@ def package_config_issues(obj):
     return issues
 
 
+def package_publish_blockers(obj):
+    blockers = []
+    if not obj.name:
+        blockers.append('缺少商品名称')
+    if not cover_urls(obj):
+        blockers.append('缺少封面图')
+    if not detail_urls(obj) and not obj.detail_text:
+        blockers.append('缺少详情图/详情文字')
+
+    specs = active_specs(obj)
+    active_zero_price_specs = [spec.name for spec in specs if spec.price is None or spec.price <= 0]
+    if active_zero_price_specs:
+        blockers.append(f'存在启用规格价格为0或负数：{", ".join(active_zero_price_specs[:3])}')
+
+    if obj.product_type == Package.PRODUCT_TYPE_GUARANTEE:
+        if not specs:
+            blockers.append('保底单必须至少有一个启用规格')
+    elif not specs and (obj.base_price is None or obj.base_price <= 0):
+        blockers.append('普通商品未启用规格时，基础价必须大于0')
+
+    return blockers
+
+
 def package_config_score(obj):
     issues = package_config_issues(obj)
     if not obj:
         return 0
     checks = 5
     return max(0, round((checks - len(issues)) / checks * 100))
+
+
+def create_package_if_missing(group, name, **kwargs):
+    if group.packages.filter(name=name).exists():
+        return None
+    defaults = {
+        'product_type': Package.PRODUCT_TYPE_NORMAL,
+        'base_price': 0,
+        'player_count': 1,
+        'description': '',
+        'detail_text': '',
+        'rules_text': '',
+        'sold_count': 0,
+        'sort_order': 0,
+        'is_active': False,
+        'is_custom': False,
+    }
+    defaults.update(kwargs)
+    return Package.objects.create(group=group, name=name, **defaults)
 
 
 class PackageAdminForm(forms.ModelForm):
@@ -197,6 +254,23 @@ class PackageSpecInline(admin.TabularInline):
 
 @admin.action(description='批量上架/启用所选项目')
 def mark_active(modeladmin, request, queryset):
+    if getattr(modeladmin, 'model', None) is Package:
+        enabled_count = 0
+        skipped = []
+        for package in queryset:
+            blockers = package_publish_blockers(package)
+            if blockers:
+                skipped.append(f'{package.name}：{"；".join(blockers)}')
+                continue
+            package.is_active = True
+            package.save(update_fields=['is_active'])
+            enabled_count += 1
+        if enabled_count:
+            modeladmin.message_user(request, f'已上架 {enabled_count} 个商品。')
+        if skipped:
+            modeladmin.message_user(request, '以下商品未上架：' + ' | '.join(skipped[:5]), level=messages.ERROR)
+        return
+
     updated = queryset.update(is_active=True)
     modeladmin.message_user(request, f'已启用 {updated} 个项目。')
 
@@ -215,7 +289,107 @@ class PackageGroupAdmin(admin.ModelAdmin):
     search_fields = ['name']
     ordering = ['sort_order', 'id']
     list_per_page = 30
-    actions = [mark_active, mark_inactive]
+    actions = [
+        mark_active, mark_inactive,
+        'create_safebox_template', 'create_guarantee_template', 'create_escort_templates',
+    ]
+
+    @admin.action(description='创建 3x3 赛季安全箱模板')
+    def create_safebox_template(self, request, queryset):
+        created_products = 0
+        created_specs = 0
+        skipped = 0
+        for group in queryset:
+            package = create_package_if_missing(
+                group,
+                '3x3赛季安全箱服务',
+                product_type=Package.PRODUCT_TYPE_SPECIAL,
+                base_price=288,
+                player_count=1,
+                description='新赛季3x3赛季安全箱服务，按版本规格下单。',
+                detail_text='请上传详情长图，并确认每个版本的价格、时效和补偿规则。',
+                rules_text='需要号上有1500W。至尊版超时一小时补偿30，最高至免单；不包含补亏损、官方任务bug时间以及停服维护。',
+                sort_order=10,
+                is_active=False,
+            )
+            if not package:
+                skipped += 1
+                continue
+            created_products += 1
+            for name, display_name, price, description, sort_order in SAFEBOX_SPEC_TEMPLATES:
+                PackageSpec.objects.create(
+                    package=package,
+                    name=name,
+                    short_name=display_name,
+                    display_name=display_name,
+                    price=price,
+                    description=description,
+                    sort_order=sort_order,
+                    is_active=True,
+                )
+                created_specs += 1
+        self.message_user(request, f'已创建 {created_products} 个3x3安全箱商品模板、{created_specs} 个规格，跳过 {skipped} 个已存在模板。模板默认下架，请上传图片后再上架。')
+
+    @admin.action(description='创建电视台保底模板')
+    def create_guarantee_template(self, request, queryset):
+        created_products = 0
+        created_specs = 0
+        skipped = 0
+        for group in queryset:
+            package = create_package_if_missing(
+                group,
+                '电视台保底',
+                product_type=Package.PRODUCT_TYPE_GUARANTEE,
+                base_price=0,
+                player_count=1,
+                description='暗区突围端游电视台保底服务，按保底金额选择规格。',
+                detail_text='请上传详情长图，并修改每个保底档位的实际价格后启用规格。',
+                rules_text='下单后客服会按所选规格确认局数、规则和开局时间。',
+                sort_order=20,
+                is_active=False,
+            )
+            if not package:
+                skipped += 1
+                continue
+            created_products += 1
+            for name, display_name, amount, sort_order in GUARANTEE_SPEC_TEMPLATES:
+                PackageSpec.objects.create(
+                    package=package,
+                    name=name,
+                    short_name=display_name,
+                    display_name=display_name,
+                    price=0,
+                    description='请填写实际价格后再启用该规格',
+                    guarantee_amount=amount,
+                    sort_order=sort_order,
+                    is_active=False,
+                )
+                created_specs += 1
+        self.message_user(request, f'已创建 {created_products} 个电视台保底模板、{created_specs} 个规格，跳过 {skipped} 个已存在模板。规格默认禁用且价格为0，请改价后启用。')
+
+    @admin.action(description='创建陪玩套餐模板')
+    def create_escort_templates(self, request, queryset):
+        created_products = 0
+        skipped = 0
+        for group in queryset:
+            for name, player_count, base_price, description, sort_order in ESCORT_PACKAGE_TEMPLATES:
+                package = create_package_if_missing(
+                    group,
+                    name,
+                    product_type=Package.PRODUCT_TYPE_NORMAL,
+                    base_price=base_price,
+                    player_count=player_count,
+                    description=description,
+                    detail_text='请上传套餐详情图，补充服务范围、接单说明和注意事项。',
+                    rules_text='请根据实际业务补充退款、损耗、补偿和服务规则。',
+                    sort_order=sort_order,
+                    is_active=False,
+                )
+                if package:
+                    created_products += 1
+                else:
+                    skipped += 1
+        self.message_user(request, f'已创建 {created_products} 个陪玩套餐模板，跳过 {skipped} 个已存在模板。模板默认下架，请上传图片后再上架。')
 
 
 @admin.register(Package)
@@ -281,7 +455,7 @@ class PackageAdmin(admin.ModelAdmin):
         }),
         ('状态', {
             'fields': ['is_active', 'is_custom'],
-            'description': 'is_active 关闭后，老板端商品接口不会展示该商品。建议先配好图片和规格，再上架。',
+            'description': 'is_active 关闭后，老板端商品接口不会展示该商品。配置不完整时即使勾选上架，后台也会自动拦截并改回下架。',
         }),
     ]
 
@@ -321,6 +495,19 @@ class PackageAdmin(admin.ModelAdmin):
         if formfield and db_field.name in help_texts:
             formfield.help_text = help_texts[db_field.name]
         return formfield
+
+    def save_related(self, request, form, formsets, change):
+        super().save_related(request, form, formsets, change)
+        package = form.instance
+        if package and package.is_active:
+            blockers = package_publish_blockers(package)
+            if blockers:
+                Package.objects.filter(pk=package.pk).update(is_active=False)
+                self.message_user(
+                    request,
+                    f'已阻止“{package.name}”上架：' + '；'.join(blockers),
+                    level=messages.ERROR,
+                )
 
     @admin.display(description='封面')
     def cover_thumb(self, obj):
