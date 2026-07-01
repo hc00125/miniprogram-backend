@@ -1,6 +1,6 @@
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.db.models import Exists, OuterRef
+from django.db.models import Case, Exists, ExpressionWrapper, F, FloatField, OuterRef, Value, When
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -202,6 +202,14 @@ def list(request):
         'player_type', 'user', 'user__client_profile',
     ).annotate(
         has_active_order=Exists(active_orders),
+        avg_rating_value=Case(
+            When(
+                rating_count__gt=0,
+                then=ExpressionWrapper(F('total_rating') * 1.0 / F('rating_count'), output_field=FloatField()),
+            ),
+            default=Value(0.0),
+            output_field=FloatField(),
+        ),
     )
 
     # 按类型筛选
@@ -219,26 +227,16 @@ def list(request):
     if search:
         queryset = queryset.filter(name__icontains=search)
 
-    # 排序
     ordering = request.query_params.get('ordering', '-avg_rating')
-    if ordering in ['avg_rating', '-avg_rating', 'total_orders', '-total_orders', 'created_at', '-created_at']:
-        if ordering == 'avg_rating':
-            queryset = sorted(queryset, key=lambda p: p.avg_rating, reverse=False)
-        elif ordering == '-avg_rating':
-            queryset = sorted(queryset, key=lambda p: p.avg_rating, reverse=True)
-        elif ordering == 'total_orders':
-            queryset = queryset.order_by('total_orders')
-        elif ordering == '-total_orders':
-            queryset = queryset.order_by('-total_orders')
-        elif ordering == 'created_at':
-            queryset = queryset.order_by('created_at')
-        elif ordering == '-created_at':
-            queryset = queryset.order_by('-created_at')
-        else:
-            queryset = queryset.order_by('-total_rating')
-    else:
-        # 默认按评分排序（通过Python计算）
-        queryset = sorted(queryset, key=lambda p: p.avg_rating, reverse=True)
+    ordering_map = {
+        'avg_rating': 'avg_rating_value',
+        '-avg_rating': '-avg_rating_value',
+        'total_orders': 'total_orders',
+        '-total_orders': '-total_orders',
+        'created_at': 'created_at',
+        '-created_at': '-created_at',
+    }
+    queryset = queryset.order_by(ordering_map.get(ordering, '-avg_rating_value'), 'id')
 
     result = []
     for player in queryset:
