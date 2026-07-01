@@ -1,5 +1,4 @@
 import uuid
-from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
@@ -8,7 +7,7 @@ from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Addon, Package, PackageSpec, PlayerType
 from apps.common.money import money
-from apps.orders.models import Order, OrderPlayer, OrderStatusLog
+from apps.orders.models import Order, OrderItem, OrderPlayer, OrderStatusLog
 from apps.players.models import Player
 
 
@@ -44,20 +43,76 @@ def append_quantity_note(note, quantity):
     return quantity_note
 
 
+def build_order_note(note, items):
+    lines = []
+    if len(items) > 1:
+        lines.append('合并结算商品：')
+        for index, item in enumerate(items, start=1):
+            spec_name = item.get('spec_display_name') or item.get('spec_name') or ''
+            spec_text = f' / {spec_name}' if spec_name else ''
+            lines.append(f"{index}. {item['package'].name}{spec_text} x{item['quantity']} = ¥{money(item['amount'])}")
+    elif items and items[0]['quantity'] > 1:
+        lines.append(f"购买数量：{items[0]['quantity']}")
+    if note:
+        lines.append(str(note).strip())
+    return '\n'.join([line for line in lines if line]) or None
+
+
+def normalize_order_items(validated_data):
+    raw_items = validated_data.get('items') or []
+    if not raw_items:
+        raw_items = [{
+            'package_id': validated_data.get('package_id'),
+            'spec_id': validated_data.get('spec_id'),
+            'quantity': validated_data.get('quantity') or 1,
+            'spec_display_name': '',
+            'image_url': '',
+            'description': '',
+        }]
+
+    if not raw_items or len(raw_items) > 20:
+        raise ValidationError({'detail': '合并结算商品数量不正确'})
+
+    normalized = []
+    for index, item in enumerate(raw_items):
+        package_id = item.get('package_id')
+        if not package_id:
+            raise ValidationError({'detail': '商品参数缺失'})
+        package = Package.objects.filter(id=package_id, is_active=True).first()
+        if not package:
+            raise ValidationError({'detail': f'商品 {package_id} 不存在或已下架'})
+
+        spec = None
+        spec_id = item.get('spec_id')
+        if spec_id:
+            spec = PackageSpec.objects.filter(id=spec_id, package=package, is_active=True).first()
+            if not spec:
+                raise ValidationError({'detail': f'{package.name} 的规格不存在或已下架'})
+
+        quantity = normalize_quantity(item.get('quantity'))
+        unit_price = money(spec.price if spec else package.base_price)
+        amount = money(unit_price * quantity)
+        normalized.append({
+            'package': package,
+            'spec': spec,
+            'quantity': quantity,
+            'unit_price': unit_price,
+            'amount': amount,
+            'spec_name': spec.name if spec else '',
+            'spec_display_name': item.get('spec_display_name') or (spec.name if spec else ''),
+            'image_url': item.get('image_url') or package.cover_url or package.image_url or package.thumb_url or package.picture_url or '',
+            'description': item.get('description') or package.description or '',
+            'sort_order': index,
+        })
+    return normalized
+
+
+@transaction.atomic
 def create_order(validated_data, user=None):
-    package = Package.objects.filter(id=validated_data['package_id'], is_active=True).first()
-    if not package:
-        raise ValidationError({'detail': '套餐不存在'})
-
-    quantity = normalize_quantity(validated_data.get('quantity'))
-
-    # 处理规格
-    spec = None
-    spec_id = validated_data.get('spec_id')
-    if spec_id:
-        spec = PackageSpec.objects.filter(id=spec_id, package=package, is_active=True).first()
-        if not spec:
-            raise ValidationError({'detail': '规格不存在或不属于该商品'})
+    order_items = normalize_order_items(validated_data)
+    first_item = order_items[0]
+    package = first_item['package']
+    spec = first_item['spec']
 
     # 检查该老板是否有未完成的订单
     active_statuses = [Order.STATUS_WAITING, Order.STATUS_IN_PROGRESS, Order.STATUS_PENDING_PAYMENT]
@@ -127,13 +182,10 @@ def create_order(validated_data, user=None):
         else:
             designated_types.append({'type_id': player.player_type_id, 'count': 1})
 
-    total_price = money((decimal_value(package.base_price) * required_players + addon_price + player_type_extra) * quantity)
-
-    # 如果选择了规格，用规格价重新计算
-    if spec:
-        total_price = money((decimal_value(spec.price) + addon_price + player_type_extra) * quantity)
-
+    subtotal = sum((item['amount'] for item in order_items), Decimal('0'))
+    total_price = money(subtotal + addon_price + player_type_extra)
     booked_hours = validated_data.get('booked_hours') or 1.0
+    display_name = package.name if len(order_items) == 1 else f'{package.name}等{len(order_items)}件商品'
 
     order = Order.objects.create(
         order_no=generate_order_no(),
@@ -142,21 +194,38 @@ def create_order(validated_data, user=None):
         game_id=validated_data.get('game_id'),
         package=package,
         spec_id=spec.id if spec else None,
-        package_name_snapshot=package.name,
-        spec_name_snapshot=spec.name if spec else None,
-        spec_price_snapshot=spec.price if spec else None,
+        package_name_snapshot=display_name,
+        spec_name_snapshot=spec.name if spec and len(order_items) == 1 else None,
+        spec_price_snapshot=spec.price if spec and len(order_items) == 1 else None,
         addon=first_addon,
         addon_details=normalized_addons or None,
         required_players=required_players,
         designated_types=designated_types or None,
         designated_players=designated_players or None,
-        boss_note=append_quantity_note(validated_data.get('boss_note'), quantity),
+        boss_note=build_order_note(validated_data.get('boss_note'), order_items),
         total_price_per_hour=total_price,
         total_amount=total_price,
         status=Order.STATUS_WAITING,
         is_custom=package.is_custom,
         booked_hours=booked_hours,
     )
+
+    for item in order_items:
+        OrderItem.objects.create(
+            order=order,
+            package=item['package'],
+            spec=item['spec'],
+            package_name=item['package'].name,
+            spec_name=item['spec_name'],
+            spec_display_name=item['spec_display_name'],
+            unit_price=item['unit_price'],
+            quantity=item['quantity'],
+            amount=item['amount'],
+            image_url=item['image_url'],
+            description=item['description'],
+            sort_order=item['sort_order'],
+        )
+
     OrderStatusLog.objects.create(order=order, to_status=order.status, operator=order.boss_user, reason='创建订单')
     return order
 
