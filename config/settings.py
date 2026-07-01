@@ -9,6 +9,13 @@ def env_bool(name, default='false'):
     return os.environ.get(name, default).lower() in {'1', 'true', 'yes', 'on'}
 
 
+def env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def load_local_env():
     env_path = BASE_DIR / '.env'
     if not env_path.exists():
@@ -144,6 +151,14 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 APPEND_SLASH = False
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 
+SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', 'false' if DEBUG else 'true')
+CSRF_COOKIE_SECURE = env_bool('CSRF_COOKIE_SECURE', 'false' if DEBUG else 'true')
+SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', 'false')
+SECURE_HSTS_SECONDS = env_int('SECURE_HSTS_SECONDS', '0' if DEBUG else '31536000')
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'false' if DEBUG else 'true')
+SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', 'false')
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if env_bool('SECURE_PROXY_SSL_HEADER', 'true') else None
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'apps.accounts.authentication.LegacyPlayerTokenAuthentication',
@@ -152,6 +167,17 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.AllowAny',
     ),
+    'DEFAULT_PAGINATION_CLASS': 'apps.common.pagination.OptionalPageNumberPagination',
+    'PAGE_SIZE': env_int('DRF_PAGE_SIZE', '20'),
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': os.environ.get('DRF_THROTTLE_ANON', '300/min'),
+        'user': os.environ.get('DRF_THROTTLE_USER', '600/min'),
+    },
+    'COERCE_DECIMAL_TO_STRING': False,
     'EXCEPTION_HANDLER': 'apps.common.exceptions.compat_exception_handler',
 }
 
