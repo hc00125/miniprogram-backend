@@ -77,6 +77,11 @@ div.breadcrumbs a {
   padding: 28px 32px 96px;
 }
 
+.change-list #content {
+  max-width: none;
+  width: calc(100vw - 96px);
+}
+
 #content h1 {
   margin: 0 0 20px;
   font-size: 26px;
@@ -291,8 +296,78 @@ input[type="submit"]:hover,
 }
 
 #changelist {
+  overflow-x: auto;
   border-radius: var(--boss-radius);
   box-shadow: var(--boss-shadow);
+}
+
+#changelist .results {
+  overflow-x: auto;
+}
+
+.change-list #changelist table {
+  min-width: 1320px;
+  table-layout: auto;
+}
+
+.change-list #changelist table thead th,
+.change-list #changelist table tbody td,
+.change-list #changelist table tbody th {
+  vertical-align: top;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+#changelist .field-cover_thumb,
+#changelist .field-config_status,
+#changelist .field-product_type,
+#changelist .field-group,
+#changelist .field-active_spec_count,
+#changelist .field-image_summary,
+#changelist .field-is_active,
+#changelist .field-is_custom,
+#changelist .field-sold_count {
+  white-space: nowrap;
+}
+
+#changelist .field-name {
+  min-width: 92px;
+  max-width: 180px;
+  white-space: normal;
+}
+
+#changelist .field-image_summary {
+  min-width: 126px;
+  color: #374151;
+  font-weight: 800;
+  line-height: 1.8;
+}
+
+#changelist .field-config_status {
+  min-width: 92px;
+  line-height: 1.55;
+}
+
+#changelist .field-cover_thumb {
+  min-width: 78px;
+}
+
+#changelist .field-player_count input,
+#changelist .field-sort_order input {
+  width: 64px !important;
+  min-width: 64px !important;
+}
+
+#changelist .field-base_price input {
+  width: 96px !important;
+  min-width: 96px !important;
+}
+
+#changelist .field-created_at {
+  min-width: 150px;
+  max-width: 180px;
+  white-space: normal;
+  color: var(--boss-muted);
 }
 
 #changelist-filter {
@@ -371,7 +446,9 @@ input[type="submit"]:hover,
 }
 
 @media (max-width: 900px) {
-  #content {
+  #content,
+  .change-list #content {
+    width: auto;
     padding: 18px 14px 110px;
   }
 
