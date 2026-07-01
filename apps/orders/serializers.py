@@ -1,20 +1,47 @@
 from rest_framework import serializers
 
-from .models import CartItem, Order, OrderPlayer, Rating
+from .models import CartItem, Order, OrderItem, OrderPlayer, Rating
+
+
+class OrderCreateItemSerializer(serializers.Serializer):
+    package_id = serializers.IntegerField()
+    spec_id = serializers.IntegerField(required=False, allow_null=True)
+    quantity = serializers.IntegerField(required=False, default=1, min_value=1, max_value=99)
+    spec_display_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    image_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class OrderCreateSerializer(serializers.Serializer):
     boss_wechat = serializers.CharField(max_length=50)
     game_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    package_id = serializers.IntegerField()
+    package_id = serializers.IntegerField(required=False, allow_null=True)
     spec_id = serializers.IntegerField(required=False, allow_null=True)
     quantity = serializers.IntegerField(required=False, default=1, min_value=1, max_value=99)
+    items = OrderCreateItemSerializer(many=True, required=False, allow_empty=False)
     required_players = serializers.IntegerField(required=False, min_value=1)
     addon_id = serializers.IntegerField(required=False, allow_null=True)
     addon_details = serializers.ListField(child=serializers.DictField(), required=False, allow_empty=True, allow_null=True)
     designated_players = serializers.ListField(child=serializers.IntegerField(), required=False, allow_empty=True, allow_null=True)
     boss_note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     booked_hours = serializers.FloatField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        if not attrs.get('items') and not attrs.get('package_id'):
+            raise serializers.ValidationError({'package_id': '缺少商品信息'})
+        return attrs
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    package_id = serializers.IntegerField(source='package.id', read_only=True)
+    spec_id = serializers.IntegerField(source='spec.id', read_only=True, allow_null=True)
+
+    class Meta:
+        model = OrderItem
+        fields = [
+            'id', 'package_id', 'package_name', 'spec_id', 'spec_name', 'spec_display_name',
+            'unit_price', 'quantity', 'amount', 'image_url', 'description', 'sort_order'
+        ]
 
 
 class OrderPlayerSerializer(serializers.ModelSerializer):
@@ -27,10 +54,25 @@ class OrderPlayerSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'type_name', 'is_designated', 'grab_time', 'status']
 
 
+def order_display_name(obj):
+    items = list(getattr(obj, 'prefetched_items', None) or [])
+    if not items and hasattr(obj, 'items'):
+        try:
+            items = list(obj.items.all()[:3])
+        except Exception:
+            items = []
+    if len(items) > 1:
+        return f'{items[0].package_name}等{len(items)}件商品'
+    if len(items) == 1:
+        return items[0].package_name
+    return obj.package_name_snapshot or getattr(obj.package, 'name', '')
+
+
 class BossOrderDetailSerializer(serializers.ModelSerializer):
-    package_name = serializers.CharField(source='package.name')
+    package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     players = serializers.SerializerMethodField()
+    items = OrderItemSerializer(many=True, read_only=True)
 
     class Meta:
         model = Order
@@ -39,24 +81,37 @@ class BossOrderDetailSerializer(serializers.ModelSerializer):
             'required_players', 'designated_types', 'designated_players', 'boss_note', 'total_price_per_hour',
             'status', 'start_time', 'end_time', 'duration_minutes', 'total_amount', 'paid', 'is_custom',
             'custom_price', 'created_at', 'booked_hours', 'timer_started_at', 'paused_duration', 'is_paused',
-            'last_paused_at', 'players',
+            'last_paused_at', 'players', 'items',
             'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
         ]
+
+    def get_package_name(self, obj):
+        return order_display_name(obj)
 
     def get_players(self, obj):
         return OrderPlayerSerializer(obj.order_players.select_related('player__player_type'), many=True).data
 
 
 class BossOrderListSerializer(serializers.ModelSerializer):
-    package_name = serializers.CharField(source='package.name')
+    package_name = serializers.SerializerMethodField()
+    item_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ['order_no', 'package_name', 'status', 'total_price_per_hour', 'total_amount', 'paid', 'created_at']
+        fields = ['order_no', 'package_name', 'item_count', 'status', 'total_price_per_hour', 'total_amount', 'paid', 'created_at']
+
+    def get_package_name(self, obj):
+        return order_display_name(obj)
+
+    def get_item_count(self, obj):
+        items = getattr(obj, 'prefetched_items', None)
+        if items is not None:
+            return len(items)
+        return obj.items.count() if hasattr(obj, 'items') else 1
 
 
 class AvailableOrderSerializer(serializers.ModelSerializer):
-    package_name = serializers.CharField(source='package.name')
+    package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     current_players = serializers.SerializerMethodField()
     can_grab = serializers.SerializerMethodField()
@@ -70,6 +125,9 @@ class AvailableOrderSerializer(serializers.ModelSerializer):
             'total_price_per_hour', 'booked_hours', 'boss_note', 'is_custom', 'can_grab',
             'is_designated', 'designated_type_ids', 'created_at'
         ]
+
+    def get_package_name(self, obj):
+        return order_display_name(obj)
 
     def get_current_players(self, obj):
         return obj.order_players.count()
@@ -89,7 +147,7 @@ class AvailableOrderSerializer(serializers.ModelSerializer):
 
 
 class PlayerOrderListSerializer(serializers.ModelSerializer):
-    package_name = serializers.CharField(source='package.name')
+    package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     grab_time = serializers.SerializerMethodField()
     is_designated = serializers.SerializerMethodField()
@@ -97,6 +155,9 @@ class PlayerOrderListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = ['order_no', 'package_name', 'addon_name', 'game_id', 'status', 'start_time', 'end_time', 'duration_minutes', 'grab_time', 'is_designated', 'total_amount', 'total_price_per_hour', 'created_at']
+
+    def get_package_name(self, obj):
+        return order_display_name(obj)
 
     def _op(self, obj):
         player = self.context.get('player')
@@ -116,7 +177,7 @@ class PlayerOrderDetailSerializer(BossOrderDetailSerializer):
         fields = [
             'order_no', 'game_id', 'package_name', 'addon_name', 'required_players', 'boss_note', 'status',
             'total_price_per_hour', 'start_time', 'end_time', 'duration_minutes', 'total_amount', 'booked_hours',
-            'timer_started_at', 'paused_duration', 'is_paused', 'last_paused_at', 'is_custom', 'created_at', 'players',
+            'timer_started_at', 'paused_duration', 'is_paused', 'last_paused_at', 'is_custom', 'created_at', 'players', 'items',
             'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
         ]
 
@@ -139,13 +200,14 @@ class CartItemSerializer(serializers.ModelSerializer):
     package_name = serializers.CharField(source='package.name')
     group_name = serializers.CharField(source='package.group.name', allow_null=True)
     product_type = serializers.CharField(source='package.product_type', allow_null=True)
+    spec_id = serializers.IntegerField(source='spec.id', allow_null=True, read_only=True)
 
     class Meta:
         model = CartItem
         fields = [
             'id', 'package_id', 'package_name', 'group_name', 'product_type',
             'image_url', 'description',
-            'spec_id_snapshot', 'spec_name', 'spec_display_name',
+            'spec_id', 'spec_id_snapshot', 'spec_name', 'spec_display_name',
             'price', 'quantity',
             'created_at', 'updated_at',
         ]
