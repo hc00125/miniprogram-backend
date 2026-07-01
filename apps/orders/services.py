@@ -1,6 +1,6 @@
-import math
 import uuid
 from datetime import timedelta
+from decimal import Decimal
 
 from django.db import transaction
 from django.utils import timezone
@@ -14,6 +14,18 @@ from apps.players.models import Player
 
 def generate_order_no():
     return f"{timezone.localtime().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:4].upper()}"
+
+
+def decimal_value(value):
+    return Decimal(str(value or 0))
+
+
+def ceil_div(value, divisor):
+    return (value + divisor - 1) // divisor
+
+
+def booked_seconds_from_hours(hours):
+    return int(decimal_value(hours or 1) * Decimal('3600'))
 
 
 def create_order(validated_data, user=None):
@@ -46,7 +58,7 @@ def create_order(validated_data, user=None):
     addon_id = validated_data.get('addon_id')
     first_addon = None
     normalized_addons = []
-    addon_price = 0
+    addon_price = Decimal('0')
 
     if addon_details:
         for item in addon_details:
@@ -56,24 +68,24 @@ def create_order(validated_data, user=None):
             addon = Addon.objects.filter(id=item.get('addon_id'), is_active=True).first()
             if not addon:
                 raise ValidationError({'detail': f"附加项 {item.get('addon_id')} 不存在"})
-            addon_price += float(addon.price_per_player) * count
+            addon_price += decimal_value(addon.price_per_player) * count
             normalized_addons.append({'addon_id': addon.id, 'name': addon.name, 'count': count, 'price': addon.price_per_player})
             first_addon = first_addon or addon
     elif addon_id:
         first_addon = Addon.objects.filter(id=addon_id, is_active=True).first()
         if not first_addon:
             raise ValidationError({'detail': '附加项不存在'})
-        addon_price = float(first_addon.price_per_player) * required_players
+        addon_price = decimal_value(first_addon.price_per_player) * required_players
 
     designated_players = validated_data.get('designated_players') or []
     if len(designated_players) > required_players:
         raise ValidationError({'detail': '指定打手人数不能超过下单人数'})
 
-    player_type_extra = 0
+    player_type_extra = Decimal('0')
     for player_id in designated_players:
         player = Player.objects.select_related('player_type').filter(id=player_id).first()
         if player:
-            player_type_extra += float(player.player_type.price_extra or 0)
+            player_type_extra += decimal_value(player.player_type.price_extra or 0)
 
     designated_types = []
     total_designated_count = 0
@@ -97,11 +109,11 @@ def create_order(validated_data, user=None):
         else:
             designated_types.append({'type_id': player.player_type_id, 'count': 1})
 
-    total_price = money(float(package.base_price) * required_players + addon_price + player_type_extra)
+    total_price = money(decimal_value(package.base_price) * required_players + addon_price + player_type_extra)
 
     # 如果选择了规格，用规格价重新计算
     if spec:
-        total_price = money(float(spec.price) + addon_price + player_type_extra)
+        total_price = money(decimal_value(spec.price) + addon_price + player_type_extra)
 
     booked_hours = validated_data.get('booked_hours') or 1.0
 
@@ -261,19 +273,19 @@ def complete_order(order, player, operator=None):
             order.is_paused = False
             order.last_paused_at = None
         if order.timer_started_at:
-            total_seconds = (now - order.timer_started_at).total_seconds()
+            total_seconds = int((now - order.timer_started_at).total_seconds())
             effective_seconds = max(0, total_seconds - (order.paused_duration or 0))
-            order.duration_minutes = max(1, int(effective_seconds / 60))
-            booked_minutes = (order.booked_hours or 1.0) * 60
-            extra_minutes = effective_seconds / 60 - booked_minutes
-            base_amount = order.total_price_per_hour or 0
-            if extra_minutes > 29:
-                extra_half_hours = math.ceil((extra_minutes - 29) / 30)
-                order.total_amount = money(base_amount + extra_half_hours * (base_amount * 0.5))
+            order.duration_minutes = max(1, ceil_div(effective_seconds, 60))
+            booked_seconds = booked_seconds_from_hours(order.booked_hours or 1)
+            extra_seconds = effective_seconds - booked_seconds
+            base_amount = money(order.total_price_per_hour or 0)
+            if extra_seconds > 29 * 60:
+                extra_half_hours = ceil_div(extra_seconds - 29 * 60, 30 * 60)
+                order.total_amount = money(base_amount + Decimal(extra_half_hours) * base_amount * Decimal('0.5'))
             else:
                 order.total_amount = money(base_amount)
         elif order.start_time:
-            order.duration_minutes = max(1, int((now - order.start_time).total_seconds() / 60))
+            order.duration_minutes = max(1, ceil_div(int((now - order.start_time).total_seconds()), 60))
             order.total_amount = order.total_amount or order.total_price_per_hour
         else:
             order.total_amount = order.total_amount or order.total_price_per_hour
