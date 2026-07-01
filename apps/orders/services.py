@@ -188,7 +188,7 @@ def assign_designated_slot(order, player):
 
 @transaction.atomic
 def grab_order(order_no, player, operator=None):
-    order = Order.objects.select_for_update().select_related('package', 'addon').get(order_no=order_no)
+    order = Order.objects.select_for_update(of=('self',)).select_related('package', 'addon').get(order_no=order_no)
     if order.status != Order.STATUS_WAITING:
         raise ValidationError({'detail': '订单已被抢或状态已变更'})
     if order.order_players.filter(player=player).exists():
