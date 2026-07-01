@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.db.models import Prefetch
+from django.db.models import Exists, OuterRef, Prefetch
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -86,10 +86,15 @@ def player_types(request):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def online_players(request):
-    players = Player.objects.filter(is_online=True).select_related('player_type')
+    active_orders = Order.objects.filter(
+        order_players__player=OuterRef('pk'),
+        status=Order.STATUS_IN_PROGRESS,
+    )
+    players = Player.objects.filter(is_online=True).select_related('player_type').annotate(
+        has_active_order=Exists(active_orders),
+    )
     result = []
     for player in players:
-        active_order = player.order_players.filter(order__status=Order.STATUS_IN_PROGRESS).exists()
         result.append({
             'id': player.id,
             'name': player.name,
@@ -98,7 +103,7 @@ def online_players(request):
             'price_extra': player.player_type.price_extra or 0,
             'avg_rating': player.avg_rating,
             'total_orders': player.total_orders,
-            'status': '接单中' if active_order else '在线',
+            'status': '接单中' if player.has_active_order else '在线',
         })
     return Response(result)
 
