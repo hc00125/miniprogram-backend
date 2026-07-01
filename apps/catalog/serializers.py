@@ -121,16 +121,24 @@ class PackageWriteSerializer(serializers.ModelSerializer):
             'sold_count', 'sort_order', 'is_active', 'is_custom',
         ]
 
+    def resolve_group(self, group_id):
+        if group_id is None:
+            return None
+        try:
+            return PackageGroup.objects.get(id=group_id)
+        except PackageGroup.DoesNotExist as exc:
+            raise serializers.ValidationError({'group_id': '套餐分组不存在或已删除'}) from exc
+
     def create(self, validated_data):
         group_id = validated_data.pop('group_id', None)
-        if group_id:
-            validated_data['group'] = PackageGroup.objects.filter(id=group_id).first()
+        if group_id is not None:
+            validated_data['group'] = self.resolve_group(group_id)
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
         group_id = validated_data.pop('group_id', None)
         if group_id is not None:
-            instance.group = PackageGroup.objects.filter(id=group_id).first()
+            instance.group = self.resolve_group(group_id)
         return super().update(instance, validated_data)
 
 
