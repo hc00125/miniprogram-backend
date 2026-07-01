@@ -63,6 +63,31 @@ class Order(models.Model):
         return self.order_no
 
 
+class OrderItem(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
+    package = models.ForeignKey('catalog.Package', on_delete=models.PROTECT, related_name='order_items')
+    spec = models.ForeignKey('catalog.PackageSpec', on_delete=models.SET_NULL, blank=True, null=True, related_name='order_items')
+    package_name = models.CharField(max_length=120)
+    spec_name = models.CharField(max_length=120, blank=True, default='')
+    spec_display_name = models.CharField(max_length=120, blank=True, default='')
+    unit_price = models.FloatField()
+    quantity = models.PositiveIntegerField(default=1)
+    amount = models.FloatField()
+    image_url = models.CharField(max_length=500, blank=True, null=True)
+    description = models.CharField(max_length=300, blank=True, null=True)
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'order_items'
+        verbose_name = '订单商品'
+        verbose_name_plural = '订单商品列表'
+        ordering = ['sort_order', 'id']
+
+    def __str__(self):
+        return f'{self.order.order_no} - {self.package_name} x{self.quantity}'
+
+
 class OrderPlayer(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='order_players')
     player = models.ForeignKey('players.Player', on_delete=models.CASCADE, related_name='order_players')
