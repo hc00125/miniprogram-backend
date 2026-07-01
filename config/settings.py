@@ -169,14 +169,14 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PAGINATION_CLASS': 'apps.common.pagination.OptionalPageNumberPagination',
     'PAGE_SIZE': env_int('DRF_PAGE_SIZE', '20'),
-    'DEFAULT_THROTTLE_CLASSES': (
-        'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
-    ),
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': os.environ.get('DRF_THROTTLE_ANON', '300/min'),
-        'user': os.environ.get('DRF_THROTTLE_USER', '600/min'),
-    },
+    # 'DEFAULT_THROTTLE_CLASSES': (
+    #     'rest_framework.throttling.AnonRateThrottle',
+    #     'rest_framework.throttling.UserRateThrottle',
+    # ),
+    # 'DEFAULT_THROTTLE_RATES': {
+    #     'anon': os.environ.get('DRF_THROTTLE_ANON', '300/min'),
+    #     'user': os.environ.get('DRF_THROTTLE_USER', '600/min'),
+    # },
     'COERCE_DECIMAL_TO_STRING': False,
     'EXCEPTION_HANDLER': 'apps.common.exceptions.compat_exception_handler',
 }

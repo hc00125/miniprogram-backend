@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('catalog', '0001_initial'),
+        ('catalog', '0003_package_image_url_package_picture_url_and_more'),
     ]
 
     operations = [
