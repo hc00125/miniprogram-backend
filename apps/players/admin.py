@@ -20,6 +20,41 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
     list_filter = ['status', 'player_type']
     search_fields = ['name', 'contact_wechat']
     actions = ['approve_applications', 'reject_applications']
+    readonly_fields = ['submitted_at', 'reviewed_at', 'reviewed_by']
+
+    def save_model(self, request, obj, form, change):
+        # 当管理员在编辑页直接修改状态时，同步更新 ClientProfile 和 Player
+        was_approved = obj.status == PlayerApplication.STATUS_APPROVED
+        was_rejected = obj.status == PlayerApplication.STATUS_REJECTED
+
+        if not obj.pk:
+            obj.reviewed_by = request.user
+        elif 'status' in form.changed_data:
+            obj.reviewed_by = request.user
+            obj.reviewed_at = __import__('django').utils.timezone.now()
+
+        super().save_model(request, obj, form, change)
+
+        if was_approved and obj.user:
+            # 同步 client_profile.player_status
+            ClientProfile.objects.filter(user=obj.user).update(
+                player_status=ClientProfile.PLAYER_STATUS_APPROVED,
+            )
+            # 创建 Player 记录（如果不存在）
+            if not Player.objects.filter(user=obj.user).exists():
+                default_type = PlayerType.objects.filter(is_active=True).order_by('priority').first()
+                Player.objects.create(
+                    user=obj.user,
+                    name=obj.name,
+                    player_type=obj.player_type or default_type,
+                    contact_wechat=obj.contact_wechat,
+                    bio=obj.bio or '',
+                    status=Player.STATUS_APPROVED,
+                )
+        elif was_rejected and obj.user:
+            ClientProfile.objects.filter(user=obj.user).update(
+                player_status=ClientProfile.PLAYER_STATUS_REJECTED,
+            )
 
     @admin.action(description='批准选中的陪玩师申请')
     def approve_applications(self, request, queryset):
