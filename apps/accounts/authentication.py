@@ -1,3 +1,5 @@
+from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.utils import timezone
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
@@ -10,31 +12,32 @@ class LegacyPlayerTokenAuthentication(BaseAuthentication):
         header = request.headers.get('Authorization', '')
         if not header.startswith('Bearer '):
             return None
-        token = header[7:].strip()
-        if not token:
+        session_key = header[7:].strip()
+        if not session_key:
             return None
-        player = Player.objects.select_related('user').filter(session_token=token).first()
+        player = Player.objects.select_related('user').filter(session_token=session_key).first()
         if not player:
             return None
         if player.token_expires_at and player.token_expires_at < timezone.now():
             raise AuthenticationFailed('登录已过期，请重新登录')
-        user = player.user
-        if user is None:
-            return (LegacyPlayerUser(player), token)
+        user = player.user or self.ensure_user_for_player(player)
         user.legacy_player = player
-        return (user, token)
+        return (user, session_key)
 
-
-class LegacyPlayerUser:
-    is_authenticated = True
-    is_staff = False
-    is_superuser = False
-
-    def __init__(self, player):
-        self.legacy_player = player
-        self.id = None
-        self.pk = None
-        self.username = player.name
-
-    def __str__(self):
-        return self.username
+    @transaction.atomic
+    def ensure_user_for_player(self, player):
+        if player.user_id:
+            return player.user
+        user_model = get_user_model()
+        username = f'legacy_player_{player.id}'
+        user, _created = user_model.objects.get_or_create(
+            username=username,
+            defaults={
+                'first_name': player.name[:150],
+                'is_active': True,
+            },
+        )
+        if player.user_id != user.id:
+            player.user = user
+            player.save(update_fields=['user', 'updated_at'])
+        return user
