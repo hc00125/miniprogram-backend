@@ -8,6 +8,7 @@ class OrderCreateSerializer(serializers.Serializer):
     game_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     package_id = serializers.IntegerField()
     spec_id = serializers.IntegerField(required=False, allow_null=True)
+    quantity = serializers.IntegerField(required=False, default=1, min_value=1, max_value=99)
     required_players = serializers.IntegerField(required=False, min_value=1)
     addon_id = serializers.IntegerField(required=False, allow_null=True)
     addon_details = serializers.ListField(child=serializers.DictField(), required=False, allow_empty=True, allow_null=True)
@@ -162,4 +163,4 @@ class CartItemCreateSerializer(serializers.Serializer):
 
 
 class CartItemQuantitySerializer(serializers.Serializer):
-    quantity = serializers.IntegerField(min_value=1, max_value=99)
+    quantity = serializers.IntegerField(min_value=1)
