@@ -110,6 +110,7 @@ class PackageSerializer(serializers.ModelSerializer):
 class PackageWriteSerializer(serializers.ModelSerializer):
     """管理员创建/编辑商品用，需要传 group_id"""
     group_id = serializers.IntegerField(required=False, allow_null=True)
+    _missing = object()
 
     class Meta:
         model = Package
@@ -130,14 +131,14 @@ class PackageWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'group_id': '套餐分组不存在或已删除'}) from exc
 
     def create(self, validated_data):
-        group_id = validated_data.pop('group_id', None)
-        if group_id is not None:
+        group_id = validated_data.pop('group_id', self._missing)
+        if group_id is not self._missing:
             validated_data['group'] = self.resolve_group(group_id)
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        group_id = validated_data.pop('group_id', None)
-        if group_id is not None:
+        group_id = validated_data.pop('group_id', self._missing)
+        if group_id is not self._missing:
             instance.group = self.resolve_group(group_id)
         return super().update(instance, validated_data)
 
