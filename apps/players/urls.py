@@ -13,6 +13,7 @@ urlpatterns = [
     path('grab', views.grab),
     path('my-orders', views.my_orders),
     path('order/<str:order_no>', views.order_detail),
+    path('order/<str:order_no>/kook-room', views.set_kook_room),
     path('start-timer', views.start_timer_view),
     path('complete', views.complete),
     path('order/<str:order_no>/pause', views.pause),
