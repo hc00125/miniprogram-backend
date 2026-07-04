@@ -12,7 +12,7 @@ from apps.catalog.models import PlayerType
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.common.tokens import generate_session_token
 from apps.orders.models import Order
-from apps.orders.serializers import AvailableOrderSerializer, OrderActionSerializer, PlayerOrderDetailSerializer, PlayerOrderListSerializer
+from apps.orders.serializers import AvailableOrderSerializer, OrderActionSerializer, OrderKookRoomSerializer, PlayerOrderDetailSerializer, PlayerOrderListSerializer
 from apps.orders.services import can_player_grab_order, complete_order as complete_order_service, grab_order as grab_order_service, pause_order, resume_order, start_timer
 from .models import Player, PlayerApplication
 from .serializers import PlayerApplicationCreateSerializer, PlayerApplicationSerializer, PlayerLoginSerializer, PlayerSerializer
@@ -155,12 +155,41 @@ def order_detail(request, order_no):
 
 @api_view(['POST'])
 @permission_classes([IsApprovedPlayer])
+def set_kook_room(request, order_no):
+    player = current_player(request.user)
+    order = Order.objects.filter(order_no=order_no).first()
+    if not order:
+        return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    if not order.order_players.filter(player=player).exists():
+        return Response({'detail': '您不是这个订单的打手'}, status=status.HTTP_403_FORBIDDEN)
+    if order.status in {Order.STATUS_COMPLETED, Order.STATUS_CANCELLED}:
+        return Response({'detail': '当前订单状态不能填写 KOOK 房间号'}, status=status.HTTP_400_BAD_REQUEST)
+
+    serializer = OrderKookRoomSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    room_number = serializer.validated_data['kook_room_number']
+    order.kook_room_number = room_number
+    order.kook_room_updated_at = timezone.now()
+    order.kook_room_updated_by = django_operator(request.user)
+    order.save(update_fields=['kook_room_number', 'kook_room_updated_at', 'kook_room_updated_by'])
+    return Response({
+        'message': 'KOOK 房间号已保存',
+        'order_no': order.order_no,
+        'kook_room_number': order.kook_room_number,
+        'kook_room_updated_at': order.kook_room_updated_at,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsApprovedPlayer])
 def start_timer_view(request):
     serializer = OrderActionSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     order = Order.objects.filter(order_no=serializer.validated_data['order_no']).first()
     if not order:
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    if not order.kook_room_number:
+        return Response({'detail': '请先填写 KOOK 房间号'}, status=status.HTTP_400_BAD_REQUEST)
     order = start_timer(order, current_player(request.user))
     return Response({'message': '计时已开始', 'timer_started_at': order.timer_started_at.isoformat()})
 
@@ -173,6 +202,8 @@ def complete(request):
     order = Order.objects.filter(order_no=serializer.validated_data['order_no']).first()
     if not order:
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    if not order.kook_room_number:
+        return Response({'detail': '请先填写 KOOK 房间号'}, status=status.HTTP_400_BAD_REQUEST)
     order = complete_order_service(order, current_player(request.user), django_operator(request.user))
     return Response({'message': '已标记完成', 'order_no': order.order_no, 'status': order.status})
 
