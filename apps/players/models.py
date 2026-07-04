@@ -28,6 +28,8 @@ class Player(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_APPROVED)
     contact_wechat = models.CharField(max_length=100, blank=True, default='')
     bio = models.TextField(blank=True, default='')
+    audio_intro_url = models.CharField(max_length=500, blank=True, default='', verbose_name='音频自我介绍URL', help_text='填写 mp3/m4a 等音频地址，例如 https://api.huc125.cn/media/player-audio/xxx.mp3')
+    audio_intro_title = models.CharField(max_length=100, blank=True, default='', verbose_name='音频标题', help_text='可选，例如：我的自我介绍')
     last_login = models.DateTimeField(blank=True, null=True)
     session_token = models.CharField(max_length=128, blank=True, null=True, db_index=True)
     token_expires_at = models.DateTimeField(blank=True, null=True)
