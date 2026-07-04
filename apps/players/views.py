@@ -250,6 +250,8 @@ def list(request):
             'name': player.name,
             'avatar_url': avatar_url,
             'bio': player.bio,
+            'audio_intro_url': player.audio_intro_url,
+            'audio_intro_title': player.audio_intro_title,
             'player_type': {
                 'id': player.player_type.id,
                 'name': player.player_type.name,
