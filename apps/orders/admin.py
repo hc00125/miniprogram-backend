@@ -17,9 +17,28 @@ class OrderPlayerInline(admin.TabularInline):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ['id', 'order_no', 'boss_wechat', 'package_name_snapshot', 'status', 'total_amount', 'paid', 'created_at']
+    list_display = ['id', 'order_no', 'boss_wechat', 'package_name_snapshot', 'status', 'kook_room_number', 'total_amount', 'paid', 'created_at']
     list_filter = ['status', 'paid', 'package']
-    search_fields = ['order_no', 'boss_wechat', 'game_id', 'package_name_snapshot', 'items__package_name', 'items__spec_name']
+    search_fields = ['order_no', 'boss_wechat', 'game_id', 'package_name_snapshot', 'items__package_name', 'items__spec_name', 'kook_room_number']
+    readonly_fields = ['kook_room_updated_at', 'kook_room_updated_by']
+    fieldsets = (
+        ('基础信息', {
+            'fields': ('order_no', 'boss_user', 'boss_wechat', 'game_id', 'package', 'status')
+        }),
+        ('KOOK 房间', {
+            'fields': ('kook_room_number', 'kook_room_updated_at', 'kook_room_updated_by')
+        }),
+        ('金额与时间', {
+            'fields': ('total_price_per_hour', 'total_amount', 'paid', 'payment_method', 'payment_confirmed_at', 'booked_hours', 'timer_started_at', 'start_time', 'end_time', 'duration_minutes')
+        }),
+        ('订单快照与备注', {
+            'fields': ('spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot', 'addon', 'addon_details', 'required_players', 'designated_types', 'designated_players', 'boss_note', 'is_custom', 'custom_price')
+        }),
+        ('取消信息', {
+            'fields': ('canceled_at', 'cancel_reason'),
+            'classes': ('collapse',),
+        }),
+    )
     inlines = [OrderItemInline, OrderPlayerInline]
 
 
