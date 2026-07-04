@@ -9,9 +9,31 @@ from .models import Player, PlayerApplication
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
-    list_display = ['id', 'name', 'player_type', 'status', 'is_online', 'total_orders', 'created_at']
+    list_display = ['id', 'name', 'player_type', 'status', 'is_online', 'has_audio_intro', 'total_orders', 'created_at']
     list_filter = ['status', 'is_online', 'player_type']
-    search_fields = ['name', 'contact_wechat']
+    search_fields = ['name', 'contact_wechat', 'audio_intro_url', 'audio_intro_title']
+    fieldsets = (
+        ('基础信息', {
+            'fields': ('user', 'name', 'player_type', 'status', 'is_online', 'contact_wechat', 'bio')
+        }),
+        ('音频自我介绍', {
+            'fields': ('audio_intro_url', 'audio_intro_title'),
+            'description': '将音频上传到服务器 media/player-audio/ 后，在这里填写完整 URL，例如 https://api.huc125.cn/media/player-audio/chen2.mp3'
+        }),
+        ('数据统计', {
+            'fields': ('total_orders', 'total_rating', 'rating_count', 'last_login'),
+            'classes': ('collapse',),
+        }),
+        ('登录状态', {
+            'fields': ('session_token', 'token_expires_at'),
+            'classes': ('collapse',),
+        }),
+    )
+    readonly_fields = ['created_at', 'updated_at']
+
+    @admin.display(description='音频介绍')
+    def has_audio_intro(self, obj):
+        return '已配置' if obj.audio_intro_url else '未配置'
 
 
 @admin.register(PlayerApplication)
