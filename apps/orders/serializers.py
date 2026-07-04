@@ -58,10 +58,17 @@ class OrderPlayerSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(source='player.id')
     name = serializers.CharField(source='player.name')
     type_name = serializers.CharField(source='player.player_type.name')
+    avatar_url = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderPlayer
-        fields = ['id', 'name', 'type_name', 'is_designated', 'grab_time', 'status']
+        fields = ['id', 'name', 'type_name', 'avatar_url', 'is_designated', 'grab_time', 'status']
+
+    def get_avatar_url(self, obj):
+        try:
+            return obj.player.user.client_profile.avatar_url or None
+        except AttributeError:
+            return None
 
 
 def order_display_name(obj):
