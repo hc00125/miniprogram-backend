@@ -32,6 +32,16 @@ class OrderCreateSerializer(serializers.Serializer):
         return attrs
 
 
+class OrderKookRoomSerializer(serializers.Serializer):
+    kook_room_number = serializers.CharField(max_length=100, trim_whitespace=True)
+
+    def validate_kook_room_number(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError('请输入 KOOK 房间号')
+        return value
+
+
 class OrderItemSerializer(serializers.ModelSerializer):
     package_id = serializers.IntegerField(source='package.id', read_only=True)
     spec_id = serializers.IntegerField(source='spec.id', read_only=True, allow_null=True)
@@ -81,7 +91,7 @@ class BossOrderDetailSerializer(serializers.ModelSerializer):
             'required_players', 'designated_types', 'designated_players', 'boss_note', 'total_price_per_hour',
             'status', 'start_time', 'end_time', 'duration_minutes', 'total_amount', 'paid', 'is_custom',
             'custom_price', 'created_at', 'booked_hours', 'timer_started_at', 'paused_duration', 'is_paused',
-            'last_paused_at', 'players', 'items',
+            'last_paused_at', 'players', 'items', 'kook_room_number', 'kook_room_updated_at',
             'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
         ]
 
@@ -98,7 +108,7 @@ class BossOrderListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ['order_no', 'package_name', 'item_count', 'status', 'total_price_per_hour', 'total_amount', 'paid', 'created_at']
+        fields = ['order_no', 'package_name', 'item_count', 'status', 'total_price_per_hour', 'total_amount', 'paid', 'created_at', 'kook_room_number']
 
     def get_package_name(self, obj):
         return order_display_name(obj)
@@ -123,7 +133,7 @@ class AvailableOrderSerializer(serializers.ModelSerializer):
         fields = [
             'order_no', 'package_name', 'addon_name', 'required_players', 'current_players',
             'total_price_per_hour', 'booked_hours', 'boss_note', 'is_custom', 'can_grab',
-            'is_designated', 'designated_type_ids', 'created_at'
+            'is_designated', 'designated_type_ids', 'created_at', 'kook_room_number'
         ]
 
     def get_package_name(self, obj):
@@ -154,7 +164,7 @@ class PlayerOrderListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ['order_no', 'package_name', 'addon_name', 'game_id', 'status', 'start_time', 'end_time', 'duration_minutes', 'grab_time', 'is_designated', 'total_amount', 'total_price_per_hour', 'created_at']
+        fields = ['order_no', 'package_name', 'addon_name', 'game_id', 'status', 'start_time', 'end_time', 'duration_minutes', 'grab_time', 'is_designated', 'total_amount', 'total_price_per_hour', 'created_at', 'kook_room_number']
 
     def get_package_name(self, obj):
         return order_display_name(obj)
@@ -178,6 +188,7 @@ class PlayerOrderDetailSerializer(BossOrderDetailSerializer):
             'order_no', 'game_id', 'package_name', 'addon_name', 'required_players', 'boss_note', 'status',
             'total_price_per_hour', 'start_time', 'end_time', 'duration_minutes', 'total_amount', 'booked_hours',
             'timer_started_at', 'paused_duration', 'is_paused', 'last_paused_at', 'is_custom', 'created_at', 'players', 'items',
+            'kook_room_number', 'kook_room_updated_at',
             'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
         ]
 
