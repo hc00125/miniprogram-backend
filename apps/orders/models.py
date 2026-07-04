@@ -52,6 +52,9 @@ class Order(models.Model):
     paused_duration = models.IntegerField(default=0)
     is_paused = models.BooleanField(default=False)
     last_paused_at = models.DateTimeField(blank=True, null=True)
+    kook_room_number = models.CharField(max_length=100, blank=True, default='', verbose_name='KOOK房间号')
+    kook_room_updated_at = models.DateTimeField(blank=True, null=True, verbose_name='KOOK房间号更新时间')
+    kook_room_updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name='updated_kook_rooms', verbose_name='KOOK房间号填写人')
 
     class Meta:
         db_table = 'orders'
