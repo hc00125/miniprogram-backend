@@ -12,7 +12,11 @@ class PlayerSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Player
-        fields = ['id', 'name', 'type_id', 'type_name', 'contact_wechat', 'bio', 'is_online', 'total_orders', 'avg_rating']
+        fields = [
+            'id', 'name', 'type_id', 'type_name', 'contact_wechat', 'bio',
+            'audio_intro_url', 'audio_intro_title',
+            'is_online', 'total_orders', 'avg_rating'
+        ]
 
 
 class PlayerLoginSerializer(serializers.Serializer):
