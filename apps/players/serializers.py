@@ -32,17 +32,23 @@ class PlayerApplicationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PlayerApplication
-        fields = ['id', 'nickname', 'avatar_url', 'name', 'type_id', 'type_name', 'contact_wechat', 'bio', 'status', 'submitted_at', 'reviewed_at', 'reject_reason', 'remark']
+        fields = [
+            'id', 'nickname', 'avatar_url', 'name', 'type_id', 'type_name',
+            'contact_wechat', 'bio', 'audio_intro_url', 'audio_intro_title',
+            'status', 'submitted_at', 'reviewed_at', 'reject_reason', 'remark'
+        ]
         read_only_fields = ['status', 'submitted_at', 'reviewed_at', 'reject_reason', 'remark']
 
 
 class PlayerApplicationCreateSerializer(serializers.ModelSerializer):
     type_id = serializers.IntegerField(write_only=True, required=False)
     player_type_id = serializers.IntegerField(write_only=True, required=False)
+    audio_intro_url = serializers.CharField(required=False, allow_blank=True, default='')
+    audio_intro_title = serializers.CharField(required=False, allow_blank=True, default='')
 
     class Meta:
         model = PlayerApplication
-        fields = ['name', 'type_id', 'player_type_id', 'contact_wechat', 'bio']
+        fields = ['name', 'type_id', 'player_type_id', 'contact_wechat', 'bio', 'audio_intro_url', 'audio_intro_title']
 
     def validate(self, attrs):
         type_id = attrs.pop('type_id', None) or attrs.pop('player_type_id', None)
