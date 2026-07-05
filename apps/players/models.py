@@ -77,6 +77,8 @@ class PlayerApplication(models.Model):
     player_type = models.ForeignKey('catalog.PlayerType', on_delete=models.PROTECT, blank=True, null=True, related_name='applications')
     contact_wechat = models.CharField(max_length=100)
     bio = models.TextField(blank=True, default='')
+    audio_intro_url = models.CharField(max_length=500, blank=True, default='', verbose_name='音频自我介绍URL')
+    audio_intro_title = models.CharField(max_length=100, blank=True, default='', verbose_name='音频标题')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     reject_reason = models.CharField(max_length=300, blank=True, default='')
     remark = models.CharField(max_length=300, blank=True, default='')
