@@ -38,11 +38,26 @@ class PlayerAdmin(admin.ModelAdmin):
 
 @admin.register(PlayerApplication)
 class PlayerApplicationAdmin(admin.ModelAdmin):
-    list_display = ['id', 'name', 'player_type', 'contact_wechat', 'status', 'submitted_at', 'reviewed_at']
+    list_display = ['id', 'name', 'player_type', 'contact_wechat', 'status', 'has_audio_intro', 'submitted_at', 'reviewed_at']
     list_filter = ['status', 'player_type']
-    search_fields = ['name', 'contact_wechat']
+    search_fields = ['name', 'contact_wechat', 'audio_intro_url', 'audio_intro_title']
     actions = ['approve_applications', 'reject_applications']
     readonly_fields = ['submitted_at', 'reviewed_at', 'reviewed_by']
+    fieldsets = (
+        ('申请信息', {
+            'fields': ('user', 'name', 'player_type', 'contact_wechat', 'bio', 'status')
+        }),
+        ('音频自我介绍', {
+            'fields': ('audio_intro_url', 'audio_intro_title')
+        }),
+        ('审核信息', {
+            'fields': ('reject_reason', 'remark', 'reviewed_by', 'submitted_at', 'reviewed_at')
+        }),
+    )
+
+    @admin.display(description='音频介绍')
+    def has_audio_intro(self, obj):
+        return '已上传' if obj.audio_intro_url else '未上传'
 
     def save_model(self, request, obj, form, change):
         # 当管理员在编辑页直接修改状态时，同步更新 ClientProfile 和 Player
@@ -53,7 +68,7 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
             obj.reviewed_by = request.user
         elif 'status' in form.changed_data:
             obj.reviewed_by = request.user
-            obj.reviewed_at = __import__('django').utils.timezone.now()
+            obj.reviewed_at = timezone.now()
 
         super().save_model(request, obj, form, change)
 
@@ -63,7 +78,8 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
                 player_status=ClientProfile.PLAYER_STATUS_APPROVED,
             )
             # 创建 Player 记录（如果不存在）
-            if not Player.objects.filter(user=obj.user).exists():
+            player = Player.objects.filter(user=obj.user).first()
+            if not player:
                 default_type = PlayerType.objects.filter(is_active=True).order_by('priority').first()
                 Player.objects.create(
                     user=obj.user,
@@ -71,8 +87,14 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
                     player_type=obj.player_type or default_type,
                     contact_wechat=obj.contact_wechat,
                     bio=obj.bio or '',
+                    audio_intro_url=obj.audio_intro_url or '',
+                    audio_intro_title=obj.audio_intro_title or '',
                     status=Player.STATUS_APPROVED,
                 )
+            else:
+                player.audio_intro_url = obj.audio_intro_url or player.audio_intro_url
+                player.audio_intro_title = obj.audio_intro_title or player.audio_intro_title
+                player.save(update_fields=['audio_intro_url', 'audio_intro_title', 'updated_at'])
         elif was_rejected and obj.user:
             ClientProfile.objects.filter(user=obj.user).update(
                 player_status=ClientProfile.PLAYER_STATUS_REJECTED,
@@ -99,15 +121,22 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
         # 为每个批准的用户创建 Player 记录（如果不存在）
         default_type = PlayerType.objects.filter(is_active=True).order_by('priority').first()
         for app in approved_list:
-            if not Player.objects.filter(user=app.user).exists():
+            player = Player.objects.filter(user=app.user).first()
+            if not player:
                 Player.objects.create(
                     user=app.user,
                     name=app.name,
                     player_type=app.player_type or default_type,
                     contact_wechat=app.contact_wechat,
                     bio=app.bio or '',
+                    audio_intro_url=app.audio_intro_url or '',
+                    audio_intro_title=app.audio_intro_title or '',
                     status=Player.STATUS_APPROVED,
                 )
+            else:
+                player.audio_intro_url = app.audio_intro_url or player.audio_intro_url
+                player.audio_intro_title = app.audio_intro_title or player.audio_intro_title
+                player.save(update_fields=['audio_intro_url', 'audio_intro_title', 'updated_at'])
 
         self.message_user(request, f'已批准 {updated} 条申请')
 
