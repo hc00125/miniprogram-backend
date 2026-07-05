@@ -1,9 +1,12 @@
+import uuid
+
 from django.contrib.auth.models import User
-from django.db import transaction
+from django.core.files.storage import default_storage
 from django.db.models import Case, Exists, ExpressionWrapper, F, FloatField, OuterRef, Value, When
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
@@ -20,6 +23,13 @@ from .serializers import PlayerApplicationCreateSerializer, PlayerApplicationSer
 
 def django_operator(user):
     return user if isinstance(user, User) else None
+
+
+def build_absolute_media_url(request, path):
+    media_url = default_storage.url(path)
+    if not media_url.startswith(('http://', 'https://', '/')):
+        media_url = f'/{media_url}'
+    return request.build_absolute_uri(media_url)
 
 
 @api_view(['POST'])
@@ -78,6 +88,49 @@ def update_online_status(request):
 @permission_classes([IsApprovedPlayer])
 def me(request):
     return Response(PlayerSerializer(current_player(request.user)).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
+def upload_application_audio(request):
+    file_obj = request.FILES.get('file')
+    if not file_obj:
+        return Response({'detail': '缺少音频文件'}, status=status.HTTP_400_BAD_REQUEST)
+
+    allowed_types = {
+        'audio/mpeg': 'mp3',
+        'audio/mp3': 'mp3',
+        'audio/mp4': 'm4a',
+        'audio/x-m4a': 'm4a',
+        'audio/aac': 'aac',
+        'audio/wav': 'wav',
+        'audio/x-wav': 'wav',
+    }
+    extension = allowed_types.get(file_obj.content_type)
+    if not extension:
+        original_name = (getattr(file_obj, 'name', '') or '').lower()
+        if original_name.endswith('.mp3'):
+            extension = 'mp3'
+        elif original_name.endswith('.m4a'):
+            extension = 'm4a'
+        elif original_name.endswith('.aac'):
+            extension = 'aac'
+        elif original_name.endswith('.wav'):
+            extension = 'wav'
+    if not extension:
+        return Response({'detail': '只支持 MP3/M4A/AAC/WAV 音频'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if file_obj.size > 20 * 1024 * 1024:
+        return Response({'detail': '音频文件不能超过 20MB'}, status=status.HTTP_400_BAD_REQUEST)
+
+    path = default_storage.save(f'player-audio/{request.user.id}_{uuid.uuid4().hex}.{extension}', file_obj)
+    audio_url = build_absolute_media_url(request, path)
+    title = request.data.get('title') or getattr(file_obj, 'name', '') or '音频自我介绍'
+    return Response({
+        'audio_intro_url': audio_url,
+        'audio_intro_title': title,
+    })
 
 
 @api_view(['POST'])
