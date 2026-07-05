@@ -8,6 +8,7 @@ urlpatterns = [
     path('logout', views.logout),
     path('me', views.me),
     path('apply', views.apply),
+    path('apply/audio', views.upload_application_audio),
     path('apply/status', views.apply_status),
     path('available-orders', views.available_orders),
     path('grab', views.grab),
