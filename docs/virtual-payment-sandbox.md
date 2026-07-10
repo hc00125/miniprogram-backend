@@ -14,7 +14,7 @@
 ```env
 WECHAT_VIRTUALPAY_ENABLED=true
 WECHAT_VIRTUALPAY_ENV=1
-WECHAT_VIRTUALPAY_OFFER_ID=你的OfferID
+WECHAT_VIRTUALPAY_OFFER_ID=14505866
 WECHAT_VIRTUALPAY_APP_KEY=你的沙箱AppKey
 
 # 首次测试的兜底配置
@@ -33,6 +33,7 @@ ENABLE_MOCK_PAYMENT=false
 ```bash
 python manage.py migrate
 python manage.py check
+python manage.py test apps.payments.test_virtualpay
 ```
 
 迁移后，Django 后台会新增：
@@ -67,7 +68,17 @@ python manage.py check
 npm run build:mp-weixin
 ```
 
-前端支付页仍调用原来的 `uni.requestPayment`，运行时桥接器会识别后端返回的 `virtual_payment:` 参数并自动改调微信原生：
+支付页面会先请求后端生成：
+
+```text
+signData
+paySig
+signature
+mode
+payment_no
+```
+
+然后直接调用微信原生：
 
 ```js
 wx.requestVirtualPayment({
@@ -80,14 +91,17 @@ wx.requestVirtualPayment({
 
 支付成功后，前端会轮询后端；后端通过 `/xpay/query_order` 向微信确认支付状态和金额，确认无误后才把本地订单标记为已支付，并调用 `/xpay/notify_provide_goods` 完成发货确认。
 
+启用虚拟支付后，普通微信支付创建接口会被后端拒绝，老板支付页也不再提供人工确认支付入口。
+
 ## 4. 沙箱测试准备
 
 1. 微信虚拟支付后台中的 `escort_15` 保持在“开发版本”。
 2. 道具审核通过后，不需要先发布现网即可进行沙箱测试。
 3. 使用与该小程序绑定的微信账号登录。
-4. 建议使用真机预览或体验版测试，微信基础库需支持 `requestVirtualPayment`。
-5. 后端必须能访问 `api.weixin.qq.com`。
-6. 小程序请求域名中必须配置后端 HTTPS 域名。
+4. 使用开发版或体验版真机测试，不要用正式发布版本测试 `env=1`。
+5. 微信基础库需支持 `requestVirtualPayment`。
+6. 后端必须能访问 `api.weixin.qq.com`。
+7. 小程序请求域名中必须配置后端 HTTPS 域名。
 
 ## 5. 首次测试订单
 
@@ -102,7 +116,7 @@ wx.requestVirtualPayment({
 合并商品：无
 ```
 
-让陪玩完成服务并把订单推进到“待支付”，老板进入支付页点击微信支付。
+让陪玩完成服务并把订单推进到“待支付”，老板进入支付页点击“微信虚拟支付”。
 
 ## 6. 成功标准
 
