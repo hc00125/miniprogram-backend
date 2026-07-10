@@ -4,7 +4,12 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .serializers import MiniProgramPaymentCreateSerializer, PaymentCreateSerializer, PaymentSerializer
+from .serializers import (
+    MiniProgramPaymentCreateSerializer,
+    PaymentCreateSerializer,
+    PaymentSerializer,
+    VirtualPaymentCreateSerializer,
+)
 from .services import (
     create_miniprogram_payment,
     create_payment,
@@ -13,6 +18,13 @@ from .services import (
     log_callback,
     mark_payment_paid,
     query_wechat_payment,
+)
+from .virtualpay import (
+    VirtualPaymentAPIError,
+    VirtualPaymentConfigurationError,
+    VirtualPaymentError,
+    create_virtual_payment,
+    query_virtual_payment,
 )
 from .wechatpay import (
     WechatPayAPIError,
@@ -53,6 +65,28 @@ def create_wechat_miniprogram(request):
     return Response(payload)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_wechat_virtual(request):
+    serializer = VirtualPaymentCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    try:
+        _, payload = create_virtual_payment(
+            user=request.user,
+            **serializer.validated_data,
+        )
+    except VirtualPaymentConfigurationError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except VirtualPaymentAPIError as exc:
+        return Response(
+            {'detail': str(exc), 'wechat_code': exc.code},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    except VirtualPaymentError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(payload)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def status_view(request, payment_no):
@@ -73,6 +107,23 @@ def query_wechat_order(request, payment_no):
             status=status.HTTP_502_BAD_GATEWAY,
         )
     except WechatPayError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(PaymentSerializer(payment).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def query_wechat_virtual(request, payment_no):
+    try:
+        payment = query_virtual_payment(payment_no, request.user)
+    except VirtualPaymentConfigurationError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except VirtualPaymentAPIError as exc:
+        return Response(
+            {'detail': str(exc), 'wechat_code': exc.code},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    except VirtualPaymentError as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     return Response(PaymentSerializer(payment).data)
 
