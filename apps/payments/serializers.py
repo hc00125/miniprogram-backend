@@ -43,6 +43,11 @@ class MiniProgramPaymentCreateSerializer(serializers.Serializer):
     openid = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
+class VirtualPaymentCreateSerializer(serializers.Serializer):
+    order_no = serializers.CharField()
+    code = serializers.CharField(allow_blank=False)
+
+
 class RefundSerializer(serializers.ModelSerializer):
     payment_no = serializers.CharField(source='payment.payment_no', read_only=True)
     order_no = serializers.CharField(source='order_id', read_only=True)
