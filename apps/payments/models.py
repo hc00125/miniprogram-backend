@@ -71,8 +71,26 @@ class VirtualProductBinding(models.Model):
         ordering = ['product_id']
 
     def clean(self):
+        errors = {}
         if bool(self.package_id) == bool(self.spec_id):
-            raise ValidationError('绑定商品和绑定规格必须且只能选择一个。')
+            errors['__all__'] = '绑定商品和绑定规格必须且只能选择一个。'
+
+        target_price = None
+        if self.spec_id and self.spec:
+            target_price = self.spec.price
+        elif self.package_id and self.package:
+            target_price = self.package.base_price
+
+        if target_price is not None and self.goods_price_fen:
+            expected_fen = int(round(float(target_price) * 100))
+            if self.goods_price_fen != expected_fen:
+                errors['goods_price_fen'] = (
+                    f'当前绑定对象价格为¥{float(target_price):.2f}，'
+                    f'道具单价应填写{expected_fen}分，而不是{self.goods_price_fen}分。'
+                )
+
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         target = self.spec or self.package
