@@ -34,9 +34,18 @@ from .wechatpay import (
 )
 
 
+def ordinary_payment_disabled_response():
+    return Response(
+        {'detail': '小程序虚拟商品必须使用官方小程序虚拟支付'},
+        status=status.HTTP_410_GONE,
+    )
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def create(request):
+    if settings.WECHAT_VIRTUALPAY_ENABLED:
+        return ordinary_payment_disabled_response()
     serializer = PaymentCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     payment = create_payment(serializer.validated_data['order_no'], serializer.validated_data['channel'])
@@ -46,6 +55,8 @@ def create(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_wechat_miniprogram(request):
+    if settings.WECHAT_VIRTUALPAY_ENABLED:
+        return ordinary_payment_disabled_response()
     serializer = MiniProgramPaymentCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     try:
@@ -97,6 +108,8 @@ def status_view(request, payment_no):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def query_wechat_order(request, payment_no):
+    if settings.WECHAT_VIRTUALPAY_ENABLED:
+        return ordinary_payment_disabled_response()
     try:
         payment = query_wechat_payment(payment_no, request.user)
     except WechatPayConfigurationError as exc:
