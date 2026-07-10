@@ -1,6 +1,10 @@
+import logging
+import uuid
+
 from django.conf import settings
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import APIException
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
@@ -33,11 +37,33 @@ from .wechatpay import (
     WechatPaySignatureError,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def ordinary_payment_disabled_response():
     return Response(
         {'detail': '小程序虚拟商品必须使用官方小程序虚拟支付'},
         status=status.HTTP_410_GONE,
+    )
+
+
+def unexpected_virtual_payment_response(exc, *, action, request, order_no='', payment_no=''):
+    error_id = uuid.uuid4().hex[:12]
+    logger.exception(
+        'Unexpected virtual payment error action=%s error_id=%s user_id=%s order_no=%s payment_no=%s',
+        action,
+        error_id,
+        getattr(request.user, 'id', None),
+        order_no,
+        payment_no,
+        exc_info=exc,
+    )
+    return Response(
+        {
+            'detail': f'虚拟支付服务内部错误，请联系管理员并提供错误编号：{error_id}',
+            'error_id': error_id,
+        },
+        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
 
 
@@ -81,6 +107,7 @@ def create_wechat_miniprogram(request):
 def create_wechat_virtual(request):
     serializer = VirtualPaymentCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    order_no = serializer.validated_data.get('order_no', '')
     try:
         _, payload = create_virtual_payment(
             user=request.user,
@@ -95,6 +122,15 @@ def create_wechat_virtual(request):
         )
     except VirtualPaymentError as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except APIException:
+        raise
+    except Exception as exc:
+        return unexpected_virtual_payment_response(
+            exc,
+            action='create',
+            request=request,
+            order_no=order_no,
+        )
     return Response(payload)
 
 
@@ -138,6 +174,15 @@ def query_wechat_virtual(request, payment_no):
         )
     except VirtualPaymentError as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except APIException:
+        raise
+    except Exception as exc:
+        return unexpected_virtual_payment_response(
+            exc,
+            action='query',
+            request=request,
+            payment_no=payment_no,
+        )
     return Response(PaymentSerializer(payment).data)
 
 
