@@ -132,7 +132,6 @@ def resolve_virtual_product(order):
     items = list(order.items.select_related('package', 'spec').order_by('sort_order', 'id'))
     if len(items) != 1:
         raise ValidationError({'detail': '当前沙箱测试仅支持单个商品结算，请不要合并多个商品'})
-
     item = items[0]
     binding = None
     if item.spec_id:
@@ -265,6 +264,7 @@ def create_virtual_payment(order_no, user, code):
     encoded_payload = quote(compact_json(bridge_payload), safe='')
     return payment, {
         'signData': sign_data,
+        'paySig': pay_sig,
         'signature': signature,
         'mode': VIRTUAL_MODE_GOODS,
         # 兼容旧版支付页面保留的字段。
@@ -337,29 +337,10 @@ def query_virtual_payment(payment_no, user):
     if xpay_status in PAID_XPAY_STATUSES:
         if order_fee != expected_fen or paid_fee != expected_fen:
             raise VirtualPaymentError('微信虚拟支付订单金额校验失败，请联系管理员处理')
-        payment = mark_payment_paid(
-            payment,
-            third_trade_no=payment.third_trade_no or '',
-            payload=payload,
-        )
-        if xpay_status != 4:
-            try:
-                delivery_response = notify_goods_delivered(payment)
-                payload = dict(payment.notify_payload or {})
-                payload['delivery_response'] = delivery_response
-                payment.notify_payload = payload
-                payment.save(update_fields=['notify_payload', 'updated_at'])
-            except VirtualPaymentError as exc:
-                payload = dict(payment.notify_payload or {})
-                payload['delivery_error'] = str(exc)
-                payment.notify_payload = payload
-                payment.save(update_fields=['notify_payload', 'updated_at'])
-        return payment
-
-    if xpay_status == 6:
-        payment.status = 'closed'
-        payment.save(update_fields=['status', 'updated_at'])
-    elif xpay_status in {5, 7}:
-        payment.status = 'failed'
-        payment.save(update_fields=['status', 'updated_at'])
+        payment = mark_payment_paid(payment, payment.third_trade_no or payment.payment_no, payload)
+        delivery_response = notify_goods_delivered(payment)
+        payload = dict(payment.notify_payload or {})
+        payload['delivery_response'] = delivery_response
+        payment.notify_payload = payload
+        payment.save(update_fields=['notify_payload', 'updated_at'])
     return payment
