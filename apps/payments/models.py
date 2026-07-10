@@ -73,8 +73,6 @@ class VirtualProductBinding(models.Model):
     def clean(self):
         if bool(self.package_id) == bool(self.spec_id):
             raise ValidationError('绑定商品和绑定规格必须且只能选择一个。')
-        if self.spec_id and self.spec.package_id != self.spec.package_id:
-            raise ValidationError('规格信息不正确。')
 
     def __str__(self):
         target = self.spec or self.package
