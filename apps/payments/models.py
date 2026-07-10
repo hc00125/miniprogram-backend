@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -27,6 +28,57 @@ class Payment(models.Model):
     @property
     def mock(self):
         return bool(self.qr_code and self.qr_code.startswith('mockpay://'))
+
+
+class VirtualProductBinding(models.Model):
+    """把小程序商品/规格绑定到微信虚拟支付道具。"""
+
+    package = models.ForeignKey(
+        'catalog.Package',
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        related_name='virtual_payment_bindings',
+        verbose_name='绑定商品',
+    )
+    spec = models.ForeignKey(
+        'catalog.PackageSpec',
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        related_name='virtual_payment_bindings',
+        verbose_name='绑定规格',
+    )
+    product_id = models.CharField(
+        max_length=20,
+        unique=True,
+        verbose_name='微信道具ID',
+        help_text='例如 escort_15。必须与微信虚拟支付后台中的道具ID完全一致。',
+    )
+    goods_price_fen = models.PositiveIntegerField(
+        verbose_name='道具单价（分）',
+        help_text='例如15元填写1500。',
+    )
+    is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    remark = models.CharField(max_length=100, blank=True, default='', verbose_name='备注')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'virtual_product_bindings'
+        verbose_name = '虚拟支付商品绑定'
+        verbose_name_plural = '虚拟支付商品绑定'
+        ordering = ['product_id']
+
+    def clean(self):
+        if bool(self.package_id) == bool(self.spec_id):
+            raise ValidationError('绑定商品和绑定规格必须且只能选择一个。')
+        if self.spec_id and self.spec.package_id != self.spec.package_id:
+            raise ValidationError('规格信息不正确。')
+
+    def __str__(self):
+        target = self.spec or self.package
+        return f'{self.product_id} → {target}'
 
 
 class PaymentCallbackLog(models.Model):
