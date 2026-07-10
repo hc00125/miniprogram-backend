@@ -1,0 +1,440 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+:root {
+  --bc-primary: #1a5f7a;
+  --bc-primary-light: #2d8db5;
+  --bc-bg: #f5f6f8;
+  --bc-card: #ffffff;
+  --bc-line: #e2e8f0;
+  --bc-text: #1e293b;
+  --bc-muted: #64748b;
+  --bc-green: #16a34a;
+  --bc-red: #dc2626;
+}
+body { background: var(--bc-bg); }
+
+.bc-wrap { max-width: 1200px; margin: 0 auto; padding: 24px 0; }
+
+/* ===== 搜索卡片 ===== */
+.bc-search-card {
+  background: var(--bc-card);
+  border: 1px solid var(--bc-line);
+  border-radius: 16px;
+  padding: 28px 32px;
+  margin-bottom: 24px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+}
+.bc-search-card h2 {
+  margin: 0 0 20px;
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--bc-text);
+}
+.bc-search-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+}
+.bc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bc-field label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--bc-muted);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.bc-field input[type="text"],
+.bc-field input[type="date"] {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #fff;
+  color: var(--bc-text);
+  font-size: 14px;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.04);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.bc-field input:focus {
+  border-color: var(--bc-primary);
+  box-shadow: 0 0 0 3px rgba(26,95,122,0.10);
+}
+.bc-field--name { flex: 1 1 220px; min-width: 160px; }
+.bc-field--name input { width: 100%; box-sizing: border-box; }
+.bc-field--date { flex: 0 0 170px; }
+.bc-field--date input { width: 100%; box-sizing: border-box; }
+
+.bc-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+}
+.bc-check-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--bc-primary);
+  cursor: pointer;
+}
+.bc-check-row label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--bc-text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.bc-search-btn {
+  min-height: 42px;
+  padding: 0 28px;
+  border: none;
+  border-radius: 999px;
+  background: var(--bc-primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.bc-search-btn:hover { background: #134b61; }
+.bc-search-btn:active { transform: scale(0.97); }
+
+/* ===== 提示 ===== */
+.bc-hint {
+  padding: 20px 24px;
+  border: 1px solid var(--bc-line);
+  border-radius: 12px;
+  background: var(--bc-card);
+  color: var(--bc-muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* ===== 汇总 ===== */
+.bc-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.bc-summary-item {
+  background: var(--bc-card);
+  border: 1px solid var(--bc-line);
+  border-radius: 14px;
+  padding: 20px 22px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bc-summary-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--bc-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.bc-summary-value {
+  font-size: 32px;
+  font-weight: 900;
+  color: var(--bc-primary);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 老板卡片 ===== */
+.bc-boss-card {
+  background: var(--bc-card);
+  border: 1px solid var(--bc-line);
+  border-radius: 14px;
+  margin-bottom: 16px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+}
+.bc-boss-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--bc-line);
+  cursor: pointer;
+  user-select: none;
+}
+.bc-boss-header:hover { background: #f1f5f9; }
+.bc-boss-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.bc-boss-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--bc-primary), var(--bc-primary-light));
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+.bc-boss-name {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--bc-text);
+}
+.bc-boss-openid {
+  font-size: 12px;
+  color: var(--bc-muted);
+  font-family: monospace;
+}
+.bc-boss-stats {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.bc-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.bc-stat-value {
+  font-size: 20px;
+  font-weight: 900;
+  color: var(--bc-text);
+  font-variant-numeric: tabular-nums;
+}
+.bc-stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--bc-muted);
+  text-transform: uppercase;
+}
+.bc-toggle-icon {
+  color: var(--bc-muted);
+  font-size: 18px;
+  transition: transform 0.2s;
+  margin-left: 12px;
+}
+.bc-toggle-icon.open { transform: rotate(180deg); }
+
+.bc-boss-body {
+  padding: 0 22px;
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.25s ease, padding 0.25s ease;
+}
+.bc-boss-body.open {
+  max-height: 2000px;
+  padding: 18px 22px;
+}
+
+/* ===== 订单明细表 ===== */
+.bc-orders-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.bc-orders-table th {
+  padding: 10px 8px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--bc-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  text-align: left;
+  border-bottom: 2px solid var(--bc-line);
+  background: #fafbfc;
+}
+.bc-orders-table td {
+  padding: 10px 8px;
+  font-size: 13px;
+  color: var(--bc-text);
+  border-bottom: 1px solid #f1f5f9;
+}
+.bc-orders-table tr:last-child td { border-bottom: none; }
+.bc-order-no { font-family: monospace; font-size: 12px; }
+.bc-order-amount { font-weight: 800; color: var(--bc-green); white-space: nowrap; }
+.bc-order-time { white-space: nowrap; color: var(--bc-muted); font-size: 12px; }
+
+/* 空结果没有展开按钮 */
+.bc-boss-card .no-toggle { cursor: default; }
+.bc-boss-card .no-toggle:hover { background: #f8fafc; }
+
+@media (max-width: 768px) {
+  .bc-search-form { flex-direction: column; align-items: stretch; }
+  .bc-field--date { flex: 1; }
+  .bc-boss-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .bc-boss-stats { width: 100%; justify-content: space-around; }
+  .bc-orders-table { font-size: 12px; }
+  .bc-orders-table th, .bc-orders-table td { padding: 6px 4px; }
+}
+</style>
+{{ block.super }}
+{% endblock %}
+
+{% block bodyclass %}boss-consumption-page{% endblock %}
+
+{% block title %}{{ title }} | {{ site_title|default:'管理后台' }}{% endblock %}
+
+{% block branding %}
+<div id="site-name">
+  <a href="{% url 'admin:index' %}">← 返回后台首页</a>
+</div>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">首页</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label='accounts' %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="bc-wrap">
+
+  {# ===== 搜索卡片 ===== #}
+  <div class="bc-search-card">
+    <h2>🔍 老板消费查询</h2>
+    <form class="bc-search-form" method="get">
+      <div class="bc-field bc-field--name">
+        <label for="id_q">老板昵称</label>
+        <input type="text" id="id_q" name="q" value="{{ query }}" placeholder="输入昵称关键字…" autofocus>
+      </div>
+      <div class="bc-field bc-field--date">
+        <label for="id_date_from">开始日期</label>
+        <input type="date" id="id_date_from" name="date_from" value="{{ date_from }}">
+      </div>
+      <div class="bc-field bc-field--date">
+        <label for="id_date_to">结束日期</label>
+        <input type="date" id="id_date_to" name="date_to" value="{{ date_to }}">
+      </div>
+      <div class="bc-check-row">
+        <input type="checkbox" id="id_total_all" name="total_all" value="1"{% if total_all %} checked{% endif %}>
+        <label for="id_total_all">查全部（忽略日期范围）</label>
+      </div>
+      <button class="bc-search-btn" type="submit">查询</button>
+    </form>
+  </div>
+
+  {% if query %}
+    {# ===== 结果区域 ===== #}
+    {% if results %}
+      {# 汇总 #}
+      <div class="bc-summary">
+        <div class="bc-summary-item">
+          <span class="bc-summary-label">匹配用户</span>
+          <span class="bc-summary-value">{{ results|length }}</span>
+        </div>
+        <div class="bc-summary-item">
+          <span class="bc-summary-label">已完成订单</span>
+          <span class="bc-summary-value">{{ grand_count }}</span>
+        </div>
+        <div class="bc-summary-item">
+          <span class="bc-summary-label">消费总额</span>
+          <span class="bc-summary-value">¥{{ grand_total|floatformat:2 }}</span>
+        </div>
+      </div>
+
+      {# 老板列表 #}
+      {% for item in results %}
+      <div class="bc-boss-card">
+        <div class="bc-boss-header{% if not item.recent_orders %} no-toggle{% endif %}" onclick="toggleBossBody(this)">
+          <div class="bc-boss-info">
+            <div class="bc-boss-avatar">{{ item.profile.nickname|first|default:'?' }}</div>
+            <div>
+              <div class="bc-boss-name">{{ item.profile.nickname }}</div>
+              <div class="bc-boss-openid">{{ item.profile.openid }}</div>
+            </div>
+          </div>
+          <div class="bc-boss-stats">
+            <div class="bc-stat">
+              <span class="bc-stat-label">订单</span>
+              <span class="bc-stat-value">{{ item.order_count }}</span>
+            </div>
+            <div class="bc-stat">
+              <span class="bc-stat-label">消费</span>
+              <span class="bc-stat-value" style="color:var(--bc-green);">¥{{ item.total_spent|floatformat:2 }}</span>
+            </div>
+          </div>
+          {% if item.recent_orders %}
+          <span class="bc-toggle-icon">▼</span>
+          {% endif %}
+        </div>
+        {% if item.recent_orders %}
+        <div class="bc-boss-body">
+          <table class="bc-orders-table">
+            <thead>
+              <tr>
+                <th>订单号</th>
+                <th>商品</th>
+                <th>金额(¥)</th>
+                <th>时长</th>
+                <th>下单时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for order in item.recent_orders %}
+              <tr>
+                <td><span class="bc-order-no">{{ order.order_no }}</span></td>
+                <td>{{ order.package_name_snapshot|default:order.package.name }}</td>
+                <td class="bc-order-amount">{{ order.total_amount|floatformat:2 }}</td>
+                <td>{% if order.duration_minutes %}{{ order.duration_minutes }}分钟{% else %}{{ order.booked_hours }}小时{% endif %}</td>
+                <td class="bc-order-time">{{ order.created_at|date:'Y-m-d H:i' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% if item.order_count > 10 %}
+          <p style="margin:12px 0 0;font-size:13px;color:var(--bc-muted);">… 共 {{ item.order_count }} 笔订单，仅展示最近 10 笔</p>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+
+    {% else %}
+      {# 无结果 #}
+      <div class="bc-hint">未找到昵称包含「{{ query }}」的老板的已完成订单。</div>
+    {% endif %}
+
+  {% else %}
+    {# 未搜索时提示 #}
+    <div class="bc-hint">输入老板昵称后点击「查询」，可以查看该老板的累计消费。可选填日期范围筛选某段时间的消费。</div>
+  {% endif %}
+
+</div>
+
+<script>
+function toggleBossBody(header) {
+  var body = header.nextElementSibling;
+  var icon = header.querySelector('.bc-toggle-icon');
+  if (!body || !icon) return;
+  body.classList.toggle('open');
+  icon.classList.toggle('open');
+}
+// 自动展开有数据的卡片
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.bc-boss-card .bc-boss-body').forEach(function(body) {
+    if (body.querySelector('tbody tr')) {
+      body.classList.add('open');
+      var icon = body.parentElement.querySelector('.bc-toggle-icon');
+      if (icon) icon.classList.add('open');
+    }
+  });
+});
+</script>
+{% endblock %}

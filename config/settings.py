@@ -162,7 +162,7 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if env_bool('SECUR
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'apps.accounts.authentication.LegacyPlayerTokenAuthentication',
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'apps.accounts.authentication.LenientJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.AllowAny',

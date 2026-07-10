@@ -192,7 +192,7 @@ def create_virtual_payment(order_no, user, code):
     env = validate_configuration()
     order = (
         Order.objects
-        .select_for_update()
+        .select_for_update(of=('self',))
         .select_related('boss_user')
         .prefetch_related('items__package', 'items__spec')
         .filter(order_no=order_no)
@@ -296,7 +296,7 @@ def query_virtual_payment(payment_no, user):
     validate_configuration()
     payment = (
         Payment.objects
-        .select_for_update()
+        .select_for_update(of=('self',))
         .select_related('order', 'order__boss_user')
         .filter(payment_no=payment_no)
         .first()
