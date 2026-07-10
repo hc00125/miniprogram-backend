@@ -264,7 +264,10 @@ def create_virtual_payment(order_no, user, code):
     }
     encoded_payload = quote(compact_json(bridge_payload), safe='')
     return payment, {
-        # 保持现有前端 MiniPaymentRequest 结构；main.ts 会识别 package 前缀并改调 requestVirtualPayment。
+        'signData': sign_data,
+        'signature': signature,
+        'mode': VIRTUAL_MODE_GOODS,
+        # 兼容旧版支付页面保留的字段。
         'timeStamp': '0',
         'nonceStr': 'virtual-payment',
         'package': f'{VIRTUAL_PACKAGE_PREFIX}{encoded_payload}',
