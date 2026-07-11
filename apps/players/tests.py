@@ -10,6 +10,7 @@ from apps.catalog.models import PlayerType
 
 from .admin import PlayerApplicationAdmin
 from .models import Player, PlayerApplication
+from .serializers import PlayerApplicationCreateSerializer, PlayerSerializer
 
 
 class UpdateOnlineStatusTests(TestCase):
@@ -63,7 +64,53 @@ class UpdateOnlineStatusTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
 
+class PlayerApplicationSerializerTests(TestCase):
+    def setUp(self):
+        self.player_type = PlayerType.objects.create(name='审核类型', priority=0, is_active=True)
+        self.base_payload = {
+            'name': '公开昵称',
+            'real_name': '张三',
+            'type_id': self.player_type.id,
+            'contact_wechat': 'test-wechat',
+            'bio': '测试申请',
+        }
+
+    def test_real_name_is_required(self):
+        payload = dict(self.base_payload)
+        payload.pop('real_name')
+        serializer = PlayerApplicationCreateSerializer(data=payload)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('real_name', serializer.errors)
+
+    def test_real_name_is_trimmed_and_validated(self):
+        payload = dict(self.base_payload, real_name='  欧阳 娜娜  ')
+        serializer = PlayerApplicationCreateSerializer(data=payload)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data['real_name'], '欧阳 娜娜')
+
+    def test_real_name_rejects_digits(self):
+        payload = dict(self.base_payload, real_name='张三123')
+        serializer = PlayerApplicationCreateSerializer(data=payload)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('real_name', serializer.errors)
+
+    def test_real_name_is_not_exposed_by_public_player_serializer(self):
+        user = User.objects.create_user(username='privacy-test')
+        player = Player.objects.create(
+            user=user,
+            name='公开昵称',
+            player_type=self.player_type,
+            status=Player.STATUS_APPROVED,
+        )
+        self.assertNotIn('real_name', PlayerSerializer(player).data)
+
+
 class PlayerApplicationAdminTests(TestCase):
+    def test_masked_real_name(self):
+        application = PlayerApplication(name='测试陪玩', real_name='王小明')
+        model_admin = PlayerApplicationAdmin(PlayerApplication, admin.site)
+        self.assertEqual(model_admin.masked_real_name(application), '王*明')
+
     def test_reject_applications_syncs_client_profile_status(self):
         admin_user = User.objects.create_superuser(
             username='admin',
@@ -83,6 +130,7 @@ class PlayerApplicationAdminTests(TestCase):
         application = PlayerApplication.objects.create(
             user=applicant,
             name='测试陪玩',
+            real_name='张三',
             contact_wechat='test-wechat',
             status=PlayerApplication.STATUS_PENDING,
         )
