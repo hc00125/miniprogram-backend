@@ -105,7 +105,7 @@ def create_renewal_order(order_no, user, units=1):
     root_id = requested.parent_order_id or requested.id
     root = (
         Order.objects
-        .select_for_update()
+        .select_for_update(of=('self',))
         .select_related('package', 'addon', 'boss_user')
         .get(pk=root_id)
     )
