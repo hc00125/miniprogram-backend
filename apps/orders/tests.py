@@ -5,6 +5,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from apps.catalog.models import Package, PlayerType
 from apps.orders.boss_views import cancel_order, order_detail, rate_player, self_confirm_payment
 from apps.orders.models import Order, OrderPlayer, OrderStatusLog, Rating
+from apps.orders.services import complete_order, grab_order, start_timer
 from apps.payments.models import Payment
 from apps.players.models import Player
 
@@ -59,7 +60,7 @@ class BossOrderPermissionTests(TestCase):
 
     @override_settings(ENABLE_MOCK_PAYMENT=True)
     def test_owner_can_cancel_and_close_unpaid_payment(self):
-        order = self.create_order(status=Order.STATUS_WAITING)
+        order = self.create_order(status=Order.STATUS_PENDING_PAYMENT)
         payment = Payment.objects.create(
             payment_no='PAY001',
             order=order,
@@ -93,8 +94,8 @@ class BossOrderPermissionTests(TestCase):
         self.assertEqual(response.status_code, 200)
         order.refresh_from_db()
         self.assertTrue(order.paid)
-        self.assertEqual(order.status, Order.STATUS_COMPLETED)
-        self.assertTrue(OrderStatusLog.objects.filter(order=order, reason='手动确认支付').exists())
+        self.assertEqual(order.status, Order.STATUS_READY_TO_START)
+        self.assertTrue(OrderStatusLog.objects.filter(order=order, reason__contains='等待陪玩开打').exists())
 
     def test_owner_can_rate_paid_completed_order(self):
         order = self.create_order(status=Order.STATUS_COMPLETED, paid=True)
@@ -114,3 +115,48 @@ class BossOrderPermissionTests(TestCase):
         OrderPlayer.objects.create(order=order, player=self.player)
         response = self.auth_post(rate_player, self.other, {'player_id': self.player.id, 'rating': 5}, order.order_no)
         self.assertEqual(response.status_code, 403)
+
+
+class PrepaidOrderFlowTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username='flow-owner')
+        self.player_user = User.objects.create_user(username='flow-player')
+        self.package = Package.objects.create(name='流程测试套餐', player_count=1, base_price=15)
+        self.player_type = PlayerType.objects.create(name='流程陪玩', priority=1)
+        self.player = Player.objects.create(
+            user=self.player_user,
+            name='流程陪玩A',
+            player_type=self.player_type,
+            status=Player.STATUS_APPROVED,
+        )
+        self.order = Order.objects.create(
+            order_no='FLOW000001',
+            boss_user=self.owner,
+            boss_wechat='flow-boss',
+            package=self.package,
+            required_players=1,
+            total_price_per_hour=15,
+            total_amount=15,
+            status=Order.STATUS_WAITING,
+        )
+
+    def test_full_lineup_moves_order_to_pending_payment(self):
+        grab_order(self.order.order_no, self.player, self.player_user)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.STATUS_PENDING_PAYMENT)
+        self.assertIsNone(self.order.start_time)
+
+    def test_paid_order_can_start_and_complete(self):
+        OrderPlayer.objects.create(order=self.order, player=self.player)
+        self.order.status = Order.STATUS_READY_TO_START
+        self.order.paid = True
+        self.order.save(update_fields=['status', 'paid'])
+
+        started = start_timer(self.order, self.player, self.player_user)
+        self.assertEqual(started.status, Order.STATUS_IN_PROGRESS)
+        self.assertIsNotNone(started.timer_started_at)
+
+        completed = complete_order(started, self.player, self.player_user)
+        self.assertEqual(completed.status, Order.STATUS_COMPLETED)
+        self.assertIsNotNone(completed.end_time)
+        self.assertTrue(completed.paid)
