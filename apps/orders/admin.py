@@ -17,13 +17,19 @@ class OrderPlayerInline(admin.TabularInline):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ['id', 'order_no', 'boss_wechat', 'package_name_snapshot', 'status', 'kook_room_number', 'total_amount', 'paid', 'created_at']
-    list_filter = ['status', 'paid', 'package']
-    search_fields = ['order_no', 'boss_wechat', 'game_id', 'package_name_snapshot', 'items__package_name', 'items__spec_name', 'kook_room_number']
+    list_display = [
+        'id', 'order_no', 'order_type', 'parent_order', 'renewal_index', 'boss_wechat',
+        'package_name_snapshot', 'status', 'kook_room_number', 'total_amount', 'paid', 'created_at',
+    ]
+    list_filter = ['order_type', 'status', 'paid', 'package']
+    search_fields = [
+        'order_no', 'parent_order__order_no', 'boss_wechat', 'game_id', 'package_name_snapshot',
+        'items__package_name', 'items__spec_name', 'kook_room_number',
+    ]
     readonly_fields = ['kook_room_updated_at', 'kook_room_updated_by']
     fieldsets = (
         ('基础信息', {
-            'fields': ('order_no', 'boss_user', 'boss_wechat', 'game_id', 'package', 'status')
+            'fields': ('order_no', 'order_type', 'parent_order', 'renewal_index', 'boss_user', 'boss_wechat', 'game_id', 'package', 'status')
         }),
         ('KOOK 房间', {
             'fields': ('kook_room_number', 'kook_room_updated_at', 'kook_room_updated_by')
