@@ -2,7 +2,7 @@ import uuid
 
 from django.contrib.auth.models import User
 from django.core.files.storage import default_storage
-from django.db.models import Case, Exists, ExpressionWrapper, F, FloatField, OuterRef, Value, When
+from django.db.models import Avg, Case, Count, Exists, ExpressionWrapper, F, FloatField, OuterRef, Value, When
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
@@ -14,11 +14,14 @@ from apps.accounts.models import ClientProfile
 from apps.catalog.models import PlayerType
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.common.tokens import generate_session_token
-from apps.orders.models import Order
+from apps.orders.models import Order, Rating
 from apps.orders.serializers import AvailableOrderSerializer, OrderActionSerializer, OrderKookRoomSerializer, PlayerOrderDetailSerializer, PlayerOrderListSerializer
 from apps.orders.services import can_player_grab_order, complete_order as complete_order_service, grab_order as grab_order_service, pause_order, resume_order, start_timer
 from .models import Player, PlayerApplication
 from .serializers import PlayerApplicationCreateSerializer, PlayerApplicationSerializer, PlayerLoginSerializer, PlayerSerializer
+
+
+RATING_RESULT_LIMIT = 10
 
 
 def django_operator(user):
@@ -30,6 +33,39 @@ def build_absolute_media_url(request, path):
     if not media_url.startswith(('http://', 'https://', '/')):
         media_url = f'/{media_url}'
     return request.build_absolute_uri(media_url)
+
+
+def build_player_ratings_payload(player, limit=RATING_RESULT_LIMIT):
+    ratings = Rating.objects.filter(player=player).select_related('order__package').order_by('-created_at')
+    summary = ratings.aggregate(
+        average_rating=Avg('rating'),
+        rating_count=Count('id'),
+    )
+    results = []
+    for rating in ratings[:limit]:
+        order = rating.order
+        package_name = (
+            order.package_name_snapshot
+            or getattr(order.package, 'name', '')
+            or '陪玩服务'
+        )
+        results.append({
+            'id': rating.id,
+            'rating': rating.rating,
+            'comment': rating.comment or '',
+            'package_name': package_name,
+            'created_at': rating.created_at.isoformat(),
+        })
+    return {
+        'player_id': player.id,
+        'player_name': player.name,
+        'summary': {
+            'average_rating': round(float(summary['average_rating'] or 0), 1),
+            'rating_count': summary['rating_count'] or 0,
+            'total_orders': player.total_orders or 0,
+        },
+        'results': results,
+    }
 
 
 @api_view(['POST'])
@@ -88,6 +124,21 @@ def update_online_status(request):
 @permission_classes([IsApprovedPlayer])
 def me(request):
     return Response(PlayerSerializer(current_player(request.user)).data)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def player_ratings(request, player_id):
+    player = Player.objects.filter(id=player_id, status=Player.STATUS_APPROVED).first()
+    if not player:
+        return Response({'detail': '陪玩师不存在或已下架'}, status=status.HTTP_404_NOT_FOUND)
+    return Response(build_player_ratings_payload(player))
+
+
+@api_view(['GET'])
+@permission_classes([IsApprovedPlayer])
+def my_ratings(request):
+    return Response(build_player_ratings_payload(current_player(request.user)))
 
 
 @api_view(['POST'])
@@ -296,17 +347,14 @@ def list(request):
         ),
     )
 
-    # 按类型筛选
     type_id = request.query_params.get('type_id')
     if type_id:
         queryset = queryset.filter(player_type_id=type_id)
 
-    # 按在线状态筛选
     is_online = request.query_params.get('is_online')
     if is_online is not None:
         queryset = queryset.filter(is_online=is_online.lower() == 'true')
 
-    # 搜索名字
     search = request.query_params.get('search')
     if search:
         queryset = queryset.filter(name__icontains=search)
@@ -342,6 +390,7 @@ def list(request):
                 'price_extra': player.player_type.price_extra or 0,
             } if player.player_type else None,
             'avg_rating': round(player.avg_rating, 1) if player.avg_rating else 0,
+            'rating_count': player.rating_count or 0,
             'total_orders': player.total_orders or 0,
             'is_online': player.is_online,
             'status': '接单中' if player.has_active_order else ('在线' if player.is_online else '离线'),
