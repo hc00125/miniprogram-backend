@@ -131,6 +131,8 @@ def create_wechat_virtual(request):
             request=request,
             order_no=order_no,
         )
+    logger.info('[虚拟支付] 返回前 payload keys: %s', list(payload.keys()))
+    logger.info('[虚拟支付] paySig=%s... signData=%s...', payload.get('paySig', 'MISSING')[:16], payload.get('signData', 'MISSING')[:30])
     return Response(payload)
 
 
