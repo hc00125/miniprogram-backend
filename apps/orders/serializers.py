@@ -1,4 +1,8 @@
+from decimal import Decimal
+
 from rest_framework import serializers
+
+from apps.common.money import money
 
 from .models import CartItem, Order, OrderItem, OrderPlayer, Rating
 
@@ -30,6 +34,10 @@ class OrderCreateSerializer(serializers.Serializer):
         if not attrs.get('items') and not attrs.get('package_id'):
             raise serializers.ValidationError({'package_id': '缺少商品信息'})
         return attrs
+
+
+class OrderRenewalCreateSerializer(serializers.Serializer):
+    units = serializers.IntegerField(required=False, default=1, min_value=1, max_value=10)
 
 
 class OrderKookRoomSerializer(serializers.Serializer):
@@ -85,11 +93,88 @@ def order_display_name(obj):
     return obj.package_name_snapshot or getattr(obj.package, 'name', '')
 
 
-class BossOrderDetailSerializer(serializers.ModelSerializer):
+def renewal_snapshot(obj):
+    cached = getattr(obj, '_renewal_snapshot_cache', None)
+    if cached is not None:
+        return cached
+
+    root = obj.parent_order if obj.order_type == Order.ORDER_TYPE_RENEWAL and obj.parent_order_id else obj
+    prefetched = getattr(root, 'prefetched_renewal_orders', None)
+    if prefetched is None:
+        renewals = list(root.renewal_orders.order_by('renewal_index', 'id'))
+    else:
+        renewals = list(prefetched)
+
+    paid_renewals = [
+        item for item in renewals
+        if item.paid and item.status == Order.STATUS_COMPLETED
+    ]
+    pending = next((
+        item for item in renewals
+        if not item.paid and item.status == Order.STATUS_PENDING_PAYMENT
+    ), None)
+    renewal_hours = sum((Decimal(str(item.booked_hours or 0)) for item in paid_renewals), Decimal('0'))
+    renewal_amount = sum((money(item.total_amount) for item in paid_renewals), Decimal('0'))
+    original_hours = Decimal(str(root.booked_hours or 0))
+
+    cached = {
+        'root': root,
+        'all': renewals,
+        'paid': paid_renewals,
+        'pending': pending,
+        'renewal_count': len(paid_renewals),
+        'renewal_booked_hours': float(renewal_hours),
+        'renewal_paid_amount': float(renewal_amount),
+        'total_booked_hours': float(original_hours + renewal_hours),
+    }
+    setattr(obj, '_renewal_snapshot_cache', cached)
+    if root is not obj:
+        setattr(root, '_renewal_snapshot_cache', cached)
+    return cached
+
+
+class RenewalFieldsMixin:
+    parent_order_no = serializers.CharField(source='parent_order.order_no', read_only=True, allow_null=True)
+    renewal_count = serializers.SerializerMethodField()
+    renewal_booked_hours = serializers.SerializerMethodField()
+    renewal_paid_amount = serializers.SerializerMethodField()
+    total_booked_hours = serializers.SerializerMethodField()
+    pending_renewal_order_no = serializers.SerializerMethodField()
+    can_renew = serializers.SerializerMethodField()
+
+    def get_renewal_count(self, obj):
+        return renewal_snapshot(obj)['renewal_count']
+
+    def get_renewal_booked_hours(self, obj):
+        return renewal_snapshot(obj)['renewal_booked_hours']
+
+    def get_renewal_paid_amount(self, obj):
+        return renewal_snapshot(obj)['renewal_paid_amount']
+
+    def get_total_booked_hours(self, obj):
+        return renewal_snapshot(obj)['total_booked_hours']
+
+    def get_pending_renewal_order_no(self, obj):
+        pending = renewal_snapshot(obj)['pending']
+        return pending.order_no if pending else None
+
+    def get_can_renew(self, obj):
+        data = renewal_snapshot(obj)
+        root = data['root']
+        return bool(
+            root.order_type == Order.ORDER_TYPE_NORMAL
+            and root.paid
+            and root.status in {Order.STATUS_READY_TO_START, Order.STATUS_IN_PROGRESS}
+            and data['pending'] is None
+        )
+
+
+class BossOrderDetailSerializer(RenewalFieldsMixin, serializers.ModelSerializer):
     package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     players = serializers.SerializerMethodField()
     items = OrderItemSerializer(many=True, read_only=True)
+    renewals = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -100,6 +185,8 @@ class BossOrderDetailSerializer(serializers.ModelSerializer):
             'custom_price', 'created_at', 'booked_hours', 'timer_started_at', 'paused_duration', 'is_paused',
             'last_paused_at', 'players', 'items', 'kook_room_number', 'kook_room_updated_at',
             'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
+            'order_type', 'parent_order_no', 'renewal_index', 'renewal_count', 'renewal_booked_hours',
+            'renewal_paid_amount', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew', 'renewals',
         ]
 
     def get_package_name(self, obj):
@@ -108,14 +195,33 @@ class BossOrderDetailSerializer(serializers.ModelSerializer):
     def get_players(self, obj):
         return OrderPlayerSerializer(obj.order_players.select_related('player__player_type'), many=True).data
 
+    def get_renewals(self, obj):
+        return [
+            {
+                'order_no': item.order_no,
+                'renewal_index': item.renewal_index,
+                'status': item.status,
+                'paid': item.paid,
+                'booked_hours': item.booked_hours,
+                'total_amount': item.total_amount,
+                'created_at': item.created_at,
+                'payment_confirmed_at': item.payment_confirmed_at,
+            }
+            for item in renewal_snapshot(obj)['all']
+        ]
 
-class BossOrderListSerializer(serializers.ModelSerializer):
+
+class BossOrderListSerializer(RenewalFieldsMixin, serializers.ModelSerializer):
     package_name = serializers.SerializerMethodField()
     item_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ['order_no', 'package_name', 'item_count', 'status', 'total_price_per_hour', 'total_amount', 'paid', 'created_at', 'kook_room_number']
+        fields = [
+            'order_no', 'package_name', 'item_count', 'status', 'total_price_per_hour',
+            'total_amount', 'paid', 'created_at', 'kook_room_number', 'order_type',
+            'renewal_count', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew',
+        ]
 
     def get_package_name(self, obj):
         return order_display_name(obj)
@@ -163,7 +269,7 @@ class AvailableOrderSerializer(serializers.ModelSerializer):
         return obj.can_player_grab if hasattr(obj, 'can_player_grab') else True
 
 
-class PlayerOrderListSerializer(serializers.ModelSerializer):
+class PlayerOrderListSerializer(RenewalFieldsMixin, serializers.ModelSerializer):
     package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     grab_time = serializers.SerializerMethodField()
@@ -171,7 +277,12 @@ class PlayerOrderListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ['order_no', 'package_name', 'addon_name', 'game_id', 'status', 'start_time', 'end_time', 'duration_minutes', 'grab_time', 'is_designated', 'total_amount', 'total_price_per_hour', 'created_at', 'kook_room_number']
+        fields = [
+            'order_no', 'package_name', 'addon_name', 'game_id', 'status', 'start_time',
+            'end_time', 'duration_minutes', 'grab_time', 'is_designated', 'total_amount',
+            'total_price_per_hour', 'created_at', 'kook_room_number', 'order_type',
+            'renewal_count', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew',
+        ]
 
     def get_package_name(self, obj):
         return order_display_name(obj)
@@ -197,6 +308,8 @@ class PlayerOrderDetailSerializer(BossOrderDetailSerializer):
             'timer_started_at', 'paused_duration', 'is_paused', 'last_paused_at', 'is_custom', 'created_at', 'players', 'items',
             'kook_room_number', 'kook_room_updated_at',
             'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
+            'order_type', 'parent_order_no', 'renewal_index', 'renewal_count', 'renewal_booked_hours',
+            'renewal_paid_amount', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew', 'renewals',
         ]
 
 
