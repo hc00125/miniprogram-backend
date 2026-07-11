@@ -130,7 +130,7 @@ def create_order(request):
         'order_no': order.order_no,
         'status': order.status,
         'total_price': order.total_amount,
-        'message': '订单创建成功，等待打手接单',
+        'message': '订单已自动派发到抢单大厅，等待陪玩接单',
     })
 
 
@@ -170,8 +170,11 @@ def cancel_order(request, order_no):
         return error_response
     if not can_access_order(order, request.user):
         return forbidden_response()
-    if order.status not in {Order.STATUS_WAITING, Order.STATUS_IN_PROGRESS}:
-        return Response({'detail': '当前状态无法取消'}, status=status.HTTP_400_BAD_REQUEST)
+    if order.status not in {Order.STATUS_WAITING, Order.STATUS_PENDING_PAYMENT}:
+        return Response(
+            {'detail': '已付款或已开打订单请联系管理员处理退款，不能直接取消'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     reason = request.data.get('reason')
     close_unpaid_payments_for_order(order, reason=reason or '订单取消')
     cancel_order_service(order, reason, request.user)
@@ -224,12 +227,18 @@ def self_confirm_payment(request, order_no):
     elif not order.total_amount:
         order.total_amount = order.total_price_per_hour
     order.paid = True
-    order.status = Order.STATUS_COMPLETED
+    order.status = Order.STATUS_READY_TO_START
     order.payment_method = 'self_confirm'
     order.payment_confirmed_at = timezone.now()
     order.save(update_fields=['total_amount', 'paid', 'status', 'payment_method', 'payment_confirmed_at'])
-    OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=request.user, reason='手动确认支付')
-    return Response({'message': '支付确认成功', 'order_no': order_no, 'status': order.status})
+    OrderStatusLog.objects.create(
+        order=order,
+        from_status=old_status,
+        to_status=order.status,
+        operator=request.user,
+        reason='手动确认支付，等待陪玩开打',
+    )
+    return Response({'message': '支付确认成功，等待陪玩开打', 'order_no': order_no, 'status': order.status})
 
 
 @api_view(['POST'])
@@ -263,7 +272,6 @@ def cart(request):
         ).order_by('-updated_at')
         return Response(CartItemSerializer(qs, many=True).data)
 
-    # POST — 加入购物车
     serializer = CartItemCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
@@ -279,14 +287,12 @@ def cart(request):
         if not spec:
             return Response({'detail': '规格不存在或不属于该商品'}, status=status.HTTP_404_NOT_FOUND)
 
-    # 价格以后端的商品/规格价格为准
     actual_price = spec.price if spec else package.base_price
 
     spec_id_snapshot = str(spec.id) if spec else ''
     spec_name = data.get('spec_name') or (spec.name if spec else '')
     spec_display_name = data.get('spec_display_name') or ''
 
-    # 查找是否已有同商品+同规格的购物车项
     existing = CartItem.objects.filter(
         user=request.user,
         package=package,
@@ -326,7 +332,6 @@ def cart_item(request, item_id):
         item.delete()
         return Response({'message': '已删除'})
 
-    # PUT — 修改数量
     serializer = CartItemQuantitySerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     item.quantity = serializer.validated_data['quantity']
