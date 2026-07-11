@@ -17,7 +17,7 @@ class PlayerSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'type_id', 'type_name', 'contact_wechat', 'bio',
             'audio_intro_url', 'audio_intro_title',
-            'is_online', 'total_orders', 'avg_rating'
+            'is_online', 'total_orders', 'avg_rating', 'rating_count'
         ]
 
 
