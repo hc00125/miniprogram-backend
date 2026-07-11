@@ -172,7 +172,7 @@ def create_renewal_order(order_no, user, units=1):
         spec_display_name=item.spec_display_name,
         unit_price=item.unit_price,
         quantity=int(item.quantity or 1) * units,
-        amount=float(money(item.amount) * units),
+        amount=float(money(money(item.amount) * units)),
         image_url=item.image_url,
         description=item.description,
         sort_order=item.sort_order,
@@ -209,11 +209,14 @@ def finalize_paid_renewal(order, paid_at=None, operator=None):
         return order
 
     paid_at = paid_at or timezone.now()
-    renewal = Order.objects.select_for_update().select_related('parent_order').get(pk=order.pk)
+    renewal = Order.objects.select_for_update().get(pk=order.pk)
     if renewal.status == Order.STATUS_COMPLETED:
         return renewal
     if not renewal.parent_order_id:
         raise ValidationError({'detail': '续单缺少原订单关联'})
+
+    # 锁定原订单，与“完成服务”操作串行化，避免续单付款和结束订单同时发生。
+    parent = Order.objects.select_for_update().get(pk=renewal.parent_order_id)
 
     old_status = renewal.status
     renewal.status = Order.STATUS_COMPLETED
@@ -228,7 +231,6 @@ def finalize_paid_renewal(order, paid_at=None, operator=None):
         operator=operator,
         reason='续单付款成功，续单时长已计入原订单',
     )
-    parent = renewal.parent_order
     OrderStatusLog.objects.create(
         order=parent,
         from_status=parent.status,
