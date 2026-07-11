@@ -6,7 +6,8 @@ from django.test import RequestFactory, TestCase
 from rest_framework.test import APIClient
 
 from apps.accounts.models import ClientProfile
-from apps.catalog.models import PlayerType
+from apps.catalog.models import Package, PlayerType
+from apps.orders.models import Order, Rating
 
 from .admin import PlayerApplicationAdmin
 from .models import Player, PlayerApplication
@@ -64,6 +65,71 @@ class UpdateOnlineStatusTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
 
+class PlayerRatingApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.player_type = PlayerType.objects.create(name='评分类型', priority=0, is_active=True)
+        self.player_user = User.objects.create_user(username='rated-player', password='password')
+        self.player = Player.objects.create(
+            user=self.player_user,
+            name='评分陪玩',
+            player_type=self.player_type,
+            status=Player.STATUS_APPROVED,
+            total_orders=3,
+            total_rating=9,
+            rating_count=2,
+        )
+        self.boss_user = User.objects.create_user(username='rating-boss', password='password')
+        self.package = Package.objects.create(name='评分测试套餐', base_price=15, player_count=1)
+        self.order = Order.objects.create(
+            order_no='RATING000001',
+            boss_user=self.boss_user,
+            boss_wechat='boss-wechat',
+            package=self.package,
+            package_name_snapshot='四套四弹娱乐陪',
+            required_players=1,
+            status=Order.STATUS_COMPLETED,
+            total_amount=15,
+            paid=True,
+        )
+        Rating.objects.create(order=self.order, player=self.player, rating=5, comment='技术很好')
+        second_order = Order.objects.create(
+            order_no='RATING000002',
+            boss_user=self.boss_user,
+            boss_wechat='boss-wechat',
+            package=self.package,
+            required_players=1,
+            status=Order.STATUS_COMPLETED,
+            total_amount=15,
+            paid=True,
+        )
+        Rating.objects.create(order=second_order, player=self.player, rating=4, comment='沟通顺畅')
+
+    def test_public_player_ratings_returns_summary_and_recent_reviews(self):
+        response = self.client.get(f'/api/player/{self.player.id}/ratings')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['summary']['average_rating'], 4.5)
+        self.assertEqual(response.data['summary']['rating_count'], 2)
+        self.assertEqual(response.data['summary']['total_orders'], 3)
+        self.assertEqual(len(response.data['results']), 2)
+        self.assertEqual(response.data['results'][1]['package_name'], '四套四弹娱乐陪')
+        self.assertNotIn('boss_user', response.data['results'][0])
+
+    def test_player_can_view_own_ratings(self):
+        self.client.force_authenticate(user=self.player_user)
+        response = self.client.get('/api/player/ratings/me')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['player_id'], self.player.id)
+        self.assertEqual(response.data['summary']['rating_count'], 2)
+
+    def test_non_approved_player_cannot_view_personal_ratings(self):
+        self.player.status = Player.STATUS_PENDING
+        self.player.save(update_fields=['status'])
+        self.client.force_authenticate(user=self.player_user)
+        response = self.client.get('/api/player/ratings/me')
+        self.assertEqual(response.status_code, 403)
+
+
 class PlayerApplicationSerializerTests(TestCase):
     def setUp(self):
         self.player_type = PlayerType.objects.create(name='审核类型', priority=0, is_active=True)
@@ -102,7 +168,9 @@ class PlayerApplicationSerializerTests(TestCase):
             player_type=self.player_type,
             status=Player.STATUS_APPROVED,
         )
-        self.assertNotIn('real_name', PlayerSerializer(player).data)
+        serialized = PlayerSerializer(player).data
+        self.assertNotIn('real_name', serialized)
+        self.assertIn('rating_count', serialized)
 
 
 class PlayerApplicationAdminTests(TestCase):
