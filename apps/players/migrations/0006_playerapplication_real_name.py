@@ -12,11 +12,11 @@ class Migration(migrations.Migration):
             model_name='playerapplication',
             name='real_name',
             field=models.CharField(
-                blank=True,
                 default='',
                 help_text='仅供平台审核使用，不对老板或其他用户公开',
                 max_length=30,
                 verbose_name='真实姓名',
             ),
+            preserve_default=False,
         ),
     ]
