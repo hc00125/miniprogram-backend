@@ -211,6 +211,7 @@ def create_order(validated_data, user=None):
         status=Order.STATUS_WAITING,
         is_custom=package.is_custom,
         booked_hours=booked_hours,
+        order_type=Order.ORDER_TYPE_NORMAL,
     )
 
     for item in order_items:
@@ -284,7 +285,7 @@ def assign_designated_slot(order, player):
 @transaction.atomic
 def grab_order(order_no, player, operator=None):
     order = Order.objects.select_for_update(of=('self',)).select_related('package', 'addon').get(order_no=order_no)
-    if order.status != Order.STATUS_WAITING:
+    if order.status != Order.STATUS_WAITING or order.order_type != Order.ORDER_TYPE_NORMAL:
         raise ValidationError({'detail': '订单已被抢或状态已变更'})
     if order.order_players.filter(player=player).exists():
         raise ValidationError({'detail': '您已经接了这个订单'})
@@ -321,6 +322,8 @@ def ensure_order_player(order, player):
 def start_timer(order, player, operator=None):
     ensure_order_player(order, player)
     order = Order.objects.select_for_update().get(pk=order.pk)
+    if order.order_type != Order.ORDER_TYPE_NORMAL:
+        raise ValidationError({'detail': '续单不单独开打'})
     if order.status != Order.STATUS_READY_TO_START:
         raise ValidationError({'detail': '订单尚未付款或已开始，当前状态不能开打'})
     if not order.paid:
@@ -381,8 +384,13 @@ def resume_order(order):
 def complete_order(order, player, operator=None):
     ensure_order_player(order, player)
     order = Order.objects.select_for_update().get(pk=order.pk)
+    if order.order_type != Order.ORDER_TYPE_NORMAL:
+        raise ValidationError({'detail': '续单不单独完成'})
     if order.status != Order.STATUS_IN_PROGRESS:
         raise ValidationError({'detail': '订单状态不允许完成'})
+    if order.renewal_orders.filter(status=Order.STATUS_PENDING_PAYMENT, paid=False).exists():
+        raise ValidationError({'detail': '当前还有待支付续单，请先完成或取消续单后再结束服务'})
+
     op = order.order_players.get(player=player)
     op.status = '已完成'
     op.save(update_fields=['status'])
