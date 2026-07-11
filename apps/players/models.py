@@ -74,6 +74,13 @@ class PlayerApplication(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='player_applications')
     name = models.CharField(max_length=50)
+    real_name = models.CharField(
+        max_length=30,
+        blank=True,
+        default='',
+        verbose_name='真实姓名',
+        help_text='仅供平台审核使用，不对老板或其他用户公开',
+    )
     player_type = models.ForeignKey('catalog.PlayerType', on_delete=models.PROTECT, blank=True, null=True, related_name='applications')
     contact_wechat = models.CharField(max_length=100)
     bio = models.TextField(blank=True, default='')
