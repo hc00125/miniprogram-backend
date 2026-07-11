@@ -133,7 +133,7 @@ def renewal_snapshot(obj):
     return cached
 
 
-class RenewalFieldsMixin:
+class RenewalFieldsMixin(serializers.ModelSerializer):
     parent_order_no = serializers.CharField(source='parent_order.order_no', read_only=True, allow_null=True)
     renewal_count = serializers.SerializerMethodField()
     renewal_booked_hours = serializers.SerializerMethodField()
@@ -169,7 +169,7 @@ class RenewalFieldsMixin:
         )
 
 
-class BossOrderDetailSerializer(RenewalFieldsMixin, serializers.ModelSerializer):
+class BossOrderDetailSerializer(RenewalFieldsMixin):
     package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     players = serializers.SerializerMethodField()
@@ -211,7 +211,7 @@ class BossOrderDetailSerializer(RenewalFieldsMixin, serializers.ModelSerializer)
         ]
 
 
-class BossOrderListSerializer(RenewalFieldsMixin, serializers.ModelSerializer):
+class BossOrderListSerializer(RenewalFieldsMixin):
     package_name = serializers.SerializerMethodField()
     item_count = serializers.SerializerMethodField()
 
@@ -269,7 +269,7 @@ class AvailableOrderSerializer(serializers.ModelSerializer):
         return obj.can_player_grab if hasattr(obj, 'can_player_grab') else True
 
 
-class PlayerOrderListSerializer(RenewalFieldsMixin, serializers.ModelSerializer):
+class PlayerOrderListSerializer(RenewalFieldsMixin):
     package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     grab_time = serializers.SerializerMethodField()
