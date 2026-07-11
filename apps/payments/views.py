@@ -105,8 +105,6 @@ def create_wechat_miniprogram(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_wechat_virtual(request):
-    import logging
-    logger = logging.getLogger(__name__)
     serializer = VirtualPaymentCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     order_no = serializer.validated_data.get('order_no', '')
@@ -132,7 +130,7 @@ def create_wechat_virtual(request):
             action='create',
             request=request,
             order_no=order_no,
-        ) 31fdf00 (fix: select_for_update(of=('self',)) for PostgreSQL virtual payment; add LenientJWTAuthentication; boss consumption query admin)
+        )
     return Response(payload)
 
 
