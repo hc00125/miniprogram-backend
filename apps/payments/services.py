@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.orders.models import Order, OrderStatusLog
+from apps.orders.renewals import finalize_paid_renewal
 from .models import Payment, PaymentCallbackLog, Refund
 from .wechatpay import WechatPayClient, WechatPayError
 
@@ -244,17 +245,22 @@ def mark_payment_paid(payment, third_trade_no='', payload=None):
     order.payment_method = payment.channel
     order.payment_confirmed_at = paid_at
     order_update_fields = ['paid', 'payment_method', 'payment_confirmed_at']
-    if order.status == Order.STATUS_PENDING_PAYMENT:
-        order.status = Order.STATUS_READY_TO_START
-        order_update_fields.append('status')
-    order.save(update_fields=order_update_fields)
-    if old_status != order.status:
-        OrderStatusLog.objects.create(
-            order=order,
-            from_status=old_status,
-            to_status=order.status,
-            reason='老板付款成功，等待陪玩开打',
-        )
+
+    if order.order_type == Order.ORDER_TYPE_RENEWAL:
+        order.save(update_fields=order_update_fields)
+        finalize_paid_renewal(order, paid_at=paid_at)
+    else:
+        if order.status == Order.STATUS_PENDING_PAYMENT:
+            order.status = Order.STATUS_READY_TO_START
+            order_update_fields.append('status')
+        order.save(update_fields=order_update_fields)
+        if old_status != order.status:
+            OrderStatusLog.objects.create(
+                order=order,
+                from_status=old_status,
+                to_status=order.status,
+                reason='老板付款成功，等待陪玩开打',
+            )
     return payment
 
 
