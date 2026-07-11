@@ -10,6 +10,7 @@ urlpatterns = [
     path('online-players', boss_views.online_players),
     path('order', boss_views.create_order),
     path('order/<str:order_no>', boss_views.order_detail),
+    path('order/<str:order_no>/renew', boss_views.create_renewal),
     path('orders/me', boss_views.my_orders),
     path('orders/<str:boss_wechat>', boss_views.boss_orders),
     path('order/<str:order_no>/cancel', boss_views.cancel_order),
