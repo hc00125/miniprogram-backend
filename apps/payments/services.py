@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from apps.orders.models import Order
+from apps.orders.models import Order, OrderStatusLog
 from .models import Payment, PaymentCallbackLog, Refund
 from .wechatpay import WechatPayClient, WechatPayError
 
@@ -59,7 +59,7 @@ def create_payment(order_no, channel):
     order = Order.objects.filter(order_no=order_no).first()
     if not order:
         raise ValidationError({'detail': '订单不存在'})
-    if order.paid or order.status == Order.STATUS_COMPLETED:
+    if order.paid or order.status in {Order.STATUS_READY_TO_START, Order.STATUS_IN_PROGRESS, Order.STATUS_COMPLETED}:
         raise ValidationError({'detail': '订单已支付'})
     if order.status != Order.STATUS_PENDING_PAYMENT:
         raise ValidationError({'detail': '当前订单状态不可支付'})
@@ -128,7 +128,7 @@ def create_miniprogram_payment(order_no, user=None, code=None, openid=None):
     if not order:
         raise ValidationError({'detail': '订单不存在'})
     ensure_order_owner(order, user)
-    if order.paid or order.status == Order.STATUS_COMPLETED:
+    if order.paid or order.status in {Order.STATUS_READY_TO_START, Order.STATUS_IN_PROGRESS, Order.STATUS_COMPLETED}:
         raise ValidationError({'detail': '订单已支付'})
     if order.status != Order.STATUS_PENDING_PAYMENT:
         raise ValidationError({'detail': '当前订单状态不可支付'})
@@ -174,7 +174,6 @@ def create_miniprogram_payment(order_no, user=None, code=None, openid=None):
         if not existing.third_order_no:
             raise ValidationError({'detail': '支付单正在生成，请稍后重试'})
         return existing, _build_real_request_payment(client, existing)
-
     payment = Payment.objects.create(
         payment_no=generate_payment_no(),
         order=order,
@@ -240,14 +239,22 @@ def mark_payment_paid(payment, third_trade_no='', payload=None):
     ])
 
     order = payment.order
+    old_status = order.status
     order.paid = True
     order.payment_method = payment.channel
     order.payment_confirmed_at = paid_at
     order_update_fields = ['paid', 'payment_method', 'payment_confirmed_at']
     if order.status == Order.STATUS_PENDING_PAYMENT:
-        order.status = Order.STATUS_COMPLETED
+        order.status = Order.STATUS_READY_TO_START
         order_update_fields.append('status')
     order.save(update_fields=order_update_fields)
+    if old_status != order.status:
+        OrderStatusLog.objects.create(
+            order=order,
+            from_status=old_status,
+            to_status=order.status,
+            reason='老板付款成功，等待陪玩开打',
+        )
     return payment
 
 
