@@ -38,14 +38,18 @@ class PlayerAdmin(admin.ModelAdmin):
 
 @admin.register(PlayerApplication)
 class PlayerApplicationAdmin(admin.ModelAdmin):
-    list_display = ['id', 'name', 'player_type', 'contact_wechat', 'status', 'has_audio_intro', 'submitted_at', 'reviewed_at']
+    list_display = [
+        'id', 'name', 'masked_real_name', 'player_type', 'contact_wechat',
+        'status', 'has_audio_intro', 'submitted_at', 'reviewed_at'
+    ]
     list_filter = ['status', 'player_type']
-    search_fields = ['name', 'contact_wechat', 'audio_intro_url', 'audio_intro_title']
+    search_fields = ['name', 'real_name', 'contact_wechat', 'audio_intro_url', 'audio_intro_title']
     actions = ['approve_applications', 'reject_applications']
     readonly_fields = ['submitted_at', 'reviewed_at', 'reviewed_by']
     fieldsets = (
-        ('申请信息', {
-            'fields': ('user', 'name', 'player_type', 'contact_wechat', 'bio', 'status')
+        ('申请身份信息', {
+            'fields': ('user', 'real_name', 'name', 'player_type', 'contact_wechat', 'bio', 'status'),
+            'description': '真实姓名仅用于平台内部审核；陪玩师名称会展示给老板和其他用户。'
         }),
         ('音频自我介绍', {
             'fields': ('audio_intro_url', 'audio_intro_title')
@@ -54,6 +58,17 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
             'fields': ('reject_reason', 'remark', 'reviewed_by', 'submitted_at', 'reviewed_at')
         }),
     )
+
+    @admin.display(description='真实姓名')
+    def masked_real_name(self, obj):
+        name = (obj.real_name or '').strip()
+        if not name:
+            return '未填写'
+        if len(name) == 1:
+            return name
+        if len(name) == 2:
+            return f'{name[0]}*'
+        return f'{name[0]}{"*" * (len(name) - 2)}{name[-1]}'
 
     @admin.display(description='音频介绍')
     def has_audio_intro(self, obj):
@@ -77,7 +92,7 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
             ClientProfile.objects.filter(user=obj.user).update(
                 player_status=ClientProfile.PLAYER_STATUS_APPROVED,
             )
-            # 创建 Player 记录（如果不存在）
+            # 创建 Player 记录（如果不存在）。真实姓名不写入公开陪玩资料。
             player = Player.objects.filter(user=obj.user).first()
             if not player:
                 default_type = PlayerType.objects.filter(is_active=True).order_by('priority').first()
@@ -118,7 +133,7 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
             player_status=ClientProfile.PLAYER_STATUS_APPROVED
         )
 
-        # 为每个批准的用户创建 Player 记录（如果不存在）
+        # 为每个批准的用户创建 Player 记录（如果不存在）。真实姓名不写入公开陪玩资料。
         default_type = PlayerType.objects.filter(is_active=True).order_by('priority').first()
         for app in approved_list:
             player = Player.objects.filter(user=app.user).first()
