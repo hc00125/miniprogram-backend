@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 
 class Order(models.Model):
@@ -17,6 +18,13 @@ class Order(models.Model):
         (STATUS_IN_PROGRESS, STATUS_IN_PROGRESS),
         (STATUS_COMPLETED, STATUS_COMPLETED),
         (STATUS_CANCELLED, STATUS_CANCELLED),
+    ]
+
+    ORDER_TYPE_NORMAL = 'normal'
+    ORDER_TYPE_RENEWAL = 'renewal'
+    ORDER_TYPE_CHOICES = [
+        (ORDER_TYPE_NORMAL, '普通订单'),
+        (ORDER_TYPE_RENEWAL, '续单'),
     ]
 
     order_no = models.CharField(max_length=20, unique=True, db_index=True)
@@ -58,11 +66,35 @@ class Order(models.Model):
     kook_room_updated_at = models.DateTimeField(blank=True, null=True, verbose_name='KOOK房间号更新时间')
     kook_room_updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name='updated_kook_rooms', verbose_name='KOOK房间号填写人')
 
+    order_type = models.CharField(
+        max_length=20,
+        choices=ORDER_TYPE_CHOICES,
+        default=ORDER_TYPE_NORMAL,
+        db_index=True,
+        verbose_name='订单类型',
+    )
+    parent_order = models.ForeignKey(
+        'self',
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name='renewal_orders',
+        verbose_name='原订单',
+    )
+    renewal_index = models.PositiveIntegerField(default=0, verbose_name='续单序号')
+
     class Meta:
         db_table = 'orders'
         verbose_name = '订单'
         verbose_name_plural = '订单列表'
         ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['parent_order', 'renewal_index'],
+                condition=Q(parent_order__isnull=False),
+                name='uniq_order_renewal_index',
+            ),
+        ]
 
     def __str__(self):
         return self.order_no
