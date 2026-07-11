@@ -88,7 +88,6 @@ def normalize_order_items(validated_data):
             spec = PackageSpec.objects.filter(id=spec_id, package=package, is_active=True).first()
             if not spec:
                 raise ValidationError({'detail': f'{package.name} 的规格不存在或已下架'})
-
         quantity = normalize_quantity(item.get('quantity'))
         unit_price = money(spec.price if spec else package.base_price)
         amount = money(unit_price * quantity)
@@ -114,11 +113,15 @@ def create_order(validated_data, user=None):
     package = first_item['package']
     spec = first_item['spec']
 
-    # 检查该老板是否有未完成的订单
-    active_statuses = [Order.STATUS_WAITING, Order.STATUS_IN_PROGRESS, Order.STATUS_PENDING_PAYMENT]
+    active_statuses = [
+        Order.STATUS_WAITING,
+        Order.STATUS_PENDING_PAYMENT,
+        Order.STATUS_READY_TO_START,
+        Order.STATUS_IN_PROGRESS,
+    ]
     has_active = Order.objects.filter(
         boss_wechat=validated_data['boss_wechat'],
-        status__in=active_statuses
+        status__in=active_statuses,
     ).exists()
     if has_active:
         raise ValidationError({'detail': '您有未完成的订单，请先完成后再下单'})
@@ -226,7 +229,12 @@ def create_order(validated_data, user=None):
             sort_order=item['sort_order'],
         )
 
-    OrderStatusLog.objects.create(order=order, to_status=order.status, operator=order.boss_user, reason='创建订单')
+    OrderStatusLog.objects.create(
+        order=order,
+        to_status=order.status,
+        operator=order.boss_user,
+        reason='创建订单并自动派单到抢单大厅',
+    )
     return order
 
 
@@ -292,10 +300,15 @@ def grab_order(order_no, player, operator=None):
 
     if order.order_players.count() >= order.required_players:
         old_status = order.status
-        order.status = Order.STATUS_IN_PROGRESS
-        order.start_time = timezone.now()
-        order.save(update_fields=['status', 'start_time'])
-        OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=operator, reason='接单满员')
+        order.status = Order.STATUS_PENDING_PAYMENT
+        order.save(update_fields=['status'])
+        OrderStatusLog.objects.create(
+            order=order,
+            from_status=old_status,
+            to_status=order.status,
+            operator=operator,
+            reason='接单人数已满，等待老板付款',
+        )
     return order
 
 
@@ -304,14 +317,38 @@ def ensure_order_player(order, player):
         raise ValidationError({'detail': '您不是这个订单的打手'})
 
 
-def start_timer(order, player):
+@transaction.atomic
+def start_timer(order, player, operator=None):
     ensure_order_player(order, player)
-    if order.status != Order.STATUS_IN_PROGRESS:
-        raise ValidationError({'detail': '订单状态不允许开始计时'})
+    order = Order.objects.select_for_update().get(pk=order.pk)
+    if order.status != Order.STATUS_READY_TO_START:
+        raise ValidationError({'detail': '订单尚未付款或已开始，当前状态不能开打'})
+    if not order.paid:
+        raise ValidationError({'detail': '老板尚未完成付款'})
     if order.timer_started_at:
         raise ValidationError({'detail': '计时已经开始了'})
-    order.timer_started_at = timezone.now()
-    order.save(update_fields=['timer_started_at'])
+
+    old_status = order.status
+    now = timezone.now()
+    order.status = Order.STATUS_IN_PROGRESS
+    order.start_time = now
+    order.timer_started_at = now
+    order.end_time = None
+    order.duration_minutes = None
+    order.paused_duration = 0
+    order.is_paused = False
+    order.last_paused_at = None
+    order.save(update_fields=[
+        'status', 'start_time', 'timer_started_at', 'end_time', 'duration_minutes',
+        'paused_duration', 'is_paused', 'last_paused_at',
+    ])
+    OrderStatusLog.objects.create(
+        order=order,
+        from_status=old_status,
+        to_status=order.status,
+        operator=operator,
+        reason='陪玩确认开打并开始计时',
+    )
     return order
 
 
@@ -340,8 +377,10 @@ def resume_order(order):
     return order
 
 
+@transaction.atomic
 def complete_order(order, player, operator=None):
     ensure_order_player(order, player)
+    order = Order.objects.select_for_update().get(pk=order.pk)
     if order.status != Order.STATUS_IN_PROGRESS:
         raise ValidationError({'detail': '订单状态不允许完成'})
     op = order.order_players.get(player=player)
@@ -352,7 +391,7 @@ def complete_order(order, player, operator=None):
     if all_completed:
         old_status = order.status
         now = timezone.now()
-        order.status = Order.STATUS_PENDING_PAYMENT
+        order.status = Order.STATUS_COMPLETED
         order.end_time = now
         if order.is_paused and order.last_paused_at:
             paused_seconds = int((now - order.last_paused_at).total_seconds())
@@ -363,27 +402,25 @@ def complete_order(order, player, operator=None):
             total_seconds = int((now - order.timer_started_at).total_seconds())
             effective_seconds = max(0, total_seconds - (order.paused_duration or 0))
             order.duration_minutes = max(1, ceil_div(effective_seconds, 60))
-            booked_seconds = booked_seconds_from_hours(order.booked_hours or 1)
-            extra_seconds = effective_seconds - booked_seconds
-            base_amount = money(order.total_price_per_hour or 0)
-            if extra_seconds > 29 * 60:
-                extra_half_hours = ceil_div(extra_seconds - 29 * 60, 30 * 60)
-                order.total_amount = money(base_amount + Decimal(extra_half_hours) * base_amount * Decimal('0.5'))
-            else:
-                order.total_amount = money(base_amount)
         elif order.start_time:
             order.duration_minutes = max(1, ceil_div(int((now - order.start_time).total_seconds()), 60))
-            order.total_amount = order.total_amount or order.total_price_per_hour
-        else:
-            order.total_amount = order.total_amount or order.total_price_per_hour
-        order.save()
-        OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=operator, reason='服务完成')
+        order.save(update_fields=[
+            'status', 'end_time', 'duration_minutes', 'paused_duration',
+            'is_paused', 'last_paused_at',
+        ])
+        OrderStatusLog.objects.create(
+            order=order,
+            from_status=old_status,
+            to_status=order.status,
+            operator=operator,
+            reason='所有陪玩已完成服务',
+        )
     return order
 
 
 def cancel_order(order, reason=None, operator=None):
-    if order.status not in {Order.STATUS_WAITING, Order.STATUS_IN_PROGRESS}:
-        raise ValidationError({'detail': '当前状态无法取消'})
+    if order.status not in {Order.STATUS_WAITING, Order.STATUS_PENDING_PAYMENT}:
+        raise ValidationError({'detail': '已付款或已开打订单请联系管理员处理退款，不能直接取消'})
     old_status = order.status
     order.status = Order.STATUS_CANCELLED
     order.canceled_at = timezone.now()
