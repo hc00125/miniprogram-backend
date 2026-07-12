@@ -145,7 +145,7 @@ class PlayerEarning(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['order', 'player'], name='uniq_order_player_earning'),
             models.CheckConstraint(
-                condition=models.Q(gross_amount__gte=ZERO)
+                check=models.Q(gross_amount__gte=ZERO)
                 & models.Q(commission_amount__gte=ZERO)
                 & models.Q(net_amount__gte=ZERO)
                 & models.Q(available_amount__gte=ZERO)
