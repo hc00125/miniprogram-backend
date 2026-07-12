@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'apps.players',
     'apps.orders',
     'apps.payments',
+    'apps.earnings',
     'apps.chat',
     'apps.admin_api',
 ]
@@ -93,6 +94,8 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
             ],
         },
     }
@@ -104,7 +107,8 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
 if DATABASE_URL:
-    from urllib.parse import urlparse, unquote
+    from urllib.parse import unquote, urlparse
+
     u = urlparse(DATABASE_URL)
     engine_map = {
         'postgres': 'django.db.backends.postgresql',
