@@ -39,6 +39,15 @@ class OrderRatingStatusTests(TestCase):
         force_authenticate(request, user=user)
         return order_ratings(request, self.order.order_no)
 
+    def post_response(self, user, player, rating=5, comment='很好'):
+        request = self.factory.post(
+            '/api/boss/order/RATINGSTATUS001/ratings',
+            {'player_id': player.id, 'rating': rating, 'comment': comment},
+            format='json',
+        )
+        force_authenticate(request, user=user)
+        return order_ratings(request, self.order.order_no)
+
     def test_owner_sees_existing_and_remaining_ratings(self):
         Rating.objects.create(order=self.order, player=self.players[0], rating=5, comment='很好')
 
@@ -60,8 +69,23 @@ class OrderRatingStatusTests(TestCase):
         self.assertTrue(response.data['all_rated'])
         self.assertEqual(response.data['remaining_player_ids'], [])
 
+    def test_post_creates_one_rating_and_duplicate_is_rejected(self):
+        first = self.post_response(self.owner, self.players[0], rating=4, comment='不错')
+        second = self.post_response(self.owner, self.players[0], rating=1, comment='重复提交')
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(Rating.objects.filter(order=self.order, player=self.players[0]).count(), 1)
+        saved = Rating.objects.get(order=self.order, player=self.players[0])
+        self.assertEqual(saved.rating, 4)
+        self.assertEqual(saved.comment, '不错')
+
     def test_other_user_cannot_read_rating_status(self):
         response = self.get_response(self.other)
+        self.assertEqual(response.status_code, 403)
+
+    def test_other_user_cannot_submit_rating(self):
+        response = self.post_response(self.other, self.players[0])
         self.assertEqual(response.status_code, 403)
 
     def test_admin_can_read_rating_status(self):
