@@ -19,6 +19,7 @@ urlpatterns = [
     path('api/client/', include('apps.accounts.urls')),
     path('api/boss/', include('apps.orders.boss_urls')),
     path('api/player/', include('apps.players.urls')),
+    path('api/player/earnings/', include('apps.earnings.urls')),
     path('api/pay/', include('apps.payments.urls')),
     path('api/chat/', include('apps.chat.urls')),
     path('api/admin/', include('apps.admin_api.urls')),
