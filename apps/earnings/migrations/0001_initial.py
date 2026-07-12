@@ -170,7 +170,15 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='playerearning',
-            constraint=models.CheckConstraint(condition=models.Q(('available_amount__gte', decimal.Decimal('0.00')), ('commission_amount__gte', decimal.Decimal('0.00')), ('gross_amount__gte', decimal.Decimal('0.00')), ('net_amount__gte', decimal.Decimal('0.00')), ('withdrawing_amount__gte', decimal.Decimal('0.00')), ('withdrawn_amount__gte', decimal.Decimal('0.00'))), name='earning_amounts_non_negative'),
+            constraint=models.CheckConstraint(
+                check=models.Q(gross_amount__gte=decimal.Decimal('0.00'))
+                & models.Q(commission_amount__gte=decimal.Decimal('0.00'))
+                & models.Q(net_amount__gte=decimal.Decimal('0.00'))
+                & models.Q(available_amount__gte=decimal.Decimal('0.00'))
+                & models.Q(withdrawing_amount__gte=decimal.Decimal('0.00'))
+                & models.Q(withdrawn_amount__gte=decimal.Decimal('0.00')),
+                name='earning_amounts_non_negative',
+            ),
         ),
         migrations.AddConstraint(
             model_name='withdrawalallocation',
