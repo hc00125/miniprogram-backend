@@ -8,9 +8,12 @@ from .settlements import create_order_earnings
 
 @receiver(post_save, sender=Order)
 def create_earnings_after_order_completion(sender, instance, **kwargs):
-    if (
+    if not (
         instance.order_type == Order.ORDER_TYPE_NORMAL
         and instance.status == Order.STATUS_COMPLETED
         and instance.paid
     ):
-        create_order_earnings(instance, completed_at=instance.end_time)
+        return
+    if not instance.order_players.exists():
+        return
+    create_order_earnings(instance, completed_at=instance.end_time)
