@@ -220,7 +220,8 @@ class BossOrderListSerializer(RenewalFieldsMixin):
         fields = [
             'order_no', 'package_name', 'item_count', 'status', 'total_price_per_hour',
             'total_amount', 'paid', 'created_at', 'kook_room_number', 'order_type',
-            'renewal_count', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew',
+            'renewal_count', 'renewal_booked_hours', 'renewal_paid_amount', 'total_booked_hours',
+            'pending_renewal_order_no', 'can_renew',
         ]
 
     def get_package_name(self, obj):
