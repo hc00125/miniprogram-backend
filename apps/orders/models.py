@@ -1,6 +1,9 @@
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 
 class Order(models.Model):
@@ -126,18 +129,57 @@ class OrderItem(models.Model):
 
 
 class OrderPlayer(models.Model):
+    ROOM_ENTRY_PENDING = 'pending'
+    ROOM_ENTRY_CONFIRMED = 'confirmed'
+    ROOM_ENTRY_LATE_CONFIRMED = 'late_confirmed'
+    ROOM_ENTRY_OVERDUE = 'overdue'
+    ROOM_ENTRY_WAIVED = 'waived'
+    ROOM_ENTRY_STATUS_CHOICES = [
+        (ROOM_ENTRY_PENDING, '等待进入'),
+        (ROOM_ENTRY_CONFIRMED, '按时进入'),
+        (ROOM_ENTRY_LATE_CONFIRMED, '超时后进入'),
+        (ROOM_ENTRY_OVERDUE, '已超时待核实'),
+        (ROOM_ENTRY_WAIVED, '管理员免除'),
+    ]
+
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='order_players')
     player = models.ForeignKey('players.Player', on_delete=models.CASCADE, related_name='order_players')
     is_designated = models.BooleanField(default=False)
     designated_type_id = models.IntegerField(blank=True, null=True)
     grab_time = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, default='已接单')
+    room_join_deadline = models.DateTimeField(blank=True, null=True, db_index=True, verbose_name='进入房间截止时间')
+    room_join_confirmed_at = models.DateTimeField(blank=True, null=True, verbose_name='确认进入房间时间')
+    room_join_status = models.CharField(
+        max_length=20,
+        choices=ROOM_ENTRY_STATUS_CHOICES,
+        default=ROOM_ENTRY_PENDING,
+        db_index=True,
+        verbose_name='进入房间状态',
+    )
 
     class Meta:
         db_table = 'order_players'
         verbose_name = '订单陪玩'
         verbose_name_plural = '订单陪玩列表'
         unique_together = [('order', 'player')]
+
+    def save(self, *args, **kwargs):
+        if not self.pk and not self.room_join_deadline:
+            self.room_join_deadline = timezone.now() + timedelta(minutes=10)
+        super().save(*args, **kwargs)
+
+    def refresh_room_join_status(self, now=None, save=True):
+        now = now or timezone.now()
+        if (
+            self.room_join_status == self.ROOM_ENTRY_PENDING
+            and self.room_join_deadline
+            and self.room_join_deadline <= now
+        ):
+            self.room_join_status = self.ROOM_ENTRY_OVERDUE
+            if save:
+                self.save(update_fields=['room_join_status'])
+        return self.room_join_status
 
 
 class OrderDesignation(models.Model):
