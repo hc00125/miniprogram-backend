@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from apps.catalog.models import PlayerType
 
-from .models import Player, PlayerApplication
+from .models import Player, PlayerApplication, PlayerProfileUpdateRequest
 
 
 class PlayerSerializer(serializers.ModelSerializer):
@@ -17,8 +17,37 @@ class PlayerSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'type_id', 'type_name', 'contact_wechat', 'bio',
             'audio_intro_url', 'audio_intro_title',
-            'is_online', 'total_orders', 'avg_rating', 'rating_count'
+            'is_online', 'total_orders', 'avg_rating', 'rating_count',
+            'can_accept_orders', 'can_be_designated', 'is_publicly_visible', 'can_withdraw',
         ]
+
+
+class PlayerProfileUpdateRequestSerializer(serializers.ModelSerializer):
+    status_text = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = PlayerProfileUpdateRequest
+        fields = [
+            'id', 'bio', 'audio_intro_url', 'audio_intro_title', 'status',
+            'status_text', 'reject_reason', 'submitted_at', 'reviewed_at',
+        ]
+        read_only_fields = [
+            'id', 'status', 'status_text', 'reject_reason', 'submitted_at', 'reviewed_at',
+        ]
+
+
+class PlayerProfileUpdateCreateSerializer(serializers.Serializer):
+    bio = serializers.CharField(required=False, allow_blank=True, max_length=500)
+    audio_intro_url = serializers.CharField(required=False, allow_blank=True, max_length=500)
+    audio_intro_title = serializers.CharField(required=False, allow_blank=True, max_length=100)
+
+    def validate(self, attrs):
+        attrs['bio'] = (attrs.get('bio') or '').strip()
+        attrs['audio_intro_url'] = (attrs.get('audio_intro_url') or '').strip()
+        attrs['audio_intro_title'] = (attrs.get('audio_intro_title') or '').strip()
+        if attrs['audio_intro_url'] and not attrs['audio_intro_title']:
+            attrs['audio_intro_title'] = '音频自我介绍'
+        return attrs
 
 
 class PlayerLoginSerializer(serializers.Serializer):
