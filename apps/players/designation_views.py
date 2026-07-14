@@ -40,7 +40,11 @@ def invitations(request):
             'designation_status': designation.status,
             'designation_status_text': designation.get_status_display(),
             'designation_expires_at': designation.expires_at,
-            'can_accept_designation': True,
+            'can_accept_designation': bool(player.can_accept_orders and player.can_be_designated),
+            'permission_block_reason': (
+                '' if player.can_accept_orders and player.can_be_designated
+                else '管理员已暂停您的接单或被指定权限'
+            ),
             'can_grab': False,
             'is_designated': True,
         })
@@ -51,10 +55,15 @@ def invitations(request):
 @api_view(['POST'])
 @permission_classes([IsApprovedPlayer])
 def accept(request, order_no):
+    player = current_player(request.user)
+    if not player.can_accept_orders:
+        return Response({'detail': '管理员已暂停您的接单权限'}, status=status.HTTP_403_FORBIDDEN)
+    if not player.can_be_designated:
+        return Response({'detail': '管理员已暂停您的被指定权限'}, status=status.HTTP_403_FORBIDDEN)
     try:
         order = accept_designation(
             order_no,
-            current_player(request.user),
+            player,
             django_operator(request.user),
         )
     except Order.DoesNotExist:
