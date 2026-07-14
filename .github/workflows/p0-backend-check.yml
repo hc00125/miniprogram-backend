@@ -1,0 +1,30 @@
+name: P0 backend checks
+
+on:
+  push:
+    branches:
+      - feat/wechat-pay-v3
+  workflow_dispatch:
+
+jobs:
+  django-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DJANGO_DEBUG: "true"
+      ENABLE_MOCK_PAYMENT: "true"
+      WECHAT_VIRTUALPAY_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Check migrations
+        run: python manage.py makemigrations --check --dry-run
+      - name: Run Django checks
+        run: python manage.py check
+      - name: Run P0 regression tests
+        run: python manage.py test apps.earnings apps.orders.test_p0_pricing
