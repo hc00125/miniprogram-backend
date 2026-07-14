@@ -8,7 +8,15 @@ from rest_framework.exceptions import ValidationError
 from apps.catalog.models import Addon, Package, PackageSpec, PlayerType
 from apps.common.money import money
 from apps.orders.models import Order, OrderItem, OrderPlayer, OrderStatusLog
-from apps.players.models import Player
+
+from .designations import (
+    create_designations,
+    expire_due_designations,
+    finalize_lineup_if_full,
+    pending_designation,
+    pending_designation_count,
+    validate_designated_players,
+)
 
 
 def generate_order_no():
@@ -130,6 +138,12 @@ def create_order(validated_data, user=None):
     if required_players <= 0:
         raise ValidationError({'detail': '人数必须大于 0'})
 
+    designated_player_objects = validate_designated_players(
+        validated_data.get('designated_players') or [],
+        required_players,
+    )
+    designated_player_ids = [player.id for player in designated_player_objects]
+
     addon_details = validated_data.get('addon_details') or []
     addon_id = validated_data.get('addon_id')
     first_addon = None
@@ -153,16 +167,6 @@ def create_order(validated_data, user=None):
             raise ValidationError({'detail': '附加项不存在'})
         addon_price = decimal_value(first_addon.price_per_player) * required_players
 
-    designated_players = validated_data.get('designated_players') or []
-    if len(designated_players) > required_players:
-        raise ValidationError({'detail': '指定打手人数不能超过下单人数'})
-
-    player_type_extra = Decimal('0')
-    for player_id in designated_players:
-        player = Player.objects.select_related('player_type').filter(id=player_id).first()
-        if player:
-            player_type_extra += decimal_value(player.player_type.price_extra or 0)
-
     designated_types = []
     total_designated_count = 0
     for item in normalized_addons:
@@ -172,21 +176,12 @@ def create_order(validated_data, user=None):
             designated_types.append({'type_id': player_type.id, 'count': item['count']})
             total_designated_count += item['count']
 
-    if total_designated_count > required_players:
-        raise ValidationError({'detail': '特殊陪数量不能超过下单人数'})
-
-    for player_id in designated_players:
-        player = Player.objects.filter(id=player_id).first()
-        if not player:
-            continue
-        existing = next((item for item in designated_types if item['type_id'] == player.player_type_id), None)
-        if existing:
-            existing['count'] += 1
-        else:
-            designated_types.append({'type_id': player.player_type_id, 'count': 1})
+    if total_designated_count + len(designated_player_ids) > required_players:
+        raise ValidationError({'detail': '指定陪玩和特殊陪名额总数不能超过下单人数'})
 
     subtotal = sum((item['amount'] for item in order_items), Decimal('0'))
-    total_price = money(subtotal + addon_price + player_type_extra)
+    # 第一版具体指定陪玩不额外加价，保持固定规格金额，兼容微信虚拟支付。
+    total_price = money(subtotal + addon_price)
     booked_hours = validated_data.get('booked_hours') or 1.0
     display_name = package.name if len(order_items) == 1 else f'{package.name}等{len(order_items)}件商品'
 
@@ -204,7 +199,7 @@ def create_order(validated_data, user=None):
         addon_details=normalized_addons or None,
         required_players=required_players,
         designated_types=designated_types or None,
-        designated_players=designated_players or None,
+        designated_players=designated_player_ids or None,
         boss_note=build_order_note(validated_data.get('boss_note'), order_items),
         total_price_per_hour=total_price,
         total_amount=total_price,
@@ -230,87 +225,85 @@ def create_order(validated_data, user=None):
             sort_order=item['sort_order'],
         )
 
+    create_designations(order, designated_player_objects)
+    if designated_player_objects:
+        names = '、'.join(player.name for player in designated_player_objects)
+        reason = f'创建订单并向 {names} 发出指定邀请，其余名额进入抢单大厅'
+    else:
+        reason = '创建订单并自动派单到抢单大厅'
     OrderStatusLog.objects.create(
         order=order,
         to_status=order.status,
         operator=order.boss_user,
-        reason='创建订单并自动派单到抢单大厅',
+        reason=reason,
     )
     return order
 
 
+def remaining_type_slots(order):
+    remaining = []
+    for item in order.designated_types or []:
+        type_id = item.get('type_id')
+        count = int(item.get('count') or 0)
+        filled = order.order_players.filter(designated_type_id=type_id).count()
+        if count > filled:
+            remaining.append({'type_id': type_id, 'count': count - filled})
+    return remaining
+
+
 def can_player_grab_order(order, player):
+    expire_due_designations(order=order)
     if order.order_players.filter(player=player).exists():
         return False
+    if pending_designation(order, player):
+        return False
+
     current_players = order.order_players.count()
     if current_players >= order.required_players:
         return False
-    if order.designated_players and player.id in order.designated_players:
-        return True
-    if not order.designated_types:
-        return True
 
-    total_designated_slots = sum(item.get('count', 0) for item in order.designated_types)
-    open_slots = order.required_players - total_designated_slots
-    grabbed_designated = order.order_players.exclude(designated_type_id__isnull=True).count()
-    grabbed_open = current_players - grabbed_designated
-    remaining_open = max(0, open_slots - grabbed_open)
+    pending_concrete = pending_designation_count(order)
+    type_slots = remaining_type_slots(order)
+    remaining_type_count = sum(item['count'] for item in type_slots)
+    public_slots = max(0, order.required_players - current_players - pending_concrete - remaining_type_count)
 
-    for item in order.designated_types:
-        player_type = PlayerType.objects.filter(id=item.get('type_id')).first()
-        if not player_type or player.player_type.priority < player_type.priority:
-            continue
-        filled = order.order_players.filter(designated_type_id=item.get('type_id')).count()
-        if filled < item.get('count', 0):
+    for item in type_slots:
+        player_type = PlayerType.objects.filter(id=item['type_id']).first()
+        if player_type and player.player_type.priority >= player_type.priority:
             return True
-    return remaining_open > 0
+    return public_slots > 0
 
 
 def assign_designated_slot(order, player):
-    is_designated = bool(order.designated_players and player.id in order.designated_players)
     designated_type_id = None
-    if order.designated_types:
-        for item in sorted(order.designated_types, key=lambda value: value.get('type_id', 0), reverse=True):
-            player_type = PlayerType.objects.filter(id=item.get('type_id')).first()
-            if not player_type or player.player_type.priority < player_type.priority:
-                continue
-            filled = order.order_players.filter(designated_type_id=item.get('type_id')).count()
-            if filled < item.get('count', 0):
-                is_designated = True
-                designated_type_id = item.get('type_id')
-                break
-    return is_designated, designated_type_id
+    for item in sorted(remaining_type_slots(order), key=lambda value: value.get('type_id', 0), reverse=True):
+        player_type = PlayerType.objects.filter(id=item.get('type_id')).first()
+        if player_type and player.player_type.priority >= player_type.priority:
+            designated_type_id = item.get('type_id')
+            break
+    return bool(designated_type_id), designated_type_id
 
 
 @transaction.atomic
 def grab_order(order_no, player, operator=None):
     order = Order.objects.select_for_update(of=('self',)).select_related('package', 'addon').get(order_no=order_no)
+    expire_due_designations(order=order)
     if order.status != Order.STATUS_WAITING or order.order_type != Order.ORDER_TYPE_NORMAL:
         raise ValidationError({'detail': '订单已被抢或状态已变更'})
     if order.order_players.filter(player=player).exists():
         raise ValidationError({'detail': '您已经接了这个订单'})
+    if pending_designation(order, player):
+        raise ValidationError({'detail': '这是老板给您的指定邀请，请点击“接受指定”'})
     if order.order_players.count() >= order.required_players:
         raise ValidationError({'detail': '订单已满员'})
     if not can_player_grab_order(order, player):
-        raise ValidationError({'detail': '没有您可以抢的位置'})
+        raise ValidationError({'detail': '没有您可以抢的公开位置'})
 
     is_designated, designated_type_id = assign_designated_slot(order, player)
     OrderPlayer.objects.create(order=order, player=player, is_designated=is_designated, designated_type_id=designated_type_id)
     player.total_orders = (player.total_orders or 0) + 1
     player.save(update_fields=['total_orders'])
-
-    if order.order_players.count() >= order.required_players:
-        old_status = order.status
-        order.status = Order.STATUS_PENDING_PAYMENT
-        order.save(update_fields=['status'])
-        OrderStatusLog.objects.create(
-            order=order,
-            from_status=old_status,
-            to_status=order.status,
-            operator=operator,
-            reason='接单人数已满，等待老板付款',
-        )
-    return order
+    return finalize_lineup_if_full(order, operator)
 
 
 def ensure_order_player(order, player):
@@ -434,5 +427,6 @@ def cancel_order(order, reason=None, operator=None):
     order.canceled_at = timezone.now()
     order.cancel_reason = reason
     order.save(update_fields=['status', 'canceled_at', 'cancel_reason'])
+    order.designations.filter(status='pending').update(status='cancelled', responded_at=timezone.now())
     OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=operator, reason=reason or '取消订单')
     return order
