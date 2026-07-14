@@ -26,6 +26,10 @@ def create_withdrawal(player, amount, payment_method, account_name, account_no, 
         raise ValidationError({'account_no': '请填写收款账号'})
 
     wallet = get_or_lock_wallet(player)
+    if wallet.debt_balance > ZERO:
+        raise ValidationError({
+            'detail': f'当前有 {wallet.debt_balance} 鱼干待抵扣，请等待后续工资抵扣或联系管理员处理后再提现'
+        })
     if wallet.available_balance < amount:
         raise ValidationError({'amount': '可提现鱼干不足'})
 
