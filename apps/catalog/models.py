@@ -127,6 +127,15 @@ class PackageSpec(models.Model):
     original_price = models.FloatField(blank=True, null=True, verbose_name='规格划线价')
     description = models.CharField(max_length=300, blank=True, null=True, verbose_name='规格说明')
     guarantee_amount = models.CharField(max_length=50, blank=True, null=True, verbose_name='保底金额')
+    required_player_type = models.ForeignKey(
+        'PlayerType',
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name='required_package_specs',
+        verbose_name='指定陪玩类型',
+        help_text='指定具体陪玩时必须与该类型完全一致；留空表示该规格不限制陪玩类型。',
+    )
     sort_order = models.IntegerField(default=0, verbose_name='排序')
     is_active = models.BooleanField(default=True, verbose_name='是否启用')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
