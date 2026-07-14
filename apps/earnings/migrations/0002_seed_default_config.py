@@ -8,7 +8,7 @@ def create_default_config(apps, schema_editor):
     EarningsConfig.objects.get_or_create(
         key='default',
         defaults={
-            'default_commission_rate': Decimal('15.00'),
+            'default_commission_rate': Decimal('16.00'),
             'review_days': 8,
             'min_withdrawal_amount': Decimal('1.00'),
         },

@@ -13,7 +13,7 @@ class EarningsConfig(models.Model):
     default_commission_rate = models.DecimalField(
         max_digits=5,
         decimal_places=2,
-        default=Decimal('15.00'),
+        default=Decimal('16.00'),
         validators=[MinValueValidator(ZERO), MaxValueValidator(Decimal('100.00'))],
         verbose_name='默认抽成比例(%)',
     )

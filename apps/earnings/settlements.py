@@ -1,6 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -67,7 +68,9 @@ def create_order_earnings(order, completed_at=None):
 
     config = get_earnings_config()
     rate = get_commission_rate(order)
-    gross_amounts = split_money(total_revenue, len(order_players))
+    exchange_multiplier = Decimal(str(settings.FISH_CRACKER_EXCHANGE_RATE))
+    total_yugan = qmoney(total_revenue * exchange_multiplier)
+    gross_amounts = split_money(total_yugan, len(order_players))
     completed_at = completed_at or order.end_time or timezone.now()
     review_until = completed_at + timedelta(days=config.review_days)
     existing = {
@@ -194,7 +197,9 @@ def recalculate_pending_order_earnings(order, operator=None):
 
     total_revenue = get_order_paid_revenue(order)
     rate = get_commission_rate(order)
-    gross_amounts = split_money(total_revenue, len(earnings))
+    exchange_multiplier = Decimal(str(settings.FISH_CRACKER_EXCHANGE_RATE))
+    total_yugan = qmoney(total_revenue * exchange_multiplier)
+    gross_amounts = split_money(total_yugan, len(earnings))
 
     for index, earning in enumerate(earnings):
         gross = qmoney(gross_amounts[index])
