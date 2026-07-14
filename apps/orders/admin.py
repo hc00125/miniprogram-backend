@@ -1,18 +1,39 @@
 from django.contrib import admin
 
-from .models import CartItem, Order, OrderEditLog, OrderItem, OrderPlayer, OrderStatusLog, Rating
+from .models import (
+    CartItem,
+    Order,
+    OrderDesignation,
+    OrderEditLog,
+    OrderItem,
+    OrderPlayer,
+    OrderStatusLog,
+    Rating,
+)
 
 
 class OrderItemInline(admin.TabularInline):
     model = OrderItem
     extra = 0
-    readonly_fields = ['package', 'spec', 'package_name', 'spec_name', 'spec_display_name', 'unit_price', 'quantity', 'amount', 'image_url', 'description', 'sort_order']
+    readonly_fields = [
+        'package', 'spec', 'package_name', 'spec_name', 'spec_display_name',
+        'unit_price', 'quantity', 'amount', 'image_url', 'description', 'sort_order',
+    ]
     can_delete = False
 
 
 class OrderPlayerInline(admin.TabularInline):
     model = OrderPlayer
     extra = 0
+
+
+class OrderDesignationInline(admin.TabularInline):
+    model = OrderDesignation
+    extra = 0
+    can_delete = False
+    readonly_fields = [
+        'player', 'status', 'extra_amount', 'invited_at', 'responded_at', 'expires_at',
+    ]
 
 
 @admin.register(Order)
@@ -25,6 +46,7 @@ class OrderAdmin(admin.ModelAdmin):
     search_fields = [
         'order_no', 'parent_order__order_no', 'boss_wechat', 'game_id', 'package_name_snapshot',
         'items__package_name', 'items__spec_name', 'kook_room_number',
+        'designations__player__name',
     ]
     readonly_fields = ['kook_room_updated_at', 'kook_room_updated_by']
     fieldsets = (
@@ -45,7 +67,26 @@ class OrderAdmin(admin.ModelAdmin):
             'classes': ('collapse',),
         }),
     )
-    inlines = [OrderItemInline, OrderPlayerInline]
+    inlines = [OrderItemInline, OrderPlayerInline, OrderDesignationInline]
+
+
+@admin.register(OrderDesignation)
+class OrderDesignationAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'order', 'player', 'status', 'extra_amount', 'invited_at',
+        'expires_at', 'responded_at',
+    ]
+    list_filter = ['status', 'invited_at', 'expires_at']
+    search_fields = ['order__order_no', 'player__name']
+    readonly_fields = [
+        'order', 'player', 'status', 'extra_amount', 'invited_at', 'responded_at', 'expires_at',
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(OrderItem)
