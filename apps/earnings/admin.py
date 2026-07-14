@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin, messages
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
@@ -7,11 +8,13 @@ from .models import (
     OrderCommissionOverride,
     PlayerEarning,
     PlayerWallet,
+    WalletAdjustment,
     WalletLedger,
     Withdrawal,
     WithdrawalAllocation,
 )
 from .services import (
+    apply_wallet_adjustment,
     approve_withdrawal,
     freeze_pending_earning,
     mark_withdrawal_paid,
@@ -52,11 +55,14 @@ class OrderCommissionOverrideAdmin(admin.ModelAdmin):
 
 @admin.register(PlayerWallet)
 class PlayerWalletAdmin(admin.ModelAdmin):
-    list_display = ['player', 'pending_balance', 'available_balance', 'withdrawing_balance', 'withdrawn_total', 'updated_at']
+    list_display = [
+        'player', 'pending_balance', 'available_balance', 'withdrawing_balance',
+        'withdrawn_total', 'debt_balance', 'updated_at',
+    ]
     search_fields = ['player__name', 'player__user__username']
     readonly_fields = [
         'player', 'pending_balance', 'available_balance', 'withdrawing_balance',
-        'withdrawn_total', 'created_at', 'updated_at',
+        'withdrawn_total', 'debt_balance', 'created_at', 'updated_at',
     ]
 
     def has_add_permission(self, request):
@@ -70,15 +76,16 @@ class PlayerWalletAdmin(admin.ModelAdmin):
 class PlayerEarningAdmin(admin.ModelAdmin):
     list_display = [
         'id', 'order', 'player', 'gross_amount', 'commission_rate', 'commission_amount',
-        'net_amount', 'status', 'review_until', 'available_amount', 'withdrawing_amount',
-        'withdrawn_amount',
+        'net_amount', 'reversed_amount', 'debt_offset_amount', 'status', 'review_until',
+        'available_amount', 'withdrawing_amount', 'withdrawn_amount',
     ]
     list_filter = ['status', 'commission_rate']
     search_fields = ['order__order_no', 'player__name']
     readonly_fields = [
         'order', 'player', 'gross_amount', 'commission_rate', 'commission_amount',
-        'net_amount', 'review_until', 'available_at', 'available_amount',
-        'withdrawing_amount', 'withdrawn_amount', 'created_at', 'updated_at',
+        'net_amount', 'reversed_amount', 'debt_offset_amount', 'review_until',
+        'available_at', 'available_amount', 'withdrawing_amount', 'withdrawn_amount',
+        'created_at', 'updated_at',
     ]
     actions = ['freeze_selected', 'unfreeze_selected']
 
@@ -108,6 +115,63 @@ class PlayerEarningAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class WalletAdjustmentAdminForm(forms.ModelForm):
+    class Meta:
+        model = WalletAdjustment
+        fields = '__all__'
+
+    def clean_adjustment_type(self):
+        value = self.cleaned_data['adjustment_type']
+        if not self.instance.pk and value == WalletAdjustment.TYPE_REFUND_REVERSAL:
+            raise forms.ValidationError('退款工资冲销由退款记录自动生成，不能手动创建。')
+        return value
+
+    def clean_reason(self):
+        value = (self.cleaned_data.get('reason') or '').strip()
+        if not value:
+            raise forms.ValidationError('必须填写奖惩原因。')
+        return value
+
+
+@admin.register(WalletAdjustment)
+class WalletAdjustmentAdmin(admin.ModelAdmin):
+    form = WalletAdjustmentAdminForm
+    list_display = [
+        'id', 'player', 'adjustment_type', 'amount', 'available_delta',
+        'pending_delta', 'debt_delta', 'order', 'created_by', 'applied_at',
+    ]
+    list_filter = ['adjustment_type', 'applied_at', 'created_at']
+    search_fields = ['player__name', 'order__order_no', 'reason', 'reference_id']
+    autocomplete_fields = ['player', 'order']
+    readonly_fields = [
+        'available_delta', 'pending_delta', 'debt_delta', 'reference_type',
+        'reference_id', 'created_by', 'applied_at', 'created_at',
+    ]
+    fields = [
+        'player', 'order', 'adjustment_type', 'amount', 'reason', 'evidence_url',
+        'available_delta', 'pending_delta', 'debt_delta',
+        'reference_type', 'reference_id', 'created_by', 'applied_at', 'created_at',
+    ]
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        if obj and obj.applied_at:
+            fields.extend(['player', 'order', 'adjustment_type', 'amount', 'reason', 'evidence_url'])
+        return fields
+
+    def save_model(self, request, obj, form, change):
+        if change:
+            super().save_model(request, obj, form, change)
+            return
+        with transaction.atomic():
+            obj.created_by = request.user
+            super().save_model(request, obj, form, change)
+            apply_wallet_adjustment(obj, operator=request.user)
 
     def has_delete_permission(self, request, obj=None):
         return False
