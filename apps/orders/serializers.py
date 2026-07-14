@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.utils import timezone
 from rest_framework import serializers
 
 from apps.common.money import money
@@ -67,16 +68,43 @@ class OrderPlayerSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source='player.name')
     type_name = serializers.CharField(source='player.player_type.name')
     avatar_url = serializers.SerializerMethodField()
+    room_join_status = serializers.SerializerMethodField()
+    room_join_status_text = serializers.SerializerMethodField()
+    room_join_remaining_seconds = serializers.SerializerMethodField()
+    can_confirm_room_join = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderPlayer
-        fields = ['id', 'name', 'type_name', 'avatar_url', 'is_designated', 'grab_time', 'status']
+        fields = [
+            'id', 'name', 'type_name', 'avatar_url', 'is_designated', 'grab_time', 'status',
+            'room_join_deadline', 'room_join_confirmed_at', 'room_join_status',
+            'room_join_status_text', 'room_join_remaining_seconds', 'can_confirm_room_join',
+        ]
 
     def get_avatar_url(self, obj):
         try:
             return obj.player.user.client_profile.avatar_url or None
         except AttributeError:
             return None
+
+    def get_room_join_status(self, obj):
+        return obj.refresh_room_join_status()
+
+    def get_room_join_status_text(self, obj):
+        obj.refresh_room_join_status()
+        return obj.get_room_join_status_display()
+
+    def get_room_join_remaining_seconds(self, obj):
+        obj.refresh_room_join_status()
+        if not obj.room_join_deadline or obj.room_join_status != OrderPlayer.ROOM_ENTRY_PENDING:
+            return 0
+        return max(0, int((obj.room_join_deadline - timezone.now()).total_seconds()))
+
+    def get_can_confirm_room_join(self, obj):
+        return bool(
+            obj.order.status not in {Order.STATUS_COMPLETED, Order.STATUS_CANCELLED}
+            and obj.room_join_status in {OrderPlayer.ROOM_ENTRY_PENDING, OrderPlayer.ROOM_ENTRY_OVERDUE}
+        )
 
 
 def order_display_name(obj):
@@ -193,7 +221,10 @@ class BossOrderDetailSerializer(RenewalFieldsMixin):
         return order_display_name(obj)
 
     def get_players(self, obj):
-        return OrderPlayerSerializer(obj.order_players.select_related('player__player_type'), many=True).data
+        return OrderPlayerSerializer(
+            obj.order_players.select_related('order', 'player__player_type', 'player__user__client_profile'),
+            many=True,
+        ).data
 
     def get_renewals(self, obj):
         return [
@@ -275,6 +306,9 @@ class PlayerOrderListSerializer(RenewalFieldsMixin):
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     grab_time = serializers.SerializerMethodField()
     is_designated = serializers.SerializerMethodField()
+    room_join_deadline = serializers.SerializerMethodField()
+    room_join_status = serializers.SerializerMethodField()
+    room_join_status_text = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -283,14 +317,20 @@ class PlayerOrderListSerializer(RenewalFieldsMixin):
             'end_time', 'duration_minutes', 'grab_time', 'is_designated', 'total_amount',
             'total_price_per_hour', 'created_at', 'kook_room_number', 'order_type',
             'renewal_count', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew',
+            'room_join_deadline', 'room_join_status', 'room_join_status_text',
         ]
 
     def get_package_name(self, obj):
         return order_display_name(obj)
 
     def _op(self, obj):
+        cached = getattr(obj, '_current_player_op_cache', None)
+        if cached is not None:
+            return cached
         player = self.context.get('player')
-        return obj.order_players.filter(player=player).first()
+        op = obj.order_players.filter(player=player).first()
+        setattr(obj, '_current_player_op_cache', op)
+        return op
 
     def get_grab_time(self, obj):
         op = self._op(obj)
@@ -299,6 +339,21 @@ class PlayerOrderListSerializer(RenewalFieldsMixin):
     def get_is_designated(self, obj):
         op = self._op(obj)
         return bool(op and op.is_designated)
+
+    def get_room_join_deadline(self, obj):
+        op = self._op(obj)
+        return op.room_join_deadline if op else None
+
+    def get_room_join_status(self, obj):
+        op = self._op(obj)
+        return op.refresh_room_join_status() if op else None
+
+    def get_room_join_status_text(self, obj):
+        op = self._op(obj)
+        if not op:
+            return ''
+        op.refresh_room_join_status()
+        return op.get_room_join_status_display()
 
 
 class PlayerOrderDetailSerializer(BossOrderDetailSerializer):
@@ -324,8 +379,6 @@ class RatingCreateSerializer(serializers.Serializer):
     rating = serializers.IntegerField(min_value=1, max_value=5)
     comment = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
-
-# ─── 购物车 ─────────────────────────────
 
 class CartItemSerializer(serializers.ModelSerializer):
     package_id = serializers.IntegerField(source='package.id')
