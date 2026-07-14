@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import boss_views, rating_views
+from . import boss_views, designation_views, rating_views
 
 urlpatterns = [
     path('packages', boss_views.packages),
@@ -11,6 +11,8 @@ urlpatterns = [
     path('order', boss_views.create_order),
     path('order/<str:order_no>', boss_views.order_detail),
     path('order/<str:order_no>/renew', boss_views.create_renewal),
+    path('order/<str:order_no>/designations', designation_views.designations),
+    path('order/<str:order_no>/designation/<int:designation_id>/release', designation_views.release),
     path('orders/me', boss_views.my_orders),
     path('orders/<str:boss_wechat>', boss_views.boss_orders),
     path('order/<str:order_no>/cancel', boss_views.cancel_order),
@@ -19,7 +21,6 @@ urlpatterns = [
     path('order/<str:order_no>/self-confirm-payment', boss_views.self_confirm_payment),
     path('order/<str:order_no>/rate', boss_views.rate_player),
     path('order/<str:order_no>/ratings', rating_views.order_ratings),
-    # 购物车
     path('cart', boss_views.cart),
     path('cart/clear', boss_views.clear_cart),
     path('cart/<int:item_id>', boss_views.cart_item),
