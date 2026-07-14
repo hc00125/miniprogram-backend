@@ -15,6 +15,7 @@ jobs:
       DJANGO_DEBUG: "true"
       ENABLE_MOCK_PAYMENT: "true"
       WECHAT_VIRTUALPAY_ENABLED: "false"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,10 +23,10 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -q -r requirements.txt
       - name: Check migrations
-        run: python manage.py makemigrations --check --dry-run
+        run: python manage.py makemigrations --check --dry-run --verbosity 3
       - name: Run Django checks
         run: python manage.py check
       - name: Run P0 regression tests
-        run: python manage.py test apps.earnings apps.orders.test_p0_pricing
+        run: python manage.py test apps.earnings apps.orders.test_p0_pricing --verbosity 2
