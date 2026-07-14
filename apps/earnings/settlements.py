@@ -116,19 +116,32 @@ def create_order_earnings(order, completed_at=None):
 def _release_earning_locked(earning, now):
     if earning.status != PlayerEarning.STATUS_PENDING or earning.review_until > now:
         return False
+
     wallet = get_or_lock_wallet(earning.player)
-    amount = qmoney(earning.net_amount)
+    amount = qmoney(earning.net_amount - earning.reversed_amount)
+    if amount <= ZERO:
+        earning.status = PlayerEarning.STATUS_REVERSED
+        earning.available_at = now
+        earning.available_amount = ZERO
+        earning.save(update_fields=['status', 'available_at', 'available_amount', 'updated_at'])
+        return True
     if wallet.pending_balance < amount:
         raise ValidationError({'detail': f'{earning.player.name}审核中余额异常，无法自动解冻'})
 
     wallet.pending_balance = qmoney(wallet.pending_balance - amount)
-    wallet.available_balance = qmoney(wallet.available_balance + amount)
-    wallet.save(update_fields=['pending_balance', 'available_balance', 'updated_at'])
+    debt_offset = min(qmoney(wallet.debt_balance), amount)
+    available_amount = qmoney(amount - debt_offset)
+    wallet.debt_balance = qmoney(wallet.debt_balance - debt_offset)
+    wallet.available_balance = qmoney(wallet.available_balance + available_amount)
+    wallet.save(update_fields=['pending_balance', 'available_balance', 'debt_balance', 'updated_at'])
 
     earning.status = PlayerEarning.STATUS_AVAILABLE
     earning.available_at = now
-    earning.available_amount = amount
-    earning.save(update_fields=['status', 'available_at', 'available_amount', 'updated_at'])
+    earning.available_amount = available_amount
+    earning.debt_offset_amount = qmoney(earning.debt_offset_amount + debt_offset)
+    earning.save(update_fields=[
+        'status', 'available_at', 'available_amount', 'debt_offset_amount', 'updated_at',
+    ])
 
     write_ledger(
         wallet,
@@ -139,15 +152,26 @@ def _release_earning_locked(earning, now):
         reference_id=earning.id,
         note=f'订单 {earning.order.order_no} 工资审核通过，从审核中转出',
     )
-    write_ledger(
-        wallet,
-        WalletLedger.TYPE_EARNING_RELEASED,
-        WalletLedger.BUCKET_AVAILABLE,
-        amount,
-        reference_type='earning',
-        reference_id=earning.id,
-        note=f'订单 {earning.order.order_no} 工资转为可提现',
-    )
+    if debt_offset:
+        write_ledger(
+            wallet,
+            WalletLedger.TYPE_ADMIN_ADJUSTMENT,
+            WalletLedger.BUCKET_DEBT,
+            -debt_offset,
+            reference_type='earning',
+            reference_id=earning.id,
+            note=f'订单 {earning.order.order_no} 工资优先抵扣待抵扣鱼干',
+        )
+    if available_amount:
+        write_ledger(
+            wallet,
+            WalletLedger.TYPE_EARNING_RELEASED,
+            WalletLedger.BUCKET_AVAILABLE,
+            available_amount,
+            reference_type='earning',
+            reference_id=earning.id,
+            note=f'订单 {earning.order.order_no} 工资转为可提现',
+        )
     return True
 
 
@@ -188,12 +212,14 @@ def recalculate_pending_order_earnings(order, operator=None):
         return []
     if any(
         item.status != PlayerEarning.STATUS_PENDING
+        or item.reversed_amount > ZERO
+        or item.debt_offset_amount > ZERO
         or item.available_amount > ZERO
         or item.withdrawing_amount > ZERO
         or item.withdrawn_amount > ZERO
         for item in earnings
     ):
-        raise ValidationError({'detail': '工资已审核或已进入提现流程，不能再修改本单抽成'})
+        raise ValidationError({'detail': '工资已冲销、审核或进入提现流程，不能再修改本单抽成'})
 
     total_revenue = get_order_paid_revenue(order)
     rate = get_commission_rate(order)
@@ -228,7 +254,7 @@ def recalculate_pending_order_earnings(order, operator=None):
         earning.commission_amount = commission
         earning.net_amount = net
         earning.save(update_fields=[
-            'gross_amount', 'commission_rate', 'commission_amount', 'net_amount', 'updated_at'
+            'gross_amount', 'commission_rate', 'commission_amount', 'net_amount', 'updated_at',
         ])
     return earnings
 
