@@ -1,3 +1,8 @@
+from .adjustments import (
+    apply_wallet_adjustment,
+    create_and_apply_adjustment,
+    reverse_refund_earnings,
+)
 from .settlements import (
     create_order_earnings,
     freeze_pending_earning,
@@ -16,7 +21,9 @@ from .withdrawals import (
 )
 
 __all__ = [
+    'apply_wallet_adjustment',
     'approve_withdrawal',
+    'create_and_apply_adjustment',
     'create_order_earnings',
     'create_withdrawal',
     'ensure_wallet',
@@ -29,5 +36,6 @@ __all__ = [
     'recalculate_pending_order_earnings',
     'release_due_earnings',
     'return_withdrawal',
+    'reverse_refund_earnings',
     'unfreeze_earning',
 ]
