@@ -1,17 +1,23 @@
 from rest_framework import serializers
 
-from .models import ClientProfile
 from apps.players.models import PlayerApplication
-from apps.players.serializers import PlayerSerializer, PlayerApplicationSerializer
+from apps.players.serializers import PlayerApplicationSerializer, PlayerSerializer
+
+from .models import ClientProfile
+from .vip import vip_snapshot
 
 
 class ClientProfileSerializer(serializers.ModelSerializer):
     application = serializers.SerializerMethodField()
     player = serializers.SerializerMethodField()
+    vip = serializers.SerializerMethodField()
 
     class Meta:
         model = ClientProfile
-        fields = ['id', 'openid', 'nickname', 'avatar_url', 'role', 'player_status', 'created_at', 'application', 'player']
+        fields = [
+            'id', 'openid', 'nickname', 'avatar_url', 'role', 'player_status',
+            'cumulative_consumption', 'vip', 'created_at', 'application', 'player',
+        ]
 
     def get_application(self, obj):
         application = PlayerApplication.objects.filter(user=obj.user).order_by('-submitted_at').first()
@@ -24,6 +30,9 @@ class ClientProfileSerializer(serializers.ModelSerializer):
         if not player:
             return None
         return PlayerSerializer(player).data
+
+    def get_vip(self, obj):
+        return vip_snapshot(obj)
 
 
 class WechatLoginSerializer(serializers.Serializer):
