@@ -60,7 +60,7 @@ def validate_designated_players(raw_ids, required_players):
     )
     if busy_ids:
         busy_names = [players_by_id[player_id].name for player_id in player_ids if player_id in busy_ids]
-        raise ValidationError({'designated_players': f"{、.join(busy_names)}当前已有进行中的订单，暂不能指定"})
+        raise ValidationError({'designated_players': f"{'、'.join(busy_names)}当前已有进行中的订单，暂不能指定"})
 
     return [players_by_id[player_id] for player_id in player_ids]
 
@@ -246,6 +246,7 @@ def release_designation(order, designation_id, operator=None):
     designation = (
         OrderDesignation.objects
         .select_for_update()
+        .select_related('player')
         .filter(order=order, id=designation_id)
         .first()
     )
