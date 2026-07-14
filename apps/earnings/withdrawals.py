@@ -69,9 +69,9 @@ def create_withdrawal(player, amount, payment_method, account_name, account_no, 
         )
         remaining = qmoney(remaining - allocated)
 
-    if remaining > ZERO:
-        raise ValidationError({'detail': '工资明细与钱包余额不一致，请联系管理员'})
-
+    # 奖励/补发通过 WalletAdjustment 直接进入可提现余额，不对应某一条订单工资。
+    # 因此 remaining 可以是合法的“非订单工资”部分；钱包余额与不可篡改流水
+    # 仍是财务总账，WithdrawalAllocation 只负责追踪来自订单工资的部分。
     wallet.available_balance = qmoney(wallet.available_balance - amount)
     wallet.withdrawing_balance = qmoney(wallet.withdrawing_balance + amount)
     wallet.save(update_fields=['available_balance', 'withdrawing_balance', 'updated_at'])
@@ -82,7 +82,11 @@ def create_withdrawal(player, amount, payment_method, account_name, account_no, 
         -amount,
         reference_type='withdrawal',
         reference_id=withdrawal.withdrawal_no,
-        note='提交提现申请，从可提现余额转出',
+        note=(
+            '提交提现申请，从可提现余额转出'
+            if remaining <= ZERO
+            else f'提交提现申请，从可提现余额转出；其中 {remaining} 鱼干来自奖励/补发调整'
+        ),
     )
     write_ledger(
         wallet,
