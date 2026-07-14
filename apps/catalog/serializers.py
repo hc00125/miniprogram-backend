@@ -41,12 +41,25 @@ class PackageGroupSerializer(serializers.ModelSerializer):
 
 
 class PackageSpecSerializer(serializers.ModelSerializer):
+    required_player_type_id = serializers.IntegerField(
+        source='required_player_type.id',
+        read_only=True,
+        allow_null=True,
+    )
+    required_player_type_name = serializers.CharField(
+        source='required_player_type.name',
+        read_only=True,
+        allow_null=True,
+    )
+
     class Meta:
         model = PackageSpec
         fields = [
             'id', 'package_id', 'name', 'short_name', 'display_name',
             'price', 'original_price',
-            'description', 'guarantee_amount', 'sort_order', 'is_active',
+            'description', 'guarantee_amount',
+            'required_player_type_id', 'required_player_type_name',
+            'sort_order', 'is_active',
         ]
 
 
@@ -103,7 +116,7 @@ class PackageSerializer(serializers.ModelSerializer):
     def get_specs(self, obj):
         specs = getattr(obj, 'active_specs', None)
         if specs is None:
-            specs = obj.specs.filter(is_active=True).order_by('sort_order', 'id')
+            specs = obj.specs.filter(is_active=True).select_related('required_player_type').order_by('sort_order', 'id')
         return PackageSpecSerializer(specs, many=True).data
 
 
