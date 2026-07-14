@@ -19,7 +19,7 @@ def get_earnings_config():
         defaults={
             'default_commission_rate': Decimal('16.00'),
             'review_days': 8,
-            'min_withdrawal_amount': Decimal('1.00'),
+            'min_withdrawal_amount': Decimal('10.00'),
         },
     )
     return config
@@ -39,6 +39,8 @@ def bucket_balance(wallet, bucket):
         return wallet.withdrawing_balance
     if bucket == WalletLedger.BUCKET_WITHDRAWN:
         return wallet.withdrawn_total
+    if bucket == WalletLedger.BUCKET_DEBT:
+        return wallet.debt_balance
     raise ValueError(f'Unsupported wallet bucket: {bucket}')
 
 
