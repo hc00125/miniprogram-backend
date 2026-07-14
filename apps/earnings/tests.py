@@ -4,25 +4,30 @@ from decimal import Decimal
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Package, PlayerType
 from apps.orders.models import Order, OrderPlayer
+from apps.payments.models import Payment, Refund
 from apps.players.models import Player
 
 from .models import (
     OrderCommissionOverride,
     PlayerEarning,
     PlayerWallet,
+    WalletAdjustment,
     Withdrawal,
 )
 from .services import (
     approve_withdrawal,
+    create_and_apply_adjustment,
     create_order_earnings,
     create_withdrawal,
     mark_withdrawal_paid,
     recalculate_pending_order_earnings,
     release_due_earnings,
     return_withdrawal,
+    reverse_refund_earnings,
 )
 
 
@@ -66,19 +71,19 @@ class EarningsSettlementTests(TestCase):
         self.order.save(update_fields=['status', 'end_time'])
         self.order.refresh_from_db()
 
-    def test_completion_creates_pending_earnings_with_default_15_percent(self):
+    def test_completion_creates_pending_earnings_with_default_16_percent(self):
         self.complete_order()
 
         earnings = list(PlayerEarning.objects.filter(order=self.order).order_by('player_id'))
         self.assertEqual(len(earnings), 2)
         for earning in earnings:
-            self.assertEqual(earning.gross_amount, Decimal('50.00'))
-            self.assertEqual(earning.commission_rate, Decimal('15.00'))
-            self.assertEqual(earning.commission_amount, Decimal('7.50'))
-            self.assertEqual(earning.net_amount, Decimal('42.50'))
+            self.assertEqual(earning.gross_amount, Decimal('500.00'))
+            self.assertEqual(earning.commission_rate, Decimal('16.00'))
+            self.assertEqual(earning.commission_amount, Decimal('80.00'))
+            self.assertEqual(earning.net_amount, Decimal('420.00'))
             self.assertEqual(earning.status, PlayerEarning.STATUS_PENDING)
             wallet = PlayerWallet.objects.get(player=earning.player)
-            self.assertEqual(wallet.pending_balance, Decimal('42.50'))
+            self.assertEqual(wallet.pending_balance, Decimal('420.00'))
             self.assertEqual(wallet.available_balance, Decimal('0.00'))
 
     def test_paid_renewal_amount_is_included_in_wages(self):
@@ -101,9 +106,9 @@ class EarningsSettlementTests(TestCase):
         earnings = list(PlayerEarning.objects.filter(order=self.order))
         self.assertEqual(len(earnings), 2)
         for earning in earnings:
-            self.assertEqual(earning.gross_amount, Decimal('60.00'))
-            self.assertEqual(earning.commission_amount, Decimal('9.00'))
-            self.assertEqual(earning.net_amount, Decimal('51.00'))
+            self.assertEqual(earning.gross_amount, Decimal('600.00'))
+            self.assertEqual(earning.commission_amount, Decimal('96.00'))
+            self.assertEqual(earning.net_amount, Decimal('504.00'))
 
     def test_order_override_can_set_zero_commission(self):
         OrderCommissionOverride.objects.create(
@@ -116,7 +121,7 @@ class EarningsSettlementTests(TestCase):
 
         for earning in PlayerEarning.objects.filter(order=self.order):
             self.assertEqual(earning.commission_amount, Decimal('0.00'))
-            self.assertEqual(earning.net_amount, Decimal('50.00'))
+            self.assertEqual(earning.net_amount, Decimal('500.00'))
 
     def test_pending_commission_can_be_recalculated(self):
         self.complete_order()
@@ -131,8 +136,8 @@ class EarningsSettlementTests(TestCase):
         for earning in PlayerEarning.objects.filter(order=self.order):
             earning.refresh_from_db()
             self.assertEqual(earning.commission_rate, Decimal('10.00'))
-            self.assertEqual(earning.net_amount, Decimal('45.00'))
-            self.assertEqual(earning.player.wallet.pending_balance, Decimal('45.00'))
+            self.assertEqual(earning.net_amount, Decimal('450.00'))
+            self.assertEqual(earning.player.wallet.pending_balance, Decimal('450.00'))
 
     def test_creation_is_idempotent(self):
         self.complete_order()
@@ -182,8 +187,8 @@ class WalletWithdrawalTests(TestCase):
         wallet = PlayerWallet.objects.get(player=self.player)
         self.assertEqual(self.earning.status, PlayerEarning.STATUS_AVAILABLE)
         self.assertEqual(wallet.pending_balance, Decimal('0.00'))
-        self.assertEqual(wallet.available_balance, Decimal('85.00'))
-        self.assertEqual(self.earning.available_amount, Decimal('85.00'))
+        self.assertEqual(wallet.available_balance, Decimal('840.00'))
+        self.assertEqual(self.earning.available_amount, Decimal('840.00'))
 
     def test_withdrawal_freezes_then_finance_marks_paid(self):
         self.release_wage()
@@ -195,7 +200,7 @@ class WalletWithdrawalTests(TestCase):
             'wx-test-account',
         )
         wallet = PlayerWallet.objects.get(player=self.player)
-        self.assertEqual(wallet.available_balance, Decimal('35.00'))
+        self.assertEqual(wallet.available_balance, Decimal('790.00'))
         self.assertEqual(wallet.withdrawing_balance, Decimal('50.00'))
 
         approve_withdrawal(withdrawal, self.finance)
@@ -210,7 +215,7 @@ class WalletWithdrawalTests(TestCase):
         self.assertEqual(withdrawal.status, Withdrawal.STATUS_PAID)
         self.assertEqual(wallet.withdrawing_balance, Decimal('0.00'))
         self.assertEqual(wallet.withdrawn_total, Decimal('50.00'))
-        self.assertEqual(self.earning.available_amount, Decimal('35.00'))
+        self.assertEqual(self.earning.available_amount, Decimal('790.00'))
         self.assertEqual(self.earning.withdrawn_amount, Decimal('50.00'))
 
     def test_rejected_withdrawal_returns_available_balance(self):
@@ -228,7 +233,103 @@ class WalletWithdrawalTests(TestCase):
         self.earning.refresh_from_db()
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, Withdrawal.STATUS_REJECTED)
-        self.assertEqual(wallet.available_balance, Decimal('85.00'))
+        self.assertEqual(wallet.available_balance, Decimal('840.00'))
         self.assertEqual(wallet.withdrawing_balance, Decimal('0.00'))
-        self.assertEqual(self.earning.available_amount, Decimal('85.00'))
+        self.assertEqual(self.earning.available_amount, Decimal('840.00'))
         self.assertEqual(self.earning.withdrawing_amount, Decimal('0.00'))
+
+    def test_penalty_creates_debt_and_reward_clears_it(self):
+        self.release_wage()
+        penalty = create_and_apply_adjustment(
+            player=self.player,
+            adjustment_type=WalletAdjustment.TYPE_PENALTY,
+            amount=Decimal('900.00'),
+            reason='迟到罚款测试',
+            order=self.order,
+            operator=self.finance,
+        )
+        wallet = PlayerWallet.objects.get(player=self.player)
+        self.assertEqual(penalty.available_delta, Decimal('-840.00'))
+        self.assertEqual(penalty.debt_delta, Decimal('60.00'))
+        self.assertEqual(wallet.available_balance, Decimal('0.00'))
+        self.assertEqual(wallet.debt_balance, Decimal('60.00'))
+
+        reward = create_and_apply_adjustment(
+            player=self.player,
+            adjustment_type=WalletAdjustment.TYPE_REWARD,
+            amount=Decimal('100.00'),
+            reason='补发奖励测试',
+            order=self.order,
+            operator=self.finance,
+        )
+        wallet.refresh_from_db()
+        self.assertEqual(reward.debt_delta, Decimal('-60.00'))
+        self.assertEqual(reward.available_delta, Decimal('40.00'))
+        self.assertEqual(wallet.debt_balance, Decimal('0.00'))
+        self.assertEqual(wallet.available_balance, Decimal('40.00'))
+
+    def test_debt_blocks_withdrawal(self):
+        self.release_wage()
+        create_and_apply_adjustment(
+            player=self.player,
+            adjustment_type=WalletAdjustment.TYPE_PENALTY,
+            amount=Decimal('900.00'),
+            reason='形成待抵扣余额',
+            operator=self.finance,
+        )
+        with self.assertRaises(ValidationError):
+            create_withdrawal(
+                self.player,
+                Decimal('10.00'),
+                Withdrawal.METHOD_WECHAT,
+                '测试收款人',
+                'wx-test-account',
+            )
+
+    def test_future_wage_release_offsets_existing_debt(self):
+        wallet = PlayerWallet.objects.get(player=self.player)
+        wallet.debt_balance = Decimal('100.00')
+        wallet.save(update_fields=['debt_balance'])
+        self.release_wage()
+        wallet.refresh_from_db()
+        self.earning.refresh_from_db()
+        self.assertEqual(wallet.debt_balance, Decimal('0.00'))
+        self.assertEqual(wallet.available_balance, Decimal('740.00'))
+        self.assertEqual(self.earning.debt_offset_amount, Decimal('100.00'))
+        self.assertEqual(self.earning.available_amount, Decimal('740.00'))
+
+    def test_successful_refund_reverses_pending_wage_idempotently(self):
+        payment = Payment.objects.create(
+            payment_no='PAY-REFUND-001',
+            order=self.order,
+            channel='wechat',
+            scene='virtual',
+            amount=100,
+            status='paid',
+        )
+        refund = Refund.objects.create(
+            refund_no='REF-TEST-001',
+            payment=payment,
+            order=self.order,
+            amount=100,
+            reason='全额退款测试',
+            status=Refund.STATUS_SUCCEEDED,
+            created_by=self.finance,
+        )
+        reverse_refund_earnings(refund, operator=self.finance)
+        reverse_refund_earnings(refund, operator=self.finance)
+
+        wallet = PlayerWallet.objects.get(player=self.player)
+        self.earning.refresh_from_db()
+        self.assertEqual(wallet.pending_balance, Decimal('0.00'))
+        self.assertEqual(wallet.debt_balance, Decimal('0.00'))
+        self.assertEqual(self.earning.reversed_amount, Decimal('840.00'))
+        self.assertEqual(self.earning.status, PlayerEarning.STATUS_REVERSED)
+        self.assertEqual(
+            WalletAdjustment.objects.filter(
+                player=self.player,
+                adjustment_type=WalletAdjustment.TYPE_REFUND_REVERSAL,
+                reference_id=refund.refund_no,
+            ).count(),
+            1,
+        )
