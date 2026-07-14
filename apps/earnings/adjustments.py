@@ -1,5 +1,3 @@
-from decimal import Decimal
-
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -16,6 +14,12 @@ def _operator_or_none(operator):
     return operator if getattr(operator, 'is_authenticated', False) else None
 
 
+def _adjustment_entry_type(adjustment):
+    if adjustment.adjustment_type == WalletAdjustment.TYPE_REFUND_REVERSAL:
+        return WalletLedger.TYPE_EARNING_REVERSED
+    return WalletLedger.TYPE_ADMIN_ADJUSTMENT
+
+
 def _write_adjustment_ledgers(wallet, adjustment, operator=None):
     common = {
         'reference_type': adjustment.reference_type or 'wallet_adjustment',
@@ -23,30 +27,13 @@ def _write_adjustment_ledgers(wallet, adjustment, operator=None):
         'note': adjustment.reason,
         'operator': operator,
     }
+    entry_type = _adjustment_entry_type(adjustment)
     if adjustment.pending_delta:
-        write_ledger(
-            wallet,
-            WalletLedger.TYPE_ADMIN_ADJUSTMENT,
-            WalletLedger.BUCKET_PENDING,
-            adjustment.pending_delta,
-            **common,
-        )
+        write_ledger(wallet, entry_type, WalletLedger.BUCKET_PENDING, adjustment.pending_delta, **common)
     if adjustment.available_delta:
-        write_ledger(
-            wallet,
-            WalletLedger.TYPE_ADMIN_ADJUSTMENT,
-            WalletLedger.BUCKET_AVAILABLE,
-            adjustment.available_delta,
-            **common,
-        )
+        write_ledger(wallet, entry_type, WalletLedger.BUCKET_AVAILABLE, adjustment.available_delta, **common)
     if adjustment.debt_delta:
-        write_ledger(
-            wallet,
-            WalletLedger.TYPE_ADMIN_ADJUSTMENT,
-            WalletLedger.BUCKET_DEBT,
-            adjustment.debt_delta,
-            **common,
-        )
+        write_ledger(wallet, entry_type, WalletLedger.BUCKET_DEBT, adjustment.debt_delta, **common)
 
 
 @transaction.atomic
@@ -101,14 +88,8 @@ def apply_wallet_adjustment(adjustment, operator=None):
 
 @transaction.atomic
 def create_and_apply_adjustment(
-    *,
-    player,
-    adjustment_type,
-    amount,
-    reason,
-    order=None,
-    evidence_url='',
-    operator=None,
+    *, player, adjustment_type, amount, reason,
+    order=None, evidence_url='', operator=None,
 ):
     if adjustment_type not in {WalletAdjustment.TYPE_PENALTY, WalletAdjustment.TYPE_REWARD}:
         raise ValidationError({'adjustment_type': '后台只能手动创建罚款或奖励'})
@@ -147,12 +128,12 @@ def _successful_refund_total(root_order):
 
 @transaction.atomic
 def reverse_refund_earnings(refund, operator=None):
-    """Reverse player net wages after finance confirms a refund succeeded.
+    """Reverse player net wages after a refund succeeds.
 
     Unreleased wages are removed from pending balance. Released wages are
     removed from available balance. Funds already withdrawing/withdrawn are
     not silently rewritten; the shortfall becomes debt and is offset against
-    future wages. A unique adjustment reference makes the operation idempotent.
+    future wages. The refund reference makes every player reversal idempotent.
     """
     from apps.payments.models import Refund
 
@@ -182,7 +163,8 @@ def reverse_refund_earnings(refund, operator=None):
         raise ValidationError({'detail': '退款或订单收入金额不正确，无法冲销工资'})
 
     full_reversal = _successful_refund_total(root_order) >= total_revenue
-    adjustments = []
+    results = []
+    created_any = False
 
     for earning in earnings:
         existing = WalletAdjustment.objects.filter(
@@ -193,16 +175,14 @@ def reverse_refund_earnings(refund, operator=None):
             applied_at__isnull=False,
         ).first()
         if existing:
-            adjustments.append(existing)
+            results.append(existing)
             continue
 
         remaining_reversible = qmoney(earning.net_amount - earning.reversed_amount)
         if remaining_reversible <= ZERO:
             continue
-        target = (
-            remaining_reversible
-            if full_reversal
-            else qmoney(earning.net_amount * refund_amount / total_revenue)
+        target = remaining_reversible if full_reversal else qmoney(
+            earning.net_amount * refund_amount / total_revenue
         )
         amount = min(remaining_reversible, target)
         if amount <= ZERO:
@@ -250,9 +230,10 @@ def reverse_refund_earnings(refund, operator=None):
             applied_at=timezone.now(),
         )
         _write_adjustment_ledgers(wallet, adjustment, operator=operator)
-        adjustments.append(adjustment)
+        results.append(adjustment)
+        created_any = True
 
-    if adjustments:
+    if created_any:
         OrderStatusLog.objects.create(
             order=root_order,
             from_status=root_order.status,
@@ -260,4 +241,4 @@ def reverse_refund_earnings(refund, operator=None):
             operator=_operator_or_none(operator),
             reason=f'退款 {refund.refund_no} 成功，已同步冲销陪玩工资',
         )
-    return adjustments
+    return results
