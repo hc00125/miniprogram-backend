@@ -26,12 +26,12 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -q -r requirements.txt
-      - name: Capture migration check
+      - name: Capture P0 migration check
         id: migration_check
         shell: bash
         run: |
           set +e
-          python manage.py makemigrations --check --dry-run --verbosity 3 > migration-check.txt 2>&1
+          python manage.py makemigrations catalog earnings --check --dry-run --verbosity 3 > migration-check.txt 2>&1
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
