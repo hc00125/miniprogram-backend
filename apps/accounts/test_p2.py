@@ -112,7 +112,7 @@ class BossConsumptionVipTests(TestCase):
         self.complete_order()
         payload = ClientProfileSerializer(self.profile).data
         self.assertEqual(payload['vip']['current_tier']['code'], 'silver')
-        self.assertEqual(payload['cumulative_consumption'], '350.00')
+        self.assertEqual(Decimal(str(payload['cumulative_consumption'])), Decimal('350.00'))
         self.assertIn('progress_percent', payload['vip'])
 
 
