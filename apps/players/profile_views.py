@@ -68,6 +68,10 @@ def public_list(request):
         result.append({
             'id': player.id,
             'name': player.name,
+            'type_id': player.player_type_id,
+            'type_name': player.player_type.name if player.player_type else '',
+            'type_priority': player.player_type.priority if player.player_type else 0,
+            'price_extra': player.player_type.price_extra if player.player_type else 0,
             'avatar_url': profile.avatar_url if profile else None,
             'bio': player.bio,
             'audio_intro_url': player.audio_intro_url,
@@ -75,6 +79,7 @@ def public_list(request):
             'player_type': {
                 'id': player.player_type.id,
                 'name': player.player_type.name,
+                'priority': player.player_type.priority,
                 'price_extra': player.player_type.price_extra or 0,
             } if player.player_type else None,
             'avg_rating': round(player.avg_rating, 1) if player.avg_rating else 0,
