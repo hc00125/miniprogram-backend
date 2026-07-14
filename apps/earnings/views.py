@@ -36,7 +36,16 @@ def overview(request):
         gross_total=Sum('gross_amount'),
         commission_total=Sum('commission_amount'),
         net_total=Sum('net_amount'),
+        reversed_total=Sum('reversed_amount'),
+        debt_offset_total=Sum('debt_offset_amount'),
     )
+    can_withdraw = bool(player.can_withdraw and wallet.debt_balance <= 0)
+    if not player.can_withdraw:
+        block_reason = '管理员已暂停您的提现权限，请联系客服处理'
+    elif wallet.debt_balance > 0:
+        block_reason = f'当前有 {wallet.debt_balance} 鱼干待抵扣，暂不能提现'
+    else:
+        block_reason = ''
     return Response({
         'player_id': player.id,
         'player_name': player.name,
@@ -49,11 +58,14 @@ def overview(request):
         'available_balance': wallet.available_balance,
         'withdrawing_balance': wallet.withdrawing_balance,
         'withdrawn_total': wallet.withdrawn_total,
+        'debt_balance': wallet.debt_balance,
         'gross_total': totals['gross_total'] or 0,
         'commission_total': totals['commission_total'] or 0,
         'net_total': totals['net_total'] or 0,
-        'can_withdraw': player.can_withdraw,
-        'withdrawal_block_reason': '' if player.can_withdraw else '管理员已暂停您的提现权限，请联系客服处理',
+        'reversed_total': totals['reversed_total'] or 0,
+        'debt_offset_total': totals['debt_offset_total'] or 0,
+        'can_withdraw': can_withdraw,
+        'withdrawal_block_reason': block_reason,
     })
 
 
