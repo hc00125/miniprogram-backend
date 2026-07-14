@@ -5,9 +5,14 @@ from django.db import migrations, models
 
 def backfill_room_entry_deadlines(apps, schema_editor):
     OrderPlayer = apps.get_model('orders', 'OrderPlayer')
-    for item in OrderPlayer.objects.filter(room_join_deadline__isnull=True).iterator():
+    finished_statuses = {'已完成', '已取消'}
+    for item in OrderPlayer.objects.select_related('order').filter(room_join_deadline__isnull=True).iterator():
         item.room_join_deadline = item.grab_time + timedelta(minutes=10) if item.grab_time else None
-        item.save(update_fields=['room_join_deadline'])
+        update_fields = ['room_join_deadline']
+        if item.order.status in finished_statuses:
+            item.room_join_status = 'waived'
+            update_fields.append('room_join_status')
+        item.save(update_fields=update_fields)
 
 
 class Migration(migrations.Migration):
