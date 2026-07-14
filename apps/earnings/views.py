@@ -52,6 +52,8 @@ def overview(request):
         'gross_total': totals['gross_total'] or 0,
         'commission_total': totals['commission_total'] or 0,
         'net_total': totals['net_total'] or 0,
+        'can_withdraw': player.can_withdraw,
+        'withdrawal_block_reason': '' if player.can_withdraw else '管理员已暂停您的提现权限，请联系客服处理',
     })
 
 
@@ -83,6 +85,11 @@ def withdrawals(request):
             'results': WithdrawalSerializer(queryset, many=True).data,
         })
 
+    if not player.can_withdraw:
+        return Response(
+            {'detail': '管理员已暂停您的提现权限，请联系客服处理'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     serializer = WithdrawalCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     withdrawal = create_withdrawal(player=player, **serializer.validated_data)
