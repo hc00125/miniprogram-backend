@@ -10,6 +10,25 @@ from apps.orders.services import can_player_grab_order, grab_order as grab_order
 from .views import django_operator
 
 
+@api_view(['POST'])
+@permission_classes([IsApprovedPlayer])
+def update_online_status(request):
+    player = current_player(request.user)
+    is_online = request.data.get('is_online')
+    if not isinstance(is_online, bool):
+        return Response({'detail': 'is_online 必须为布尔值 true/false'}, status=status.HTTP_400_BAD_REQUEST)
+    if is_online and not player.can_accept_orders:
+        return Response({'detail': '管理员已暂停您的接单权限'}, status=status.HTTP_403_FORBIDDEN)
+    player.is_online = is_online
+    player.save(update_fields=['is_online', 'updated_at'])
+    return Response({
+        'id': player.id,
+        'name': player.name,
+        'is_online': player.is_online,
+        'status': '在线' if player.is_online else '离线',
+    })
+
+
 @api_view(['GET'])
 @permission_classes([IsApprovedPlayer])
 def available_orders(request):
