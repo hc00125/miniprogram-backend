@@ -21,9 +21,10 @@ class EarningsConfig(models.Model):
     min_withdrawal_amount = models.DecimalField(
         max_digits=12,
         decimal_places=2,
-        default=Decimal('1.00'),
+        default=Decimal('10.00'),
         validators=[MinValueValidator(Decimal('0.01'))],
-        verbose_name='最低提现金额',
+        verbose_name='最低提现鱼干',
+        help_text='本字段单位为鱼干。当前10鱼干=1元。',
     )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -87,6 +88,13 @@ class PlayerWallet(models.Model):
     available_balance = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='可提现鱼干')
     withdrawing_balance = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='提现中鱼干')
     withdrawn_total = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='累计已提现')
+    debt_balance = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=ZERO,
+        verbose_name='待抵扣鱼干',
+        help_text='罚款或退款冲销无法从可提现余额扣除时形成，后续工资会优先抵扣。',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -94,6 +102,16 @@ class PlayerWallet(models.Model):
         db_table = 'player_wallets'
         verbose_name = '陪玩钱包'
         verbose_name_plural = '陪玩钱包'
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(pending_balance__gte=ZERO)
+                & models.Q(available_balance__gte=ZERO)
+                & models.Q(withdrawing_balance__gte=ZERO)
+                & models.Q(withdrawn_total__gte=ZERO)
+                & models.Q(debt_balance__gte=ZERO),
+                name='wallet_balances_non_negative',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.player.name}的钱包'
@@ -127,6 +145,8 @@ class PlayerEarning(models.Model):
     commission_rate = models.DecimalField(max_digits=5, decimal_places=2, verbose_name='抽成比例(%)')
     commission_amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='平台抽成')
     net_amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='应得鱼干')
+    reversed_amount = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='已冲销鱼干')
+    debt_offset_amount = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='抵扣欠款鱼干')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
     review_until = models.DateTimeField(db_index=True, verbose_name='预计审核完成时间')
     available_at = models.DateTimeField(blank=True, null=True, verbose_name='转为可提现时间')
@@ -148,6 +168,8 @@ class PlayerEarning(models.Model):
                 check=models.Q(gross_amount__gte=ZERO)
                 & models.Q(commission_amount__gte=ZERO)
                 & models.Q(net_amount__gte=ZERO)
+                & models.Q(reversed_amount__gte=ZERO)
+                & models.Q(debt_offset_amount__gte=ZERO)
                 & models.Q(available_amount__gte=ZERO)
                 & models.Q(withdrawing_amount__gte=ZERO)
                 & models.Q(withdrawn_amount__gte=ZERO),
@@ -246,11 +268,13 @@ class WalletLedger(models.Model):
     BUCKET_AVAILABLE = 'available'
     BUCKET_WITHDRAWING = 'withdrawing'
     BUCKET_WITHDRAWN = 'withdrawn'
+    BUCKET_DEBT = 'debt'
     BUCKET_CHOICES = [
         (BUCKET_PENDING, '审核中'),
         (BUCKET_AVAILABLE, '可提现'),
         (BUCKET_WITHDRAWING, '提现中'),
         (BUCKET_WITHDRAWN, '已提现'),
+        (BUCKET_DEBT, '待抵扣'),
     ]
 
     TYPE_EARNING_CREATED = 'earning_created'
@@ -297,3 +321,69 @@ class WalletLedger(models.Model):
 
     def __str__(self):
         return f'{self.wallet.player.name} {self.entry_type} {self.delta}'
+
+
+class WalletAdjustment(models.Model):
+    TYPE_PENALTY = 'penalty'
+    TYPE_REWARD = 'reward'
+    TYPE_REFUND_REVERSAL = 'refund_reversal'
+    TYPE_CHOICES = [
+        (TYPE_PENALTY, '罚款'),
+        (TYPE_REWARD, '奖励/补发'),
+        (TYPE_REFUND_REVERSAL, '退款工资冲销'),
+    ]
+
+    player = models.ForeignKey('players.Player', on_delete=models.PROTECT, related_name='wallet_adjustments')
+    order = models.ForeignKey(
+        'orders.Order',
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name='wallet_adjustments',
+    )
+    adjustment_type = models.CharField(max_length=30, choices=TYPE_CHOICES, db_index=True)
+    amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+        verbose_name='调整鱼干',
+    )
+    available_delta = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO)
+    pending_delta = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO)
+    debt_delta = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO)
+    reason = models.CharField(max_length=500)
+    evidence_url = models.CharField(max_length=500, blank=True, default='')
+    reference_type = models.CharField(max_length=40, blank=True, default='')
+    reference_id = models.CharField(max_length=64, blank=True, default='', db_index=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='created_wallet_adjustments',
+    )
+    applied_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'wallet_adjustments'
+        verbose_name = '钱包奖惩与冲销'
+        verbose_name_plural = '钱包奖惩与冲销'
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.CheckConstraint(check=models.Q(amount__gt=ZERO), name='wallet_adjustment_amount_positive'),
+            models.UniqueConstraint(
+                fields=['player', 'adjustment_type', 'reference_type', 'reference_id'],
+                condition=~models.Q(reference_id=''),
+                name='uniq_wallet_adjustment_reference',
+            ),
+        ]
+
+    @property
+    def signed_amount(self):
+        if self.adjustment_type == self.TYPE_REWARD:
+            return self.amount
+        return -self.amount
+
+    def __str__(self):
+        return f'{self.player.name} - {self.get_adjustment_type_display()} - {self.amount}'
