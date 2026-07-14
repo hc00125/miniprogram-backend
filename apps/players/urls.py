@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import designation_views, views
 
 urlpatterns = [
     path('list', views.list),
@@ -13,6 +13,9 @@ urlpatterns = [
     path('apply/audio', views.upload_application_audio),
     path('apply/status', views.apply_status),
     path('available-orders', views.available_orders),
+    path('designation-invitations', designation_views.invitations),
+    path('order/<str:order_no>/designation/accept', designation_views.accept),
+    path('order/<str:order_no>/designation/decline', designation_views.decline),
     path('grab', views.grab),
     path('my-orders', views.my_orders),
     path('order/<str:order_no>', views.order_detail),
