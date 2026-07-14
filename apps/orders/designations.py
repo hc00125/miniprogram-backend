@@ -49,6 +49,10 @@ def validate_designated_players(raw_ids, required_players):
     if missing:
         raise ValidationError({'designated_players': '部分指定陪玩不存在或未通过审核'})
 
+    blocked = [player.name for player in players if not player.can_be_designated]
+    if blocked:
+        raise ValidationError({'designated_players': f"{'、'.join(blocked)}当前不接受指定"})
+
     busy_ids = set(
         OrderPlayer.objects
         .filter(
@@ -161,6 +165,10 @@ def accept_designation(order_no, player, operator=None):
     expire_due_designations(order=order)
     if order.order_type != Order.ORDER_TYPE_NORMAL or order.status != Order.STATUS_WAITING:
         raise ValidationError({'detail': '当前订单状态不能接受指定邀请'})
+    if not player.can_accept_orders:
+        raise ValidationError({'detail': '管理员已暂停您的接单权限'})
+    if not player.can_be_designated:
+        raise ValidationError({'detail': '管理员已暂停您的被指定权限'})
 
     designation = (
         OrderDesignation.objects
