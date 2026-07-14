@@ -4,21 +4,32 @@ from django.utils import timezone
 from apps.accounts.models import ClientProfile
 from apps.catalog.models import PlayerType
 
-from .models import Player, PlayerApplication
+from .models import Player, PlayerApplication, PlayerProfileUpdateRequest
 
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
-    list_display = ['id', 'name', 'player_type', 'status', 'is_online', 'has_audio_intro', 'total_orders', 'created_at']
-    list_filter = ['status', 'is_online', 'player_type']
+    list_display = [
+        'id', 'name', 'player_type', 'status', 'is_online', 'is_publicly_visible',
+        'can_accept_orders', 'can_be_designated', 'can_withdraw', 'has_audio_intro',
+        'total_orders', 'created_at',
+    ]
+    list_filter = [
+        'status', 'is_online', 'is_publicly_visible', 'can_accept_orders',
+        'can_be_designated', 'can_withdraw', 'player_type',
+    ]
     search_fields = ['name', 'contact_wechat', 'audio_intro_url', 'audio_intro_title']
     fieldsets = (
         ('基础信息', {
             'fields': ('user', 'name', 'player_type', 'status', 'is_online', 'contact_wechat', 'bio')
         }),
+        ('功能权限', {
+            'fields': ('can_accept_orders', 'can_be_designated', 'is_publicly_visible', 'can_withdraw'),
+            'description': '关闭权限后，后端会同步阻止接单、指定、公开展示或提现，不只是隐藏前端按钮。',
+        }),
         ('音频自我介绍', {
             'fields': ('audio_intro_url', 'audio_intro_title'),
-            'description': '将音频上传到服务器 media/player-audio/ 后，在这里填写完整 URL，例如 https://api.huc125.cn/media/player-audio/chen2.mp3'
+            'description': '将音频上传到服务器 media/player-audio/ 后，在这里填写完整 URL。',
         }),
         ('数据统计', {
             'fields': ('total_orders', 'total_rating', 'rating_count', 'last_login'),
@@ -34,6 +45,70 @@ class PlayerAdmin(admin.ModelAdmin):
     @admin.display(description='音频介绍')
     def has_audio_intro(self, obj):
         return '已配置' if obj.audio_intro_url else '未配置'
+
+
+@admin.register(PlayerProfileUpdateRequest)
+class PlayerProfileUpdateRequestAdmin(admin.ModelAdmin):
+    list_display = ['id', 'player', 'status', 'has_audio_intro', 'submitted_at', 'reviewed_at', 'reviewed_by']
+    list_filter = ['status', 'submitted_at', 'reviewed_at']
+    search_fields = ['player__name', 'bio', 'audio_intro_title', 'reject_reason']
+    actions = ['approve_updates', 'reject_updates']
+    readonly_fields = ['player', 'submitted_at', 'reviewed_at', 'reviewed_by']
+    fieldsets = (
+        ('待审核资料', {
+            'fields': ('player', 'bio', 'audio_intro_url', 'audio_intro_title', 'status')
+        }),
+        ('审核信息', {
+            'fields': ('reject_reason', 'submitted_at', 'reviewed_at', 'reviewed_by')
+        }),
+    )
+
+    @admin.display(description='音频介绍')
+    def has_audio_intro(self, obj):
+        return '已上传' if obj.audio_intro_url else '无音频'
+
+    def apply_update(self, obj, reviewer):
+        player = obj.player
+        player.bio = obj.bio
+        player.audio_intro_url = obj.audio_intro_url
+        player.audio_intro_title = obj.audio_intro_title
+        player.save(update_fields=['bio', 'audio_intro_url', 'audio_intro_title', 'updated_at'])
+        obj.status = PlayerProfileUpdateRequest.STATUS_APPROVED
+        obj.reject_reason = ''
+        obj.reviewed_at = timezone.now()
+        obj.reviewed_by = reviewer
+        obj.save(update_fields=['status', 'reject_reason', 'reviewed_at', 'reviewed_by'])
+
+    @admin.action(description='通过选中的陪玩资料修改申请')
+    def approve_updates(self, request, queryset):
+        count = 0
+        for obj in queryset.filter(status=PlayerProfileUpdateRequest.STATUS_PENDING).select_related('player'):
+            self.apply_update(obj, request.user)
+            count += 1
+        self.message_user(request, f'已通过 {count} 条资料修改申请')
+
+    @admin.action(description='拒绝选中的陪玩资料修改申请')
+    def reject_updates(self, request, queryset):
+        count = queryset.filter(status=PlayerProfileUpdateRequest.STATUS_PENDING).update(
+            status=PlayerProfileUpdateRequest.STATUS_REJECTED,
+            reject_reason='管理员审核未通过，请修改后重新提交',
+            reviewed_at=timezone.now(),
+            reviewed_by=request.user,
+        )
+        self.message_user(request, f'已拒绝 {count} 条资料修改申请')
+
+    def save_model(self, request, obj, form, change):
+        requested_status = obj.status
+        if change and 'status' in form.changed_data and requested_status == PlayerProfileUpdateRequest.STATUS_APPROVED:
+            self.apply_update(obj, request.user)
+            return
+        if change and 'status' in form.changed_data and requested_status in {
+            PlayerProfileUpdateRequest.STATUS_REJECTED,
+            PlayerProfileUpdateRequest.STATUS_CANCELLED,
+        }:
+            obj.reviewed_at = timezone.now()
+            obj.reviewed_by = request.user
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(PlayerApplication)
@@ -75,24 +150,17 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
         return '已上传' if obj.audio_intro_url else '未上传'
 
     def save_model(self, request, obj, form, change):
-        # 当管理员在编辑页直接修改状态时，同步更新 ClientProfile 和 Player
         was_approved = obj.status == PlayerApplication.STATUS_APPROVED
         was_rejected = obj.status == PlayerApplication.STATUS_REJECTED
-
         if not obj.pk:
             obj.reviewed_by = request.user
         elif 'status' in form.changed_data:
             obj.reviewed_by = request.user
             obj.reviewed_at = timezone.now()
-
         super().save_model(request, obj, form, change)
 
         if was_approved and obj.user:
-            # 同步 client_profile.player_status
-            ClientProfile.objects.filter(user=obj.user).update(
-                player_status=ClientProfile.PLAYER_STATUS_APPROVED,
-            )
-            # 创建 Player 记录（如果不存在）。真实姓名不写入公开陪玩资料。
+            ClientProfile.objects.filter(user=obj.user).update(player_status=ClientProfile.PLAYER_STATUS_APPROVED)
             player = Player.objects.filter(user=obj.user).first()
             if not player:
                 default_type = PlayerType.objects.filter(is_active=True).order_by('priority').first()
@@ -111,29 +179,19 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
                 player.audio_intro_title = obj.audio_intro_title or player.audio_intro_title
                 player.save(update_fields=['audio_intro_url', 'audio_intro_title', 'updated_at'])
         elif was_rejected and obj.user:
-            ClientProfile.objects.filter(user=obj.user).update(
-                player_status=ClientProfile.PLAYER_STATUS_REJECTED,
-            )
+            ClientProfile.objects.filter(user=obj.user).update(player_status=ClientProfile.PLAYER_STATUS_REJECTED)
 
     @admin.action(description='批准选中的陪玩师申请')
     def approve_applications(self, request, queryset):
         approved = queryset.filter(status=PlayerApplication.STATUS_PENDING).select_related('user', 'player_type')
         approved_list = list(approved)
         user_ids = [app.user_id for app in approved_list]
-
-        # 更新申请状态
         updated = approved.update(
             status=PlayerApplication.STATUS_APPROVED,
             reviewed_at=timezone.now(),
-            reviewed_by=request.user
+            reviewed_by=request.user,
         )
-
-        # 同步更新 client_profile.player_status
-        ClientProfile.objects.filter(user_id__in=user_ids).update(
-            player_status=ClientProfile.PLAYER_STATUS_APPROVED
-        )
-
-        # 为每个批准的用户创建 Player 记录（如果不存在）。真实姓名不写入公开陪玩资料。
+        ClientProfile.objects.filter(user_id__in=user_ids).update(player_status=ClientProfile.PLAYER_STATUS_APPROVED)
         default_type = PlayerType.objects.filter(is_active=True).order_by('priority').first()
         for app in approved_list:
             player = Player.objects.filter(user=app.user).first()
@@ -152,25 +210,18 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
                 player.audio_intro_url = app.audio_intro_url or player.audio_intro_url
                 player.audio_intro_title = app.audio_intro_title or player.audio_intro_title
                 player.save(update_fields=['audio_intro_url', 'audio_intro_title', 'updated_at'])
-
         self.message_user(request, f'已批准 {updated} 条申请')
 
     @admin.action(description='拒绝选中的陪玩师申请')
     def reject_applications(self, request, queryset):
         rejected = queryset.filter(status=PlayerApplication.STATUS_PENDING)
-
-        # values_list 返回懒加载 QuerySet，必须在修改申请状态前取出用户 ID。
-        # 否则 update 后原来的 pending 条件不再成立，后续会得到空集合。
         user_ids = list(rejected.values_list('user_id', flat=True))
         reviewed_at = timezone.now()
-
         updated = rejected.update(
             status=PlayerApplication.STATUS_REJECTED,
             reviewed_at=reviewed_at,
-            reviewed_by=request.user
+            reviewed_by=request.user,
         )
-
-        # 同步更新 client_profile.player_status
         ClientProfile.objects.filter(user_id__in=user_ids).update(
             player_status=ClientProfile.PLAYER_STATUS_REJECTED,
             updated_at=reviewed_at,
