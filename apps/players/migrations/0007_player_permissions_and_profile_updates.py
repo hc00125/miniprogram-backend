@@ -55,6 +55,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='playerprofileupdaterequest',
-            constraint=models.UniqueConstraint(condition=Q(('status', 'pending')), fields=('player',), name='uniq_pending_player_profile_update'),
+            constraint=models.UniqueConstraint(condition=Q(status='pending'), fields=('player',), name='uniq_pending_player_profile_update'),
         ),
     ]
