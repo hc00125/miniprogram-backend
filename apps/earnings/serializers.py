@@ -46,7 +46,11 @@ class PlayerEarningSerializer(serializers.ModelSerializer):
 
 
 class WithdrawalCreateSerializer(serializers.Serializer):
-    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0.01)
+    amount = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        min_value=Decimal('0.01'),
+    )
     payment_method = serializers.ChoiceField(choices=Withdrawal.METHOD_CHOICES)
     account_name = serializers.CharField(max_length=80, trim_whitespace=True)
     account_no = serializers.CharField(max_length=150, trim_whitespace=True)
