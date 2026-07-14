@@ -46,7 +46,7 @@ def designations(request, order_no):
     expire_due_designations(order=order)
     rows = (
         order.designations
-        .select_related('player__player_type', 'player__user__client_profile')
+        .select_related('order', 'player__player_type', 'player__user')
         .order_by('id')
     )
     return Response({
