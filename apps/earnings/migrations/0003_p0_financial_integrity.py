@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.db import migrations, models
 import django.db.models.deletion
 
@@ -29,7 +30,7 @@ class Migration(migrations.Migration):
                 default=Decimal('10.00'),
                 help_text='本字段单位为鱼干。当前10鱼干=1元。',
                 max_digits=12,
-                validators=[models.Min(Decimal('0.01'))] if False else [],
+                validators=[MinValueValidator(Decimal('0.01'))],
                 verbose_name='最低提现鱼干',
             ),
         ),
@@ -73,7 +74,7 @@ class Migration(migrations.Migration):
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('adjustment_type', models.CharField(choices=[('penalty', '罚款'), ('reward', '奖励/补发'), ('refund_reversal', '退款工资冲销')], db_index=True, max_length=30)),
-                ('amount', models.DecimalField(decimal_places=2, max_digits=12, verbose_name='调整鱼干')),
+                ('amount', models.DecimalField(decimal_places=2, max_digits=12, validators=[MinValueValidator(Decimal('0.01'))], verbose_name='调整鱼干')),
                 ('available_delta', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=12)),
                 ('pending_delta', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=12)),
                 ('debt_delta', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=12)),
@@ -101,40 +102,39 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='playerearning',
             constraint=models.CheckConstraint(
-                check=models.Q(
-                    ('available_amount__gte', Decimal('0.00')),
-                    ('commission_amount__gte', Decimal('0.00')),
-                    ('debt_offset_amount__gte', Decimal('0.00')),
-                    ('gross_amount__gte', Decimal('0.00')),
-                    ('net_amount__gte', Decimal('0.00')),
-                    ('reversed_amount__gte', Decimal('0.00')),
-                    ('withdrawing_amount__gte', Decimal('0.00')),
-                    ('withdrawn_amount__gte', Decimal('0.00')),
-                ),
+                check=models.Q(gross_amount__gte=Decimal('0.00'))
+                & models.Q(commission_amount__gte=Decimal('0.00'))
+                & models.Q(net_amount__gte=Decimal('0.00'))
+                & models.Q(reversed_amount__gte=Decimal('0.00'))
+                & models.Q(debt_offset_amount__gte=Decimal('0.00'))
+                & models.Q(available_amount__gte=Decimal('0.00'))
+                & models.Q(withdrawing_amount__gte=Decimal('0.00'))
+                & models.Q(withdrawn_amount__gte=Decimal('0.00')),
                 name='earning_amounts_non_negative',
             ),
         ),
         migrations.AddConstraint(
             model_name='playerwallet',
             constraint=models.CheckConstraint(
-                check=models.Q(
-                    ('available_balance__gte', Decimal('0.00')),
-                    ('debt_balance__gte', Decimal('0.00')),
-                    ('pending_balance__gte', Decimal('0.00')),
-                    ('withdrawing_balance__gte', Decimal('0.00')),
-                    ('withdrawn_total__gte', Decimal('0.00')),
-                ),
+                check=models.Q(pending_balance__gte=Decimal('0.00'))
+                & models.Q(available_balance__gte=Decimal('0.00'))
+                & models.Q(withdrawing_balance__gte=Decimal('0.00'))
+                & models.Q(withdrawn_total__gte=Decimal('0.00'))
+                & models.Q(debt_balance__gte=Decimal('0.00')),
                 name='wallet_balances_non_negative',
             ),
         ),
         migrations.AddConstraint(
             model_name='walletadjustment',
-            constraint=models.CheckConstraint(check=models.Q(('amount__gt', Decimal('0.00'))), name='wallet_adjustment_amount_positive'),
+            constraint=models.CheckConstraint(
+                check=models.Q(amount__gt=Decimal('0.00')),
+                name='wallet_adjustment_amount_positive',
+            ),
         ),
         migrations.AddConstraint(
             model_name='walletadjustment',
             constraint=models.UniqueConstraint(
-                condition=models.Q(('reference_id', ''), _negated=True),
+                condition=~models.Q(reference_id=''),
                 fields=('player', 'adjustment_type', 'reference_type', 'reference_id'),
                 name='uniq_wallet_adjustment_reference',
             ),
