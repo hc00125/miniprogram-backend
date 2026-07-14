@@ -6,7 +6,7 @@ urlpatterns = [
     path('list', profile_views.public_list),
     path('ratings/me', views.my_ratings),
     path('<int:player_id>/ratings', views.player_ratings),
-    path('online-status', views.update_online_status),
+    path('online-status', permission_views.update_online_status),
     path('logout', views.logout),
     path('me', views.me),
     path('profile-settings', profile_views.profile_settings),
