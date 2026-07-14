@@ -140,6 +140,41 @@ class OrderPlayer(models.Model):
         unique_together = [('order', 'player')]
 
 
+class OrderDesignation(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_DECLINED = 'declined'
+    STATUS_EXPIRED = 'expired'
+    STATUS_CANCELLED = 'cancelled'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, '待接受'),
+        (STATUS_ACCEPTED, '已接受'),
+        (STATUS_DECLINED, '已拒绝'),
+        (STATUS_EXPIRED, '已超时'),
+        (STATUS_CANCELLED, '已取消'),
+    ]
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='designations', verbose_name='订单')
+    player = models.ForeignKey('players.Player', on_delete=models.PROTECT, related_name='order_designations', verbose_name='指定陪玩')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    extra_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0, verbose_name='指定服务费')
+    invited_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(blank=True, null=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        db_table = 'order_designations'
+        verbose_name = '指定陪玩邀请'
+        verbose_name_plural = '指定陪玩邀请'
+        ordering = ['invited_at', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['order', 'player'], name='uniq_order_designated_player'),
+        ]
+
+    def __str__(self):
+        return f'{self.order.order_no} - {self.player.name} - {self.get_status_display()}'
+
+
 class Rating(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='ratings')
     player = models.ForeignKey('players.Player', on_delete=models.CASCADE, related_name='ratings')
