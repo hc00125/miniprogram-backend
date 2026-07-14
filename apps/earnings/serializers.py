@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from .models import PlayerEarning, Withdrawal
@@ -12,7 +14,8 @@ class PlayerEarningSerializer(serializers.ModelSerializer):
         model = PlayerEarning
         fields = [
             'id', 'order_no', 'package_name', 'gross_amount', 'commission_rate',
-            'commission_amount', 'net_amount', 'status', 'status_text', 'review_until',
+            'commission_amount', 'net_amount', 'reversed_amount', 'debt_offset_amount',
+            'status', 'status_text', 'review_until',
             'available_at', 'available_amount', 'withdrawing_amount', 'withdrawn_amount',
             'freeze_reason', 'created_at',
         ]
@@ -29,10 +32,16 @@ class PlayerEarningSerializer(serializers.ModelSerializer):
             return '已冲销'
         if obj.withdrawing_amount > 0:
             return '提现中'
-        if obj.withdrawn_amount >= obj.net_amount and obj.net_amount > 0:
+        withdrawable_total = max(
+            Decimal('0.00'),
+            obj.net_amount - obj.reversed_amount - obj.debt_offset_amount,
+        )
+        if obj.withdrawn_amount >= withdrawable_total and withdrawable_total > 0:
             return '已提现'
         if obj.withdrawn_amount > 0:
             return '部分已提现'
+        if obj.debt_offset_amount > 0 and obj.available_amount <= 0:
+            return '已抵扣'
         return '已审核'
 
 
