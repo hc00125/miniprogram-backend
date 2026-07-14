@@ -1,4 +1,4 @@
-name: P0 backend checks
+name: P0-P2 backend checks
 
 on:
   push:
@@ -26,12 +26,12 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -q -r requirements.txt
-      - name: Capture P0 migration check
+      - name: Capture migration check
         id: migration_check
         shell: bash
         run: |
           set +e
-          python manage.py makemigrations catalog earnings --check --dry-run --verbosity 3 > migration-check.txt 2>&1
+          python manage.py makemigrations accounts catalog earnings --check --dry-run --verbosity 3 > migration-check.txt 2>&1
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
@@ -48,5 +48,5 @@ jobs:
           exit 1
       - name: Run Django checks
         run: python manage.py check
-      - name: Run P0 regression tests
-        run: python manage.py test apps.earnings apps.orders.test_p0_pricing --verbosity 2
+      - name: Run P0-P2 regression tests
+        run: python manage.py test apps.earnings apps.orders.test_p0_pricing apps.accounts.test_p2 --verbosity 2
