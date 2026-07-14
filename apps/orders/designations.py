@@ -1,15 +1,19 @@
 from datetime import timedelta
+from decimal import Decimal
 
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from apps.catalog.models import PackageSpec
 from apps.players.models import Player
 
 from .models import Order, OrderDesignation, OrderPlayer, OrderStatusLog
 
 
 DESIGNATION_TTL_MINUTES = 10
+# P0 价格规则：具体指定本人不额外收费，技术/娱乐价格只由商品规格决定，禁止二次叠加。
+DESIGNATION_EXTRA_AMOUNT = Decimal('0.00')
 ACTIVE_PLAYER_ORDER_STATUSES = {
     Order.STATUS_PENDING_PAYMENT,
     Order.STATUS_READY_TO_START,
@@ -69,16 +73,45 @@ def validate_designated_players(raw_ids, required_players):
     return [players_by_id[player_id] for player_id in player_ids]
 
 
+def validate_designated_player_spec(order, players):
+    """指定具体陪玩时，商品规格标注的陪玩类型必须完全一致。"""
+    if not players or not order.spec_id:
+        return
+    spec = (
+        PackageSpec.objects
+        .select_related('required_player_type')
+        .filter(id=order.spec_id, package_id=order.package_id, is_active=True)
+        .first()
+    )
+    if not spec or not spec.required_player_type_id:
+        return
+
+    incompatible = [
+        player.name
+        for player in players
+        if player.player_type_id != spec.required_player_type_id
+    ]
+    if incompatible:
+        required_name = spec.required_player_type.name
+        raise ValidationError({
+            'designated_players': (
+                f'所选规格“{spec.display_name or spec.name}”仅支持“{required_name}”，'
+                f'指定陪玩“{"、".join(incompatible)}”类型不匹配，请改选对应规格。'
+            )
+        })
+
+
 def create_designations(order, players):
     if not players:
         return []
+    validate_designated_player_spec(order, players)
     expires_at = timezone.now() + timedelta(minutes=DESIGNATION_TTL_MINUTES)
     return [
         OrderDesignation.objects.create(
             order=order,
             player=player,
             status=OrderDesignation.STATUS_PENDING,
-            extra_amount=0,
+            extra_amount=DESIGNATION_EXTRA_AMOUNT,
             expires_at=expires_at,
         )
         for player in players
