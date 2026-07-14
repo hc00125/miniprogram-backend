@@ -5,6 +5,7 @@ from django.contrib import admin, messages
 from django.db.models import Count, Q, Sum
 from django.shortcuts import render
 from django.urls import path
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from apps.orders.models import Order
@@ -118,10 +119,12 @@ class ClientProfileAdmin(admin.ModelAdmin):
         from .vip import resolve_vip_tier
 
         updated = 0
+        now = timezone.now()
         for profile in queryset:
             tier = resolve_vip_tier(profile.cumulative_consumption)
             if profile.vip_tier_id != getattr(tier, 'id', None):
                 profile.vip_tier = tier
+                profile.vip_updated_at = now
                 profile.save(update_fields=['vip_tier', 'vip_updated_at', 'updated_at'])
                 updated += 1
         self.message_user(request, f'已刷新 {queryset.count()} 位老板，变更 {updated} 位VIP等级')
