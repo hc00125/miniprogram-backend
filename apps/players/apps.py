@@ -7,4 +7,4 @@ class PlayersConfig(AppConfig):
     verbose_name = '陪玩管理'
 
     def ready(self):
-        from . import escort_admin  # noqa: F401
+        from . import escort_admin, escort_signals  # noqa: F401
