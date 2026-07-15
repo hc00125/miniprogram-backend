@@ -43,6 +43,12 @@ class Package(models.Model):
     base_price = models.FloatField(verbose_name='基础价')
     original_price = models.FloatField(blank=True, null=True, verbose_name='划线价')
     player_count = models.IntegerField(default=1, verbose_name='默认人数')
+    requires_escort_qualification = models.BooleanField(
+        default=False,
+        db_index=True,
+        verbose_name='需要护航资格',
+        help_text='开启后，该商品生成的订单只能由护航资格已通过的陪玩接单；娱乐陪、技术陪等等级规则仍同时生效。',
+    )
     description = models.CharField(max_length=300, blank=True, null=True, verbose_name='商品简介')
     cover_url = models.CharField(max_length=500, blank=True, null=True, verbose_name='封面图URL')
     image_url = models.CharField(max_length=500, blank=True, null=True, verbose_name='商品图URL')
@@ -133,8 +139,8 @@ class PackageSpec(models.Model):
         blank=True,
         null=True,
         related_name='required_package_specs',
-        verbose_name='指定陪玩类型',
-        help_text='指定具体陪玩时必须与该类型完全一致；留空表示该规格不限制陪玩类型。',
+        verbose_name='最低陪玩等级',
+        help_text='陪玩等级 priority 必须达到该类型或更高；留空表示不限制陪玩等级。',
     )
     sort_order = models.IntegerField(default=0, verbose_name='排序')
     is_active = models.BooleanField(default=True, verbose_name='是否启用')
