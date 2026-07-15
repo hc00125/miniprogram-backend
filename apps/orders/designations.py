@@ -53,6 +53,14 @@ def validate_designated_players(raw_ids, required_players):
     if missing:
         raise ValidationError({'designated_players': '部分指定陪玩不存在或未通过审核'})
 
+    # 方案二：一张订单可以指定多名陪玩，但阵容必须属于同一陪玩类型。
+    player_type_ids = {player.player_type_id for player in players}
+    if len(player_type_ids) > 1:
+        type_names = sorted({player.player_type.name for player in players if player.player_type})
+        raise ValidationError({
+            'designated_players': f'当前仅支持指定同类型陪玩，已选择：{"、".join(type_names)}'
+        })
+
     blocked = [player.name for player in players if not player.can_be_designated]
     if blocked:
         raise ValidationError({'designated_players': f"{'、'.join(blocked)}当前不接受指定"})
