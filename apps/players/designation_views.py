@@ -7,6 +7,8 @@ from apps.orders.designations import accept_designation, decline_designation, ex
 from apps.orders.models import Order, OrderDesignation
 from apps.orders.serializers import AvailableOrderSerializer
 
+from .escort_qualification import escort_order_block_reason, order_requires_escort_qualification
+
 
 def django_operator(user):
     return user if getattr(user, 'is_authenticated', False) and hasattr(user, 'pk') else None
@@ -31,8 +33,14 @@ def invitations(request):
     )
     results = []
     for designation in rows:
+        order = designation.order
+        escort_reason = escort_order_block_reason(order, player)
+        permission_reason = ''
+        if not player.can_accept_orders or not player.can_be_designated:
+            permission_reason = '管理员已暂停您的接单或被指定权限'
+        block_reason = permission_reason or escort_reason
         data = AvailableOrderSerializer(
-            designation.order,
+            order,
             context={'player': player},
         ).data
         data.update({
@@ -40,11 +48,9 @@ def invitations(request):
             'designation_status': designation.status,
             'designation_status_text': designation.get_status_display(),
             'designation_expires_at': designation.expires_at,
-            'can_accept_designation': bool(player.can_accept_orders and player.can_be_designated),
-            'permission_block_reason': (
-                '' if player.can_accept_orders and player.can_be_designated
-                else '管理员已暂停您的接单或被指定权限'
-            ),
+            'requires_escort_qualification': order_requires_escort_qualification(order),
+            'can_accept_designation': not block_reason,
+            'permission_block_reason': block_reason,
             'can_grab': False,
             'is_designated': True,
         })
@@ -61,13 +67,17 @@ def accept(request, order_no):
     if not player.can_be_designated:
         return Response({'detail': '管理员已暂停您的被指定权限'}, status=status.HTTP_403_FORBIDDEN)
     try:
-        order = accept_designation(
-            order_no,
-            player,
-            django_operator(request.user),
-        )
+        order = Order.objects.select_related('package').get(order_no=order_no)
     except Order.DoesNotExist:
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    escort_reason = escort_order_block_reason(order, player)
+    if escort_reason:
+        return Response({'detail': escort_reason}, status=status.HTTP_403_FORBIDDEN)
+    order = accept_designation(
+        order_no,
+        player,
+        django_operator(request.user),
+    )
     return Response({
         'message': '已接受指定邀请',
         'order_no': order.order_no,
