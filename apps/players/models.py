@@ -149,3 +149,6 @@ class PlayerProfileUpdateRequest(models.Model):
 
     def __str__(self):
         return f'{self.player.name} - {self.get_status_display()}'
+
+
+from .escort_models import PlayerEscortApplication, PlayerEscortQualification  # noqa: E402,F401
