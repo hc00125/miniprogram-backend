@@ -7,7 +7,7 @@ from django.db.models import Q
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('players', '0006_playerapplication_real_name'),
+        ('players', '0007_alter_player_options_alter_playerapplication_options'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

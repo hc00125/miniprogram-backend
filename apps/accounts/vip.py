@@ -95,7 +95,7 @@ def record_consumption(
     if source_type not in dict(BossConsumptionLedger.TYPE_CHOICES):
         raise ValidationError({'source_type': '消费流水来源不正确'})
 
-    profile = ClientProfile.objects.select_for_update().select_related('vip_tier').get(pk=profile.pk)
+    profile = ClientProfile.objects.select_for_update(of=('self',)).select_related('vip_tier').get(pk=profile.pk)
     reference_id = str(reference_id or '').strip()
     if reference_id:
         existing = BossConsumptionLedger.objects.filter(
