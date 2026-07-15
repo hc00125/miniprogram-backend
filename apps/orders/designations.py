@@ -82,7 +82,7 @@ def validate_designated_players(raw_ids, required_players):
 
 
 def validate_designated_player_spec(order, players):
-    """指定具体陪玩时，商品规格标注的陪玩类型必须完全一致。"""
+    """指定具体陪玩时，陪玩等级必须达到商品规格的最低要求。"""
     if not players or not order.spec_id:
         return
     spec = (
@@ -94,17 +94,18 @@ def validate_designated_player_spec(order, players):
     if not spec or not spec.required_player_type_id:
         return
 
+    required_priority = int(spec.required_player_type.priority or 0)
     incompatible = [
         player.name
         for player in players
-        if player.player_type_id != spec.required_player_type_id
+        if int(player.player_type.priority or 0) < required_priority
     ]
     if incompatible:
         required_name = spec.required_player_type.name
         raise ValidationError({
             'designated_players': (
-                f'所选规格“{spec.display_name or spec.name}”仅支持“{required_name}”，'
-                f'指定陪玩“{"、".join(incompatible)}”类型不匹配，请改选对应规格。'
+                f'所选规格“{spec.display_name or spec.name}”要求“{required_name}”及以上等级，'
+                f'指定陪玩“{"、".join(incompatible)}”等级不足，请更换陪玩或改选较低等级规格。'
             )
         })
 
