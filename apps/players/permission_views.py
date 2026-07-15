@@ -7,6 +7,7 @@ from apps.orders.models import Order
 from apps.orders.serializers import AvailableOrderSerializer, OrderActionSerializer
 from apps.orders.services import can_player_grab_order, grab_order as grab_order_service
 
+from .escort_qualification import escort_order_block_reason
 from .views import django_operator
 
 
@@ -43,6 +44,8 @@ def available_orders(request):
     )
     result = []
     for order in orders:
+        if escort_order_block_reason(order, player):
+            continue
         order.can_player_grab = can_player_grab_order(order, player)
         if order.can_player_grab:
             result.append(order)
