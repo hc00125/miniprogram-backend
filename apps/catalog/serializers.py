@@ -43,6 +43,7 @@ class PackageGroupSerializer(serializers.ModelSerializer):
 class PackageSpecSerializer(serializers.ModelSerializer):
     required_player_type_id = serializers.IntegerField(read_only=True, allow_null=True)
     required_player_type_name = serializers.SerializerMethodField()
+    required_player_type_priority = serializers.SerializerMethodField()
 
     class Meta:
         model = PackageSpec
@@ -50,12 +51,15 @@ class PackageSpecSerializer(serializers.ModelSerializer):
             'id', 'package_id', 'name', 'short_name', 'display_name',
             'price', 'original_price',
             'description', 'guarantee_amount',
-            'required_player_type_id', 'required_player_type_name',
+            'required_player_type_id', 'required_player_type_name', 'required_player_type_priority',
             'sort_order', 'is_active',
         ]
 
     def get_required_player_type_name(self, obj):
         return obj.required_player_type.name if obj.required_player_type_id else None
+
+    def get_required_player_type_priority(self, obj):
+        return obj.required_player_type.priority if obj.required_player_type_id else None
 
 
 class PackageSerializer(serializers.ModelSerializer):
