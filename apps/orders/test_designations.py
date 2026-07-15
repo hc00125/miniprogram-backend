@@ -18,12 +18,12 @@ class ConcretePlayerDesignationTests(TestCase):
     def setUp(self):
         self.boss = User.objects.create_user(username='designation-boss')
         self.type = PlayerType.objects.create(
-            name='指定测试陪玩',
+            name='娱乐陪',
             priority=1,
             price_extra=20,
         )
         self.other_type = PlayerType.objects.create(
-            name='另一陪玩类型',
+            name='技术陪',
             priority=2,
             price_extra=0,
         )
@@ -35,8 +35,16 @@ class ConcretePlayerDesignationTests(TestCase):
         )
         self.spec = PackageSpec.objects.create(
             package=self.package,
-            name='固定15元',
+            name='娱乐陪规格',
             price=15,
+            required_player_type=self.type,
+            is_active=True,
+        )
+        self.high_spec = PackageSpec.objects.create(
+            package=self.package,
+            name='技术陪规格',
+            price=25,
+            required_player_type=self.other_type,
             is_active=True,
         )
         self.designated_user = User.objects.create_user(username='designated-player-user')
@@ -45,39 +53,40 @@ class ConcretePlayerDesignationTests(TestCase):
         self.public_user = User.objects.create_user(username='public-player-user')
         self.designated = Player.objects.create(
             user=self.designated_user,
-            name='指定陪玩A',
+            name='娱乐陪A',
             player_type=self.type,
             status=Player.STATUS_APPROVED,
             is_online=True,
         )
         self.second_designated = Player.objects.create(
             user=self.second_designated_user,
-            name='指定陪玩B',
+            name='娱乐陪B',
             player_type=self.type,
             status=Player.STATUS_APPROVED,
             is_online=True,
         )
         self.other_type_player = Player.objects.create(
             user=self.other_type_user,
-            name='不同类型陪玩C',
+            name='技术陪C',
             player_type=self.other_type,
             status=Player.STATUS_APPROVED,
             is_online=True,
         )
         self.public = Player.objects.create(
             user=self.public_user,
-            name='公开陪玩D',
+            name='公开娱乐陪D',
             player_type=self.type,
             status=Player.STATUS_APPROVED,
             is_online=True,
         )
 
-    def create_designated_order(self, required_players=1, designated_players=None):
+    def create_designated_order(self, required_players=1, designated_players=None, spec=None):
+        selected_spec = spec or self.spec
         return create_order({
             'boss_wechat': 'designation-boss-openid',
             'game_id': 'TEST-ROOM',
             'package_id': self.package.id,
-            'spec_id': self.spec.id,
+            'spec_id': selected_spec.id,
             'quantity': 1,
             'required_players': required_players,
             'designated_players': designated_players or [self.designated.id],
@@ -94,6 +103,19 @@ class ConcretePlayerDesignationTests(TestCase):
         self.assertEqual(invitation.status, OrderDesignation.STATUS_PENDING)
         self.assertEqual(invitation.extra_amount, Decimal('0.00'))
         self.assertGreater(invitation.expires_at, timezone.now())
+
+    def test_higher_tier_can_be_designated_for_lower_tier_spec(self):
+        order = self.create_designated_order(designated_players=[self.other_type_player.id])
+
+        self.assertEqual(order.designated_players, [self.other_type_player.id])
+        self.assertTrue(OrderDesignation.objects.filter(order=order, player=self.other_type_player).exists())
+
+    def test_lower_tier_cannot_be_designated_for_higher_tier_spec(self):
+        with self.assertRaises(ValidationError) as context:
+            self.create_designated_order(spec=self.high_spec, designated_players=[self.designated.id])
+
+        self.assertIn('等级不足', str(context.exception.detail))
+        self.assertEqual(Order.objects.count(), 0)
 
     def test_public_player_cannot_take_only_reserved_slot(self):
         order = self.create_designated_order()
