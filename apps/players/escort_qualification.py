@@ -2,12 +2,45 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from .escort_models import OrderEscortRequirementSnapshot
 from .models import Player, PlayerEscortApplication, PlayerEscortQualification
 
 
 def get_escort_qualification(player):
     qualification, _ = PlayerEscortQualification.objects.get_or_create(player=player)
     return qualification
+
+
+def player_has_approved_escort_qualification(player):
+    if not player or not getattr(player, 'pk', None):
+        return False
+    return PlayerEscortQualification.objects.filter(
+        player_id=player.pk,
+        status=PlayerEscortQualification.STATUS_APPROVED,
+    ).exists()
+
+
+def order_requires_escort_qualification(order):
+    if not order or not getattr(order, 'pk', None):
+        return False
+    snapshot_value = (
+        OrderEscortRequirementSnapshot.objects
+        .filter(order_id=order.pk)
+        .values_list('requires_escort_qualification', flat=True)
+        .first()
+    )
+    if snapshot_value is not None:
+        return bool(snapshot_value)
+    package = getattr(order, 'package', None)
+    return bool(package and getattr(package, 'requires_escort_qualification', False))
+
+
+def escort_order_block_reason(order, player):
+    if not order_requires_escort_qualification(order):
+        return ''
+    if player_has_approved_escort_qualification(player):
+        return ''
+    return '该订单为护航单，仅护航资格已通过的陪玩可以接单'
 
 
 @transaction.atomic
