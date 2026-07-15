@@ -22,6 +22,11 @@ class ConcretePlayerDesignationTests(TestCase):
             priority=1,
             price_extra=20,
         )
+        self.other_type = PlayerType.objects.create(
+            name='另一陪玩类型',
+            priority=2,
+            price_extra=0,
+        )
         self.package = Package.objects.create(
             name='指定测试固定商品',
             base_price=15,
@@ -35,6 +40,8 @@ class ConcretePlayerDesignationTests(TestCase):
             is_active=True,
         )
         self.designated_user = User.objects.create_user(username='designated-player-user')
+        self.second_designated_user = User.objects.create_user(username='second-designated-player-user')
+        self.other_type_user = User.objects.create_user(username='other-type-player-user')
         self.public_user = User.objects.create_user(username='public-player-user')
         self.designated = Player.objects.create(
             user=self.designated_user,
@@ -43,15 +50,29 @@ class ConcretePlayerDesignationTests(TestCase):
             status=Player.STATUS_APPROVED,
             is_online=True,
         )
+        self.second_designated = Player.objects.create(
+            user=self.second_designated_user,
+            name='指定陪玩B',
+            player_type=self.type,
+            status=Player.STATUS_APPROVED,
+            is_online=True,
+        )
+        self.other_type_player = Player.objects.create(
+            user=self.other_type_user,
+            name='不同类型陪玩C',
+            player_type=self.other_type,
+            status=Player.STATUS_APPROVED,
+            is_online=True,
+        )
         self.public = Player.objects.create(
             user=self.public_user,
-            name='公开陪玩B',
+            name='公开陪玩D',
             player_type=self.type,
             status=Player.STATUS_APPROVED,
             is_online=True,
         )
 
-    def create_designated_order(self, required_players=1):
+    def create_designated_order(self, required_players=1, designated_players=None):
         return create_order({
             'boss_wechat': 'designation-boss-openid',
             'game_id': 'TEST-ROOM',
@@ -59,7 +80,7 @@ class ConcretePlayerDesignationTests(TestCase):
             'spec_id': self.spec.id,
             'quantity': 1,
             'required_players': required_players,
-            'designated_players': [self.designated.id],
+            'designated_players': designated_players or [self.designated.id],
             'booked_hours': 1,
         }, self.boss)
 
@@ -92,6 +113,36 @@ class ConcretePlayerDesignationTests(TestCase):
         self.assertEqual(invitation.status, OrderDesignation.STATUS_ACCEPTED)
         self.assertTrue(relation.is_designated)
         self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
+
+    def test_two_same_type_players_can_be_designated_together(self):
+        order = self.create_designated_order(
+            required_players=2,
+            designated_players=[self.designated.id, self.second_designated.id],
+        )
+
+        self.assertEqual(order.designations.count(), 2)
+        self.assertEqual(order.designated_players, [self.designated.id, self.second_designated.id])
+        self.assertFalse(can_player_grab_order(order, self.public))
+
+        accept_designation(order.order_no, self.designated, self.designated_user)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.STATUS_WAITING)
+
+        accept_designation(order.order_no, self.second_designated, self.second_designated_user)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
+        self.assertEqual(order.order_players.count(), 2)
+        self.assertEqual(order.order_players.filter(is_designated=True).count(), 2)
+
+    def test_mixed_player_types_are_rejected(self):
+        with self.assertRaises(ValidationError) as context:
+            self.create_designated_order(
+                required_players=2,
+                designated_players=[self.designated.id, self.other_type_player.id],
+            )
+
+        self.assertIn('当前仅支持指定同类型陪玩', str(context.exception.detail))
+        self.assertEqual(Order.objects.count(), 0)
 
     def test_decline_releases_slot_to_public_hall(self):
         order = self.create_designated_order()
