@@ -1,7 +1,6 @@
 import uuid
 from decimal import Decimal
 
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -20,7 +19,8 @@ def create_withdrawal(player, amount, payment_method, account_name, account_no, 
     release_due_earnings(player=player)
     amount = qmoney(amount)
     config = get_earnings_config()
-    min_fish = qmoney(config.min_withdrawal_amount * Decimal(str(settings.FISH_CRACKER_EXCHANGE_RATE)))
+    # EarningsConfig.min_withdrawal_amount 已经以鱼干为单位，不能再次按汇率换算。
+    min_fish = qmoney(config.min_withdrawal_amount)
     if amount < min_fish:
         raise ValidationError({'amount': f'最低提现金额为 {min_fish} 鱼干'})
     if not account_name or not str(account_name).strip():
