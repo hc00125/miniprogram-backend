@@ -77,7 +77,7 @@ class PackageSerializer(serializers.ModelSerializer):
         model = Package
         fields = [
             'id', 'name', 'product_type', 'group_id', 'group_name',
-            'player_count', 'base_price', 'original_price',
+            'player_count', 'base_price', 'original_price', 'requires_escort_qualification',
             'description', 'cover_url', 'image_url', 'thumb_url', 'picture_url',
             'gallery_images', 'detail_images', 'detail_text', 'rules_text',
             'sold_count', 'sort_order', 'is_active', 'is_custom', 'specs',
@@ -128,7 +128,7 @@ class PackageWriteSerializer(serializers.ModelSerializer):
         model = Package
         fields = [
             'id', 'name', 'product_type', 'group_id',
-            'player_count', 'base_price', 'original_price',
+            'player_count', 'base_price', 'original_price', 'requires_escort_qualification',
             'description', 'cover_url', 'image_url', 'thumb_url', 'picture_url',
             'gallery_images', 'detail_images', 'detail_text', 'rules_text',
             'sold_count', 'sort_order', 'is_active', 'is_custom',
