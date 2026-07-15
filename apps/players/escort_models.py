@@ -99,3 +99,29 @@ class PlayerEscortApplication(models.Model):
 
     def __str__(self):
         return f'{self.player.name} - {self.get_status_display()}'
+
+
+class OrderEscortRequirementSnapshot(models.Model):
+    order = models.OneToOneField(
+        'orders.Order',
+        on_delete=models.CASCADE,
+        related_name='escort_requirement_snapshot',
+        verbose_name='订单',
+    )
+    requires_escort_qualification = models.BooleanField(
+        default=False,
+        db_index=True,
+        verbose_name='需要护航资格',
+    )
+    source_package_id = models.PositiveBigIntegerField(blank=True, null=True, verbose_name='下单时商品ID')
+    source_package_name = models.CharField(max_length=100, blank=True, default='', verbose_name='下单时商品名称')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'order_escort_requirement_snapshots'
+        verbose_name = '订单护航要求快照'
+        verbose_name_plural = '订单护航要求快照'
+
+    def __str__(self):
+        requirement = '护航单' if self.requires_escort_qualification else '普通单'
+        return f'{self.order.order_no} - {requirement}'
