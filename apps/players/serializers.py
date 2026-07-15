@@ -4,13 +4,22 @@ from rest_framework import serializers
 
 from apps.catalog.models import PlayerType
 
-from .models import Player, PlayerApplication, PlayerProfileUpdateRequest
+from .models import (
+    Player,
+    PlayerApplication,
+    PlayerEscortApplication,
+    PlayerEscortQualification,
+    PlayerProfileUpdateRequest,
+)
 
 
 class PlayerSerializer(serializers.ModelSerializer):
     type_id = serializers.IntegerField(source='player_type_id', read_only=True)
     type_name = serializers.CharField(source='player_type.name', read_only=True)
     avg_rating = serializers.FloatField(read_only=True)
+    escort_status = serializers.SerializerMethodField()
+    escort_status_text = serializers.SerializerMethodField()
+    has_escort_qualification = serializers.SerializerMethodField()
 
     class Meta:
         model = Player
@@ -19,7 +28,20 @@ class PlayerSerializer(serializers.ModelSerializer):
             'audio_intro_url', 'audio_intro_title',
             'is_online', 'total_orders', 'avg_rating', 'rating_count',
             'can_accept_orders', 'can_be_designated', 'is_publicly_visible', 'can_withdraw',
+            'escort_status', 'escort_status_text', 'has_escort_qualification',
         ]
+
+    def get_escort_status(self, obj):
+        qualification = getattr(obj, 'escort_qualification', None)
+        return qualification.status if qualification else PlayerEscortQualification.STATUS_NONE
+
+    def get_escort_status_text(self, obj):
+        qualification = getattr(obj, 'escort_qualification', None)
+        return qualification.get_status_display() if qualification else '未申请'
+
+    def get_has_escort_qualification(self, obj):
+        qualification = getattr(obj, 'escort_qualification', None)
+        return bool(qualification and qualification.status == PlayerEscortQualification.STATUS_APPROVED)
 
 
 class PlayerProfileUpdateRequestSerializer(serializers.ModelSerializer):
@@ -48,6 +70,37 @@ class PlayerProfileUpdateCreateSerializer(serializers.Serializer):
         if attrs['audio_intro_url'] and not attrs['audio_intro_title']:
             attrs['audio_intro_title'] = '音频自我介绍'
         return attrs
+
+
+class PlayerEscortApplicationSerializer(serializers.ModelSerializer):
+    status_text = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = PlayerEscortApplication
+        fields = [
+            'id', 'experience', 'evidence_urls', 'status', 'status_text',
+            'reject_reason', 'review_note', 'submitted_at', 'reviewed_at',
+        ]
+        read_only_fields = [
+            'id', 'status', 'status_text', 'reject_reason', 'review_note',
+            'submitted_at', 'reviewed_at',
+        ]
+
+
+class PlayerEscortApplicationCreateSerializer(serializers.Serializer):
+    experience = serializers.CharField(min_length=10, max_length=1000, trim_whitespace=True)
+    evidence_urls = serializers.ListField(
+        child=serializers.URLField(max_length=500),
+        required=False,
+        default=list,
+        max_length=5,
+    )
+
+    def validate_experience(self, value):
+        value = value.strip()
+        if len(value) < 10:
+            raise serializers.ValidationError('请至少填写10个字的护航经历与能力说明')
+        return value
 
 
 class PlayerLoginSerializer(serializers.Serializer):
