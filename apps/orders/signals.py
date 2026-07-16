@@ -9,7 +9,7 @@ from .models import Order, OrderItem
 
 
 def resolve_designated_pricing_spec(order):
-    """指定陪玩等级高于所选规格时，使用其可对应的最高等级/最高价格规格。"""
+    """指定时使用阵容最高等级能够对应的最高价格规格。"""
     if (
         not order._state.adding
         or order.order_type != Order.ORDER_TYPE_NORMAL
@@ -39,22 +39,30 @@ def resolve_designated_pricing_spec(order):
 
     highest_player_priority = max(int(player.player_type.priority or 0) for player in players)
     selected_priority = int(selected_spec.required_player_type.priority or 0)
-    if highest_player_priority <= selected_priority:
+    if highest_player_priority < selected_priority:
         return None
 
-    return (
+    pricing_spec = (
         PackageSpec.objects
         .select_related('required_player_type')
         .filter(
             package_id=order.package_id,
             is_active=True,
             required_player_type__isnull=False,
-            required_player_type__priority__gt=selected_priority,
+            required_player_type__priority__gte=selected_priority,
             required_player_type__priority__lte=highest_player_priority,
         )
         .order_by('-required_player_type__priority', '-price', 'sort_order', 'id')
         .first()
     )
+    if not pricing_spec or pricing_spec.id == selected_spec.id:
+        return None
+    if (
+        int(pricing_spec.required_player_type.priority or 0) == selected_priority
+        and money(pricing_spec.price) <= money(selected_spec.price)
+    ):
+        return None
+    return pricing_spec
 
 
 @receiver(pre_save, sender=Order, dispatch_uid='upgrade_designated_order_pricing_spec')
@@ -95,12 +103,7 @@ def sync_designated_pricing_order_item(sender, instance, created, **kwargs):
     if not created or not instance.order_id:
         return
 
-    order = (
-        Order.objects
-        .select_related('package')
-        .filter(pk=instance.order_id)
-        .first()
-    )
+    order = Order.objects.select_related('package').filter(pk=instance.order_id).first()
     if not order or not order.spec_id or instance.spec_id == order.spec_id:
         return
 
