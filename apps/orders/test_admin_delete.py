@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
 from django.test import RequestFactory, TestCase, override_settings
@@ -67,12 +69,8 @@ class OrderAdminDeletePermissionTests(TestCase):
             status=Order.STATUS_WAITING,
             paid=False,
         )
-        snapshot = OrderEscortRequirementSnapshot.objects.create(
-            order=order,
-            requires_escort_qualification=False,
-            source_package_id=self.package.id,
-            source_package_name=self.package.name,
-        )
+        # 护航快照由订单 post_save 信号自动创建，这里读取它验证级联删除。
+        snapshot = OrderEscortRequirementSnapshot.objects.get(order=order)
         designation = OrderDesignation.objects.create(
             order=order,
             player=self.player,
@@ -80,8 +78,9 @@ class OrderAdminDeletePermissionTests(TestCase):
         )
         return order, snapshot, designation
 
-    @override_settings(ADMIN_ORDER_DELETE_ENABLED=True)
-    def test_superuser_can_delete_order_and_internal_records_when_switch_enabled(self):
+    @override_settings(DEBUG=True)
+    @patch.dict('os.environ', {'ADMIN_ORDER_DELETE_ENABLED': 'true'}, clear=False)
+    def test_superuser_can_delete_order_and_internal_records_when_both_switches_enabled(self):
         request = self.request_for(self.superuser)
         order, snapshot, designation = self.create_order_with_internal_records('ADMINDELETE001')
 
@@ -95,8 +94,9 @@ class OrderAdminDeletePermissionTests(TestCase):
         self.assertFalse(OrderEscortRequirementSnapshot.objects.filter(pk=snapshot.pk).exists())
         self.assertFalse(OrderDesignation.objects.filter(pk=designation.pk).exists())
 
-    @override_settings(ADMIN_ORDER_DELETE_ENABLED=False)
-    def test_superuser_cannot_delete_order_when_switch_disabled(self):
+    @override_settings(DEBUG=True)
+    @patch.dict('os.environ', {'ADMIN_ORDER_DELETE_ENABLED': 'false'}, clear=False)
+    def test_superuser_cannot_delete_when_explicit_switch_disabled(self):
         request = self.request_for(self.superuser)
         order, _, designation = self.create_order_with_internal_records('ADMINDELETE002')
 
@@ -104,10 +104,21 @@ class OrderAdminDeletePermissionTests(TestCase):
         self.assertFalse(self.designation_admin.has_delete_permission(request, designation))
         self.assertNotIn('delete_selected', self.order_admin.get_actions(request))
 
-    @override_settings(ADMIN_ORDER_DELETE_ENABLED=True)
-    def test_non_superuser_cannot_delete_even_when_switch_enabled(self):
-        request = self.request_for(self.staff)
+    @override_settings(DEBUG=False)
+    @patch.dict('os.environ', {'ADMIN_ORDER_DELETE_ENABLED': 'true'}, clear=False)
+    def test_production_debug_false_overrides_mistaken_true_switch(self):
+        request = self.request_for(self.superuser)
         order, _, designation = self.create_order_with_internal_records('ADMINDELETE003')
+
+        self.assertFalse(self.order_admin.has_delete_permission(request, order))
+        self.assertFalse(self.designation_admin.has_delete_permission(request, designation))
+        self.assertNotIn('delete_selected', self.order_admin.get_actions(request))
+
+    @override_settings(DEBUG=True)
+    @patch.dict('os.environ', {'ADMIN_ORDER_DELETE_ENABLED': 'true'}, clear=False)
+    def test_non_superuser_cannot_delete_even_when_both_switches_enabled(self):
+        request = self.request_for(self.staff)
+        order, _, designation = self.create_order_with_internal_records('ADMINDELETE004')
 
         self.assertFalse(self.order_admin.has_delete_permission(request, order))
         self.assertFalse(self.designation_admin.has_delete_permission(request, designation))
