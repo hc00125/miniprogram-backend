@@ -1,8 +1,9 @@
 from django.urls import path
 
-from . import boss_views, designation_views, rating_views
+from . import boss_views, catalog_navigation_views, designation_views, rating_views
 
 urlpatterns = [
+    path('catalog-navigation', catalog_navigation_views.catalog_navigation),
     path('packages', boss_views.packages),
     path('package-groups', boss_views.package_groups),
     path('addons', boss_views.addons),
