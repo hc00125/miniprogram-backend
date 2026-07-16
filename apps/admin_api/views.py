@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts.models import ClientProfile
-from apps.catalog.models import Addon, Package, PackageGroup, PackageSpec, PlayerType
+from apps.catalog.models import Addon, GameService, Package, PackageGroup, PackageSpec, PlayerType
 from apps.catalog.serializers import (
     AddonSerializer,
     PackageGroupSerializer,
@@ -146,10 +146,9 @@ def order_detail(request, order_no):
 @permission_classes([IsAdminUser])
 def packages(request):
     if request.method == 'GET':
-        qs = Package.objects.select_related('group').prefetch_related('specs').all()
+        qs = Package.objects.select_related('group', 'group__game_service').prefetch_related('specs').all()
         return Response(PackageSerializer(qs, many=True).data)
 
-    # POST: 新建商品
     serializer = PackageWriteSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     package = serializer.save()
@@ -186,7 +185,6 @@ def specs(request, package_id):
         qs = PackageSpec.objects.filter(package_id=package_id).order_by('sort_order', 'id')
         return Response(PackageSpecSerializer(qs, many=True).data)
 
-    # POST: 新建规格
     if not Package.objects.filter(id=package_id).exists():
         return Response({'detail': '商品不存在'}, status=status.HTTP_404_NOT_FOUND)
     serializer = PackageSpecSerializer(data={**request.data, 'package_id': package_id})
@@ -255,8 +253,18 @@ def disable_addon(request, addon_id):
 @permission_classes([IsAdminUser])
 def package_groups(request):
     if request.method == 'GET':
-        return Response(PackageGroupSerializer(PackageGroup.objects.all(), many=True).data)
+        qs = PackageGroup.objects.select_related('game_service').all()
+        return Response(PackageGroupSerializer(qs, many=True).data)
+
+    game_service_id = request.data.get('game_service_id')
+    game_service = GameService.objects.filter(id=game_service_id).first() if game_service_id else None
+    if not game_service:
+        game_service = GameService.objects.filter(code='arena-breakout').first()
+    if not game_service:
+        return Response({'detail': '请先在Django后台创建游戏服务'}, status=status.HTTP_400_BAD_REQUEST)
+
     group = PackageGroup.objects.create(
+        game_service=game_service,
         name=request.data.get('name', ''),
         sort_order=request.data.get('sort_order') or 0,
     )
