@@ -114,12 +114,22 @@ def normalize_order_items(validated_data):
     return normalized
 
 
+def spec_defines_full_lineup(spec):
+    return bool(spec and spec.required_player_type_id)
+
+
 @transaction.atomic
 def create_order(validated_data, user=None):
     order_items = normalize_order_items(validated_data)
     first_item = order_items[0]
     package = first_item['package']
     spec = first_item['spec']
+    spec_lineup = spec_defines_full_lineup(spec)
+
+    if spec_lineup and len(order_items) != 1:
+        raise ValidationError({'detail': '带陪玩类型的规格不能与其他商品合并结算'})
+    if spec_lineup and first_item['quantity'] != 1:
+        raise ValidationError({'detail': '陪玩类型规格每次只能购买1份，人数由商品默认人数决定'})
 
     active_statuses = [
         Order.STATUS_WAITING,
@@ -134,7 +144,8 @@ def create_order(validated_data, user=None):
     if has_active:
         raise ValidationError({'detail': '您有未完成的订单，请先完成后再下单'})
 
-    required_players = int(validated_data.get('required_players') or package.player_count)
+    # 带“最低陪玩等级”的固定规格，由商品定义整单人数，后端不接受前端篡改人数。
+    required_players = int(package.player_count if spec_lineup else (validated_data.get('required_players') or package.player_count))
     if required_players <= 0:
         raise ValidationError({'detail': '人数必须大于 0'})
 
@@ -146,6 +157,9 @@ def create_order(validated_data, user=None):
 
     addon_details = validated_data.get('addon_details') or []
     addon_id = validated_data.get('addon_id')
+    if spec_lineup and (addon_details or addon_id):
+        raise ValidationError({'detail': '已选择陪玩类型规格，不能再叠加特殊陪类型'})
+
     first_addon = None
     normalized_addons = []
     addon_price = Decimal('0')
@@ -169,12 +183,20 @@ def create_order(validated_data, user=None):
 
     designated_types = []
     total_designated_count = 0
-    for item in normalized_addons:
-        addon = Addon.objects.filter(id=item['addon_id']).first()
-        player_type = PlayerType.objects.filter(priority=addon.priority).first() if addon else None
-        if player_type:
-            designated_types.append({'type_id': player_type.id, 'count': item['count']})
-            total_designated_count += item['count']
+    if spec_lineup:
+        # 商品决定人数，规格决定全部名额的最低陪玩等级。
+        designated_types.append({
+            'type_id': spec.required_player_type_id,
+            'count': required_players,
+            'source': 'spec',
+        })
+    else:
+        for item in normalized_addons:
+            addon = Addon.objects.filter(id=item['addon_id']).first()
+            player_type = PlayerType.objects.filter(priority=addon.priority).first() if addon else None
+            if player_type:
+                designated_types.append({'type_id': player_type.id, 'count': item['count']})
+                total_designated_count += item['count']
 
     if total_designated_count + len(designated_player_ids) > required_players:
         raise ValidationError({'detail': '指定陪玩和特殊陪名额总数不能超过下单人数'})
@@ -242,12 +264,29 @@ def create_order(validated_data, user=None):
 
 def remaining_type_slots(order):
     remaining = []
+    pending_concrete = pending_designation_count(order)
     for item in order.designated_types or []:
         type_id = item.get('type_id')
         count = int(item.get('count') or 0)
-        filled = order.order_players.filter(designated_type_id=type_id).count()
-        if count > filled:
-            remaining.append({'type_id': type_id, 'count': count - filled})
+        if not type_id or count <= 0:
+            continue
+
+        if item.get('source') == 'spec':
+            player_type = PlayerType.objects.filter(id=type_id).first()
+            if not player_type:
+                continue
+            # 规格定义的是整单最低等级。具体指定邀请同样已通过规格等级校验，
+            # 因此待接受邀请占用对应名额；拒绝或超时后名额会自动重新开放。
+            filled = order.order_players.filter(
+                player__player_type__priority__gte=player_type.priority,
+            ).count()
+            open_count = max(0, count - filled - pending_concrete)
+        else:
+            filled = order.order_players.filter(designated_type_id=type_id).count()
+            open_count = max(0, count - filled)
+
+        if open_count:
+            remaining.append({'type_id': type_id, 'count': open_count, 'source': item.get('source')})
     return remaining
 
 
@@ -275,13 +314,15 @@ def can_player_grab_order(order, player):
 
 
 def assign_designated_slot(order, player):
-    designated_type_id = None
-    for item in sorted(remaining_type_slots(order), key=lambda value: value.get('type_id', 0), reverse=True):
+    eligible = []
+    for item in remaining_type_slots(order):
         player_type = PlayerType.objects.filter(id=item.get('type_id')).first()
         if player_type and player.player_type.priority >= player_type.priority:
-            designated_type_id = item.get('type_id')
-            break
-    return bool(designated_type_id), designated_type_id
+            eligible.append((int(player_type.priority or 0), item.get('type_id')))
+    if not eligible:
+        return False, None
+    _, designated_type_id = max(eligible, key=lambda value: value[0])
+    return True, designated_type_id
 
 
 @transaction.atomic
