@@ -53,7 +53,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python manage.py test apps.earnings apps.orders.test_p0_pricing apps.orders.test_designations apps.orders.test_escort_order_qualification apps.players.test_escort_qualification apps.accounts.test_p2 apps.support --verbosity 2 > test-results.txt 2>&1
+          python manage.py test apps.earnings apps.orders.test_p0_pricing apps.orders.test_designated_pricing apps.orders.test_designations apps.orders.test_escort_order_qualification apps.players.test_escort_qualification apps.accounts.test_p2 apps.support --verbosity 2 > test-results.txt 2>&1
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
