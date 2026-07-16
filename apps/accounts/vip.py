@@ -4,11 +4,13 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import BossConsumptionLedger, ClientProfile, VipTier
+from .models import BossConsumptionLedger, ClientProfile, ClientVipKookRoom, VipTier
 
 
 ZERO = Decimal('0.00')
 CENT = Decimal('0.01')
+PRIVATE_KOOK_ROOM_FEATURE = 'private_kook_room'
+PRIVATE_KOOK_ROOM_UNLOCK_DIAMONDS = 20000
 
 
 def qmoney(value):
@@ -38,9 +40,50 @@ def get_next_vip_tier(total_consumption):
     )
 
 
+def tier_has_feature(tier, feature_code):
+    if not tier:
+        return False
+    return feature_code in (tier.feature_codes or [])
+
+
+def private_kook_room_snapshot(profile, current_tier=None):
+    current_tier = current_tier or resolve_vip_tier(profile.cumulative_consumption)
+    unlocked = tier_has_feature(current_tier, PRIVATE_KOOK_ROOM_FEATURE)
+    room = (
+        ClientVipKookRoom.objects
+        .select_related('assigned_by')
+        .filter(profile=profile)
+        .first()
+    )
+    room_number = str(getattr(room, 'kook_room_number', '') or '').strip()
+    configured = bool(room_number)
+    active = bool(room and room.is_active)
+    available = bool(unlocked and configured and active)
+
+    if not unlocked:
+        status = 'locked'
+    elif not configured:
+        status = 'pending_configuration'
+    elif not active:
+        status = 'disabled'
+    else:
+        status = 'active'
+
+    return {
+        'feature_code': PRIVATE_KOOK_ROOM_FEATURE,
+        'unlock_diamonds': PRIVATE_KOOK_ROOM_UNLOCK_DIAMONDS,
+        'unlocked': unlocked,
+        'configured': configured,
+        'active': active,
+        'available': available,
+        'status': status,
+        'room_number': room_number,
+    }
+
+
 def vip_snapshot(profile):
     total = max(ZERO, qmoney(profile.cumulative_consumption))
-    current = profile.vip_tier or resolve_vip_tier(total)
+    current = resolve_vip_tier(total) or profile.vip_tier
     next_tier = get_next_vip_tier(total)
 
     current_floor = qmoney(current.min_consumption) if current else ZERO
@@ -62,6 +105,7 @@ def vip_snapshot(profile):
             'name': tier.name,
             'min_consumption': str(qmoney(tier.min_consumption)),
             'benefits': tier.benefits or [],
+            'feature_codes': tier.feature_codes or [],
             'badge_color': tier.badge_color,
         }
 
@@ -71,6 +115,7 @@ def vip_snapshot(profile):
         'next_tier': tier_payload(next_tier),
         'remaining_to_next': str(remaining),
         'progress_percent': progress,
+        'private_kook_room': private_kook_room_snapshot(profile, current),
     }
 
 
@@ -149,6 +194,39 @@ def resolve_order_profile(order):
     if openid:
         return ClientProfile.objects.filter(openid=openid).first()
     return None
+
+
+def apply_vip_kook_room_to_order(order):
+    if str(getattr(order, 'kook_room_number', '') or '').strip():
+        return False
+
+    profile = resolve_order_profile(order)
+    if not profile:
+        return False
+
+    current_tier = resolve_vip_tier(profile.cumulative_consumption)
+    snapshot = private_kook_room_snapshot(profile, current_tier)
+    if not snapshot['available']:
+        return False
+
+    room = (
+        ClientVipKookRoom.objects
+        .select_related('assigned_by')
+        .filter(profile=profile)
+        .first()
+    )
+    if not room:
+        return False
+
+    order.kook_room_number = snapshot['room_number']
+    order.kook_room_updated_at = timezone.now()
+    order.kook_room_updated_by = room.assigned_by
+    order.save(update_fields=[
+        'kook_room_number',
+        'kook_room_updated_at',
+        'kook_room_updated_by',
+    ])
+    return True
 
 
 def record_completed_order(order):
