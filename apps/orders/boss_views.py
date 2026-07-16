@@ -75,22 +75,6 @@ def get_order_or_response(order_no):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-def catalog_navigation(request):
-    groups = PackageGroup.objects.filter(is_active=True).order_by('sort_order', 'id')
-    return Response({
-        'games': [{
-            'id': 1,
-            'name': '全部服务',
-            'code': 'all',
-            'icon_url': '',
-            'sort_order': 1,
-            'groups': PackageGroupSerializer(groups, many=True).data,
-        }],
-    })
-
-
-@api_view(['GET'])
-@permission_classes([AllowAny])
 def packages(request):
     qs = Package.objects.filter(is_active=True).select_related('group').prefetch_related(
         Prefetch(
