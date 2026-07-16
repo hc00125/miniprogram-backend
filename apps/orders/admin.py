@@ -1,5 +1,7 @@
 from django.contrib import admin
+from django.core.exceptions import PermissionDenied
 
+from .admin_delete import can_delete_orders_in_admin
 from .models import (
     CartItem,
     Order,
@@ -75,6 +77,29 @@ class OrderAdmin(admin.ModelAdmin):
     )
     inlines = [OrderItemInline, OrderPlayerInline, OrderDesignationInline]
 
+    def has_delete_permission(self, request, obj=None):
+        # 正式环境禁止物理删除订单；开发环境也只允许超级管理员在显式开关开启后删除。
+        return can_delete_orders_in_admin(request)
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        if not can_delete_orders_in_admin(request):
+            # 不仅隐藏详情页删除按钮，也移除列表页默认“删除所选订单”动作。
+            actions.pop('delete_selected', None)
+        return actions
+
+    def delete_model(self, request, obj):
+        # 防御性校验：即使有人手动构造 Admin 删除地址，也不能绕过环境开关。
+        if not can_delete_orders_in_admin(request):
+            raise PermissionDenied('当前环境禁止删除订单。')
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        # 批量删除与单条删除使用同一套开关，避免两条路径权限不一致。
+        if not can_delete_orders_in_admin(request):
+            raise PermissionDenied('当前环境禁止批量删除订单。')
+        super().delete_queryset(request, queryset)
+
 
 @admin.register(OrderPlayer)
 class OrderPlayerAdmin(admin.ModelAdmin):
@@ -114,7 +139,8 @@ class OrderDesignationAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        # 指定邀请会在订单删除时级联删除，因此必须与订单使用相同的开发环境删除权限。
+        return can_delete_orders_in_admin(request)
 
 
 @admin.register(OrderItem)
