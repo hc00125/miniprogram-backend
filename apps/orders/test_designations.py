@@ -137,6 +137,8 @@ class ConcretePlayerDesignationTests(TestCase):
         self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
 
     def test_two_same_type_players_can_be_designated_together(self):
+        self.package.player_count = 2
+        self.package.save(update_fields=['player_count'])
         order = self.create_designated_order(
             required_players=2,
             designated_players=[self.designated.id, self.second_designated.id],
@@ -157,6 +159,8 @@ class ConcretePlayerDesignationTests(TestCase):
         self.assertEqual(order.order_players.filter(is_designated=True).count(), 2)
 
     def test_mixed_player_types_are_rejected(self):
+        self.package.player_count = 2
+        self.package.save(update_fields=['player_count'])
         with self.assertRaises(ValidationError) as context:
             self.create_designated_order(
                 required_players=2,
@@ -194,6 +198,8 @@ class ConcretePlayerDesignationTests(TestCase):
         self.assertTrue(can_player_grab_order(order, self.public))
 
     def test_two_player_order_reserves_one_and_leaves_one_public_slot(self):
+        self.package.player_count = 2
+        self.package.save(update_fields=['player_count'])
         order = self.create_designated_order(required_players=2)
 
         self.assertTrue(can_player_grab_order(order, self.public))
@@ -206,3 +212,110 @@ class ConcretePlayerDesignationTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
         self.assertEqual(order.order_players.count(), 2)
+
+
+class SpecDefinedLineupTests(TestCase):
+    def setUp(self):
+        self.boss = User.objects.create_user(username='spec-lineup-boss')
+        self.entertainment_type = PlayerType.objects.create(
+            name='阵容娱乐陪',
+            priority=10,
+            price_extra=0,
+        )
+        self.technical_type = PlayerType.objects.create(
+            name='阵容技术陪',
+            priority=20,
+            price_extra=0,
+        )
+        self.package = Package.objects.create(
+            name='三人陪玩',
+            base_price=45,
+            player_count=3,
+            is_active=True,
+        )
+        self.technical_spec = PackageSpec.objects.create(
+            package=self.package,
+            name='三人技术陪',
+            price=75,
+            required_player_type=self.technical_type,
+            is_active=True,
+        )
+
+        self.entertainment_player = self.create_player('lineup-entertainment', '娱乐陪低等级', self.entertainment_type)
+        self.technical_players = [
+            self.create_player(f'lineup-tech-{index}', f'技术陪{index}', self.technical_type)
+            for index in range(1, 5)
+        ]
+
+    def create_player(self, username, name, player_type):
+        user = User.objects.create_user(username=username)
+        return Player.objects.create(
+            user=user,
+            name=name,
+            player_type=player_type,
+            status=Player.STATUS_APPROVED,
+            is_online=True,
+        )
+
+    def create_spec_order(self, **overrides):
+        payload = {
+            'boss_wechat': 'spec-lineup-openid',
+            'game_id': 'SPEC-LINEUP',
+            'package_id': self.package.id,
+            'spec_id': self.technical_spec.id,
+            'quantity': 1,
+            'required_players': 1,
+            'booked_hours': 1,
+        }
+        payload.update(overrides)
+        return create_order(payload, self.boss)
+
+    def test_product_defines_people_and_spec_defines_all_slot_type(self):
+        order = self.create_spec_order()
+
+        self.assertEqual(order.required_players, 3)
+        self.assertEqual(order.total_amount, 75.0)
+        self.assertEqual(order.designated_types, [{
+            'type_id': self.technical_type.id,
+            'count': 3,
+            'source': 'spec',
+        }])
+        self.assertEqual(order.items.get().quantity, 1)
+
+    def test_lower_type_cannot_grab_technical_spec_but_three_technical_players_can(self):
+        order = self.create_spec_order()
+
+        self.assertFalse(can_player_grab_order(order, self.entertainment_player))
+        with self.assertRaises(ValidationError):
+            grab_order(order.order_no, self.entertainment_player)
+
+        for player in self.technical_players[:3]:
+            grab_order(order.order_no, player, player.user)
+
+        order.refresh_from_db()
+        self.assertEqual(order.order_players.count(), 3)
+        self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
+        self.assertTrue(all(
+            item.designated_type_id == self.technical_type.id
+            for item in order.order_players.all()
+        ))
+
+    def test_pending_designation_reserves_one_typed_slot_and_decline_reopens_it(self):
+        designated = self.technical_players[0]
+        order = self.create_spec_order(designated_players=[designated.id])
+
+        grab_order(order.order_no, self.technical_players[1], self.technical_players[1].user)
+        grab_order(order.order_no, self.technical_players[2], self.technical_players[2].user)
+
+        self.assertFalse(can_player_grab_order(order, self.technical_players[3]))
+
+        decline_designation(order.order_no, designated, designated.user)
+        order.refresh_from_db()
+        self.assertTrue(can_player_grab_order(order, self.technical_players[3]))
+
+    def test_type_spec_rejects_multiple_quantity(self):
+        with self.assertRaises(ValidationError) as context:
+            self.create_spec_order(quantity=2)
+
+        self.assertIn('每次只能购买1份', str(context.exception.detail))
+        self.assertEqual(Order.objects.count(), 0)
