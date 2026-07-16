@@ -59,12 +59,14 @@ class DesignatedPlayerPricingTests(TestCase):
             'booked_hours': 1,
         }
 
-    def test_technical_player_can_use_entertainment_price_without_extra_fee(self):
+    def test_technical_player_upgrades_entertainment_order_to_technical_price(self):
         order = create_order(self.payload(self.entertainment_spec, self.technical_player))
         designation = OrderDesignation.objects.get(order=order, player=self.technical_player)
 
         self.assertEqual(Decimal(designation.extra_amount), Decimal('0.00'))
-        self.assertEqual(Decimal(str(order.total_amount)), Decimal('15.00'))
+        self.assertEqual(order.spec_id, self.technical_spec.id)
+        self.assertEqual(Decimal(str(order.total_amount)), Decimal('25.00'))
+        self.assertIn('指定陪玩等级计价', order.boss_note)
 
     def test_entertainment_player_cannot_use_technical_spec(self):
         with self.assertRaises(ValidationError) as context:
