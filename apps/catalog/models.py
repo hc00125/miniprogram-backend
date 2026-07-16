@@ -1,4 +1,7 @@
 from django.db import models
+from io import BytesIO
+from PIL import Image
+from django.core.files.base import ContentFile
 
 
 class GameService(models.Model):
@@ -162,6 +165,33 @@ class PackageImage(models.Model):
         if self.image:
             return self.image.url
         return self.external_url or ''
+
+    def save(self, *args, **kwargs):
+        if self.image and self.image.name:
+            img = Image.open(self.image)
+            # 最大边长限制
+            max_dim = 1920
+            if max(img.width, img.height) > max_dim:
+                ratio = max_dim / max(img.width, img.height)
+                img = img.resize(
+                    (int(img.width * ratio), int(img.height * ratio)),
+                    Image.LANCZOS,
+                )
+            # 如果是 RGBA (PNG 透明)，保留原格式带优化
+            # 否则转 JPEG 压缩
+            buf = BytesIO()
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img.save(buf, format='PNG', optimize=True)
+                ext = '.png'
+            else:
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                img.save(buf, format='JPEG', quality=85, optimize=True)
+                basename = self.image.name.rsplit('.', 1)[0]
+                self.image.save(f'{basename}.jpg', ContentFile(buf.getvalue()), save=False)
+                return
+            self.image.save(self.image.name, ContentFile(buf.getvalue()), save=False)
+        super().save(*args, **kwargs)
 
 
 class PackageSpec(models.Model):
