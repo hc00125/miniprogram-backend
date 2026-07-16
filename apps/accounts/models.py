@@ -15,6 +15,7 @@ class VipTier(models.Model):
         verbose_name='最低累计消费(元)',
     )
     benefits = models.JSONField(default=list, blank=True, verbose_name='会员权益')
+    feature_codes = models.JSONField(default=list, blank=True, verbose_name='可执行权益代码')
     badge_color = models.CharField(max_length=20, default='green', verbose_name='徽章主题')
     sort_order = models.IntegerField(default=0, verbose_name='排序')
     is_active = models.BooleanField(default=True, verbose_name='是否启用')
@@ -89,6 +90,43 @@ class ClientProfile(models.Model):
 
     def __str__(self):
         return self.nickname or self.openid
+
+
+class ClientVipKookRoom(models.Model):
+    profile = models.OneToOneField(
+        ClientProfile,
+        on_delete=models.CASCADE,
+        related_name='vip_kook_room',
+        verbose_name='老板',
+    )
+    kook_room_number = models.CharField(
+        max_length=100,
+        blank=True,
+        default='',
+        verbose_name='专属KOOK房间号',
+    )
+    is_active = models.BooleanField(default=True, verbose_name='是否启用')
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='assigned_vip_kook_rooms',
+        verbose_name='配置超管',
+    )
+    assigned_at = models.DateTimeField(blank=True, null=True, verbose_name='配置时间')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'client_vip_kook_rooms'
+        verbose_name = '老板专属KOOK房间'
+        verbose_name_plural = '老板专属KOOK房间'
+        ordering = ['-updated_at', '-id']
+
+    def __str__(self):
+        room_number = self.kook_room_number or '待配置'
+        return f'{self.profile} - {room_number}'
 
 
 class BossConsumptionLedger(models.Model):
