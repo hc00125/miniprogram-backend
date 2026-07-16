@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     'apps.orders',
     'apps.payments',
     'apps.earnings.apps.EarningsConfig',
+    'apps.support.apps.SupportConfig',
     'apps.chat',
     'apps.admin_api',
 ]
