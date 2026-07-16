@@ -8,5 +8,7 @@ class CatalogConfig(AppConfig):
 
     def ready(self):
         from .escort_admin_patch import patch_package_admin
+        from .game_service_admin import patch_game_service_admin
 
         patch_package_admin()
+        patch_game_service_admin()
