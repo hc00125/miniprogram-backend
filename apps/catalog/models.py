@@ -1,7 +1,50 @@
 from django.db import models
 
 
+class GameService(models.Model):
+    name = models.CharField(max_length=50, verbose_name='游戏名称')
+    code = models.CharField(max_length=50, unique=True, verbose_name='游戏代码')
+    icon = models.ImageField(
+        upload_to='game-services/%Y/%m/',
+        blank=True,
+        null=True,
+        verbose_name='游戏图标',
+        help_text='建议上传256×256或512×512的方形PNG/JPG，前端会裁剪为圆形。',
+    )
+    icon_url = models.CharField(
+        max_length=500,
+        blank=True,
+        default='',
+        verbose_name='图标外链',
+        help_text='可选。已在CDN/OSS上的图标可填写完整URL；上传图标优先。',
+    )
+    sort_order = models.IntegerField(default=0, verbose_name='排序')
+    is_active = models.BooleanField(default=True, db_index=True, verbose_name='是否展示')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'game_services'
+        verbose_name = '游戏服务'
+        verbose_name_plural = '游戏服务'
+        ordering = ['sort_order', 'id']
+
+    def __str__(self):
+        return self.name
+
+    def get_icon_url(self):
+        if self.icon:
+            return self.icon.url
+        return self.icon_url or ''
+
+
 class PackageGroup(models.Model):
+    game_service = models.ForeignKey(
+        GameService,
+        on_delete=models.PROTECT,
+        related_name='package_groups',
+        verbose_name='所属游戏',
+    )
     name = models.CharField(max_length=50)
     sort_order = models.IntegerField(default=0)
     is_active = models.BooleanField(default=True)
@@ -14,7 +57,7 @@ class PackageGroup(models.Model):
         ordering = ['sort_order', 'id']
 
     def __str__(self):
-        return self.name
+        return f'{self.game_service.name} - {self.name}'
 
 
 class Package(models.Model):
