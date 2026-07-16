@@ -1,7 +1,6 @@
 from django.contrib import admin
 from django.utils import timezone
 
-from .escort_models import OrderEscortRequirementSnapshot
 from .escort_qualification import approve_escort_application, reject_escort_application
 from .models import PlayerEscortApplication, PlayerEscortQualification
 
@@ -72,26 +71,3 @@ class PlayerEscortApplicationAdmin(admin.ModelAdmin):
             reject_escort_application(obj, reason, request.user, obj.review_note)
             return
         super().save_model(request, obj, form, change)
-
-
-@admin.register(OrderEscortRequirementSnapshot)
-class OrderEscortRequirementSnapshotAdmin(admin.ModelAdmin):
-    list_display = [
-        'order', 'requires_escort_qualification', 'source_package_name',
-        'source_package_id', 'created_at',
-    ]
-    list_filter = ['requires_escort_qualification', 'created_at']
-    search_fields = ['order__order_no', 'source_package_name']
-    readonly_fields = [
-        'order', 'requires_escort_qualification', 'source_package_id',
-        'source_package_name', 'created_at',
-    ]
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
