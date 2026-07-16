@@ -13,6 +13,8 @@ jobs:
     timeout-minutes: 15
     env:
       DJANGO_DEBUG: "true"
+      # CI 默认保持订单删除关闭；专项测试会在单个用例中显式覆盖环境变量。
+      ADMIN_ORDER_DELETE_ENABLED: "false"
       ENABLE_MOCK_PAYMENT: "true"
       WECHAT_VIRTUALPAY_ENABLED: "false"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -53,7 +55,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python manage.py test apps.earnings apps.orders.test_p0_pricing apps.orders.test_designated_pricing apps.orders.test_designations apps.orders.test_escort_order_qualification apps.players.test_escort_qualification apps.accounts.test_p2 apps.support --verbosity 2 > test-results.txt 2>&1
+          python manage.py test apps.earnings apps.orders.test_admin_delete apps.orders.test_p0_pricing apps.orders.test_designated_pricing apps.orders.test_designations apps.orders.test_escort_order_qualification apps.players.test_escort_qualification apps.accounts.test_p2 apps.support --verbosity 2 > test-results.txt 2>&1
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
