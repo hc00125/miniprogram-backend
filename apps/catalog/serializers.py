@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Addon, Package, PackageGroup, PackageImage, PackageSpec, PlayerType
+from .models import Addon, GameService, Package, PackageGroup, PackageImage, PackageSpec, PlayerType
 
 
 def build_absolute_image_url(request, url):
@@ -35,9 +35,39 @@ def image_urls_by_type(obj, request, image_type):
 
 
 class PackageGroupSerializer(serializers.ModelSerializer):
+    game_service_id = serializers.IntegerField(read_only=True)
+    game_service_name = serializers.CharField(source='game_service.name', read_only=True)
+
     class Meta:
         model = PackageGroup
-        fields = ['id', 'name', 'sort_order', 'is_active']
+        fields = [
+            'id', 'name', 'sort_order', 'is_active',
+            'game_service_id', 'game_service_name',
+        ]
+
+
+class GameServiceGroupSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PackageGroup
+        fields = ['id', 'name', 'sort_order']
+
+
+class GameServiceSerializer(serializers.ModelSerializer):
+    icon_url = serializers.SerializerMethodField()
+    groups = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GameService
+        fields = ['id', 'name', 'code', 'icon_url', 'sort_order', 'groups']
+
+    def get_icon_url(self, obj):
+        return build_absolute_image_url(self.context.get('request'), obj.get_icon_url())
+
+    def get_groups(self, obj):
+        groups = getattr(obj, 'active_groups', None)
+        if groups is None:
+            groups = obj.package_groups.filter(is_active=True).order_by('sort_order', 'id')
+        return GameServiceGroupSerializer(groups, many=True).data
 
 
 class PackageSpecSerializer(serializers.ModelSerializer):
@@ -65,6 +95,8 @@ class PackageSpecSerializer(serializers.ModelSerializer):
 class PackageSerializer(serializers.ModelSerializer):
     group_id = serializers.IntegerField(source='group.id', allow_null=True, read_only=True)
     group_name = serializers.CharField(source='group.name', allow_null=True, read_only=True)
+    game_service_id = serializers.IntegerField(source='group.game_service.id', allow_null=True, read_only=True)
+    game_service_name = serializers.CharField(source='group.game_service.name', allow_null=True, read_only=True)
     cover_url = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     thumb_url = serializers.SerializerMethodField()
@@ -77,6 +109,7 @@ class PackageSerializer(serializers.ModelSerializer):
         model = Package
         fields = [
             'id', 'name', 'product_type', 'group_id', 'group_name',
+            'game_service_id', 'game_service_name',
             'player_count', 'base_price', 'original_price', 'requires_escort_qualification',
             'description', 'cover_url', 'image_url', 'thumb_url', 'picture_url',
             'gallery_images', 'detail_images', 'detail_text', 'rules_text',
@@ -138,9 +171,9 @@ class PackageWriteSerializer(serializers.ModelSerializer):
         if group_id is None:
             return None
         try:
-            return PackageGroup.objects.get(id=group_id)
+            return PackageGroup.objects.get(pk=group_id)
         except PackageGroup.DoesNotExist as exc:
-            raise serializers.ValidationError({'group_id': '套餐分组不存在或已删除'}) from exc
+            raise serializers.ValidationError({'group_id': '套餐分组不存在'}) from exc
 
     def create(self, validated_data):
         group_id = validated_data.pop('group_id', self._missing)
@@ -151,17 +184,17 @@ class PackageWriteSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         group_id = validated_data.pop('group_id', self._missing)
         if group_id is not self._missing:
-            instance.group = self.resolve_group(group_id)
+            validated_data['group'] = self.resolve_group(group_id)
         return super().update(instance, validated_data)
 
 
 class AddonSerializer(serializers.ModelSerializer):
     class Meta:
         model = Addon
-        fields = ['id', 'name', 'price_per_player', 'priority']
+        fields = '__all__'
 
 
 class PlayerTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlayerType
-        fields = ['id', 'name', 'priority', 'price_extra']
+        fields = '__all__'
