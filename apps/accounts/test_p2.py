@@ -3,14 +3,15 @@ from decimal import Decimal
 from django.contrib.auth.models import Group, User
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.catalog.models import Package
 from apps.orders.models import Order
 from apps.payments.models import Payment, Refund
 
-from .models import BossConsumptionLedger, ClientProfile, VipTier
+from .models import BossConsumptionLedger, ClientProfile, ClientVipKookRoom, VipTier
 from .serializers import ClientProfileSerializer
-from .vip import create_manual_consumption_adjustment
+from .vip import PRIVATE_KOOK_ROOM_FEATURE, create_manual_consumption_adjustment
 
 
 class BossConsumptionVipTests(TestCase):
@@ -65,6 +66,9 @@ class BossConsumptionVipTests(TestCase):
             .values_list('code', 'name', 'min_consumption')
         )
         self.assertEqual(actual, expected)
+        self.assertNotIn(PRIVATE_KOOK_ROOM_FEATURE, self.bronze.feature_codes)
+        self.assertIn(PRIVATE_KOOK_ROOM_FEATURE, self.silver.feature_codes)
+        self.assertIn('专属KOOK房间', self.silver.benefits)
 
     def test_completed_order_creates_ledger_and_upgrades_vip(self):
         self.complete_order()
@@ -117,12 +121,98 @@ class BossConsumptionVipTests(TestCase):
         self.assertEqual(entry.operator, operator)
         self.assertEqual(entry.reason, '线下活动补录')
 
-    def test_profile_serializer_exposes_vip_progress(self):
+    def test_profile_serializer_exposes_vip_progress_and_room_state(self):
         self.complete_order()
         payload = ClientProfileSerializer(self.profile).data
         self.assertEqual(payload['vip']['current_tier']['code'], 'silver_mouse')
         self.assertEqual(Decimal(str(payload['cumulative_consumption'])), Decimal('2500.00'))
         self.assertIn('progress_percent', payload['vip'])
+        self.assertEqual(payload['vip']['private_kook_room']['status'], 'pending_configuration')
+        self.assertTrue(payload['vip']['private_kook_room']['unlocked'])
+
+
+class VipKookRoomTests(TestCase):
+    def setUp(self):
+        self.bronze = VipTier.objects.get(code='bronze_mouse')
+        self.silver = VipTier.objects.get(code='silver_mouse')
+        self.user = User.objects.create_user(username='vip-room-boss')
+        self.profile = ClientProfile.objects.create(
+            user=self.user,
+            openid='vip-room-openid',
+            nickname='专属房老板',
+            cumulative_consumption=Decimal('2500.00'),
+            vip_tier=self.silver,
+        )
+        self.superuser = User.objects.create_superuser(
+            username='vip-room-admin',
+            email='admin@example.com',
+            password='test-password',
+        )
+        self.package = Package.objects.create(name='专属房测试套餐', base_price=100, player_count=1)
+        self.room = ClientVipKookRoom.objects.create(
+            profile=self.profile,
+            kook_room_number='TC-VIP-20000',
+            is_active=True,
+            assigned_by=self.superuser,
+            assigned_at=timezone.now(),
+        )
+
+    def create_order(self, order_no):
+        return Order.objects.create(
+            order_no=order_no,
+            boss_user=self.user,
+            boss_wechat=self.profile.openid,
+            package=self.package,
+            required_players=1,
+            total_price_per_hour=100,
+            total_amount=100,
+            status=Order.STATUS_WAITING,
+            paid=False,
+        )
+
+    def test_eligible_new_order_copies_dedicated_room_snapshot(self):
+        order = self.create_order('VIPROOMORDER001')
+        order.refresh_from_db()
+        self.assertEqual(order.kook_room_number, 'TC-VIP-20000')
+        self.assertEqual(order.kook_room_updated_by, self.superuser)
+        self.assertIsNotNone(order.kook_room_updated_at)
+
+        self.room.kook_room_number = 'TC-VIP-NEW'
+        self.room.save(update_fields=['kook_room_number', 'updated_at'])
+        order.refresh_from_db()
+        self.assertEqual(order.kook_room_number, 'TC-VIP-20000')
+
+    def test_room_record_is_retained_but_new_orders_stop_using_it_after_downgrade(self):
+        create_manual_consumption_adjustment(
+            profile=self.profile,
+            amount=Decimal('-1000.00'),
+            reason='退款后降级测试',
+            operator=self.superuser,
+        )
+        self.profile.refresh_from_db()
+        self.assertEqual(self.profile.vip_tier, self.bronze)
+        self.assertTrue(ClientVipKookRoom.objects.filter(profile=self.profile).exists())
+
+        order = self.create_order('VIPROOMORDER002')
+        order.refresh_from_db()
+        self.assertEqual(order.kook_room_number, '')
+
+        room_payload = ClientProfileSerializer(self.profile).data['vip']['private_kook_room']
+        self.assertEqual(room_payload['status'], 'locked')
+        self.assertEqual(room_payload['room_number'], 'TC-VIP-20000')
+
+    def test_inactive_room_is_visible_but_not_applied(self):
+        self.room.is_active = False
+        self.room.save(update_fields=['is_active', 'updated_at'])
+
+        order = self.create_order('VIPROOMORDER003')
+        order.refresh_from_db()
+        self.assertEqual(order.kook_room_number, '')
+
+        room_payload = ClientProfileSerializer(self.profile).data['vip']['private_kook_room']
+        self.assertEqual(room_payload['status'], 'disabled')
+        self.assertTrue(room_payload['configured'])
+        self.assertFalse(room_payload['available'])
 
 
 class AdminRoleBootstrapTests(TestCase):
