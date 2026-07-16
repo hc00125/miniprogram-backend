@@ -10,7 +10,7 @@ from rest_framework.exceptions import ValidationError
 
 from apps.orders.models import Order
 
-from .models import BossConsumptionLedger, ClientProfile, VipTier
+from .models import BossConsumptionLedger, ClientProfile, ClientVipKookRoom, VipTier
 from .vip import create_manual_consumption_adjustment
 
 
@@ -38,7 +38,10 @@ class BossConsumptionLedgerAdminForm(forms.ModelForm):
 
 @admin.register(VipTier)
 class VipTierAdmin(admin.ModelAdmin):
-    list_display = ['name', 'code', 'min_consumption', 'member_count', 'badge_color', 'sort_order', 'is_active']
+    list_display = [
+        'name', 'code', 'min_consumption', 'member_count',
+        'feature_codes_display', 'badge_color', 'sort_order', 'is_active',
+    ]
     list_editable = ['min_consumption', 'sort_order', 'is_active']
     list_filter = ['is_active', 'badge_color']
     search_fields = ['name', 'code']
@@ -47,6 +50,10 @@ class VipTierAdmin(admin.ModelAdmin):
     @admin.display(description='会员数')
     def member_count(self, obj):
         return obj.members.count()
+
+    @admin.display(description='可执行权益')
+    def feature_codes_display(self, obj):
+        return '、'.join(obj.feature_codes or []) or '-'
 
 
 @admin.register(BossConsumptionLedger)
@@ -102,17 +109,65 @@ class BossConsumptionLedgerAdmin(admin.ModelAdmin):
         return False
 
 
+class ClientVipKookRoomInline(admin.StackedInline):
+    model = ClientVipKookRoom
+    extra = 0
+    max_num = 1
+    can_delete = False
+    fields = [
+        'kook_room_number', 'is_active',
+        'assigned_by', 'assigned_at', 'created_at', 'updated_at',
+    ]
+    readonly_fields = ['assigned_by', 'assigned_at', 'created_at', 'updated_at']
+    verbose_name = '白银鼠鼠及以上专属KOOK房间'
+    verbose_name_plural = '白银鼠鼠及以上专属KOOK房间（💎20,000解锁）'
+
+    def has_add_permission(self, request, obj=None):
+        if not request.user.is_superuser or obj is None:
+            return False
+        return not ClientVipKookRoom.objects.filter(profile=obj).exists()
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(ClientProfile)
 class ClientProfileAdmin(admin.ModelAdmin):
+    inlines = [ClientVipKookRoomInline]
     list_display = [
         'id', 'nickname', 'openid', 'vip_tier', 'cumulative_consumption',
-        'player_status', 'created_at',
+        'vip_kook_room_status', 'player_status', 'created_at',
     ]
-    search_fields = ['nickname', 'openid', 'user__username']
+    search_fields = ['nickname', 'openid', 'user__username', 'vip_kook_room__kook_room_number']
     list_filter = ['vip_tier', 'player_status', 'created_at']
     list_select_related = ['vip_tier', 'user']
     readonly_fields = ['cumulative_consumption', 'vip_tier', 'vip_updated_at', 'created_at', 'updated_at']
     actions = ['refresh_vip_display']
+
+    @admin.display(description='专属KOOK房间')
+    def vip_kook_room_status(self, obj):
+        room = ClientVipKookRoom.objects.filter(profile=obj).first()
+        if not room:
+            return '未配置'
+        if not room.kook_room_number:
+            return '等待填写'
+        if not room.is_active:
+            return f'{room.kook_room_number}（停用）'
+        return room.kook_room_number
+
+    def save_formset(self, request, form, formset, change):
+        if formset.model is ClientVipKookRoom:
+            instances = formset.save(commit=False)
+            for instance in instances:
+                instance.assigned_by = request.user
+                instance.assigned_at = timezone.now()
+                instance.save()
+            formset.save_m2m()
+            return
+        super().save_formset(request, form, formset, change)
 
     @admin.action(description='按当前累计消费重新计算VIP等级')
     def refresh_vip_display(self, request, queryset):
