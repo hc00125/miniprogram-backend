@@ -32,7 +32,13 @@ def release_players_after_order_cancel(sender, instance, created, **kwargs):
     标记接单关系已取消，并撤回抢单时预先增加的接单次数。
     """
     previous_status = getattr(instance, '_status_before_save', None)
-    if created or instance.status != Order.STATUS_CANCELLED or previous_status == Order.STATUS_CANCELLED:
+    if (
+        created
+        or instance.paid
+        or instance.status != Order.STATUS_CANCELLED
+        or previous_status == Order.STATUS_CANCELLED
+    ):
+        # 已支付订单必须走退款流程，不能因后台误改状态而释放阵容或回退统计。
         return
 
     with transaction.atomic():
