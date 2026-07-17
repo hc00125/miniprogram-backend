@@ -98,3 +98,20 @@ class UnpaidOrderCancellationTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, Order.STATUS_READY_TO_START)
         self.assertTrue(order.paid)
+
+    def test_paid_order_manual_status_change_does_not_release_player_or_revert_statistics(self):
+        order = self.create_order()
+        order = grab_order(order.order_no, self.player, self.player_user)
+        relation = order.order_players.get(player=self.player)
+        original_deadline = relation.room_join_deadline
+
+        # 防御性场景：后台误把已支付订单状态改成已取消，也不能触发“未支付取消”的释放逻辑。
+        order.paid = True
+        order.status = Order.STATUS_CANCELLED
+        order.save(update_fields=['paid', 'status'])
+
+        relation.refresh_from_db()
+        self.player.refresh_from_db()
+        self.assertNotEqual(relation.status, ORDER_PLAYER_CANCELLED_STATUS)
+        self.assertEqual(relation.room_join_deadline, original_deadline)
+        self.assertEqual(self.player.total_orders, 1)
