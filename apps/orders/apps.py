@@ -7,4 +7,5 @@ class OrdersConfig(AppConfig):
     verbose_name = '订单管理'
 
     def ready(self):
-        from . import signals  # noqa: F401
+        # 订单信号分文件加载：计价相关与付款前取消后的陪玩释放逻辑互不混杂。
+        from . import cancel_signals, signals  # noqa: F401
