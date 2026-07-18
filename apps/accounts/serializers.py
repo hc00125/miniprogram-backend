@@ -15,7 +15,7 @@ class ClientProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = ClientProfile
         fields = [
-            'id', 'openid', 'nickname', 'avatar_url', 'role', 'player_status',
+            'id', 'openid', 'nickname', 'nickname_customized', 'avatar_url', 'role', 'player_status',
             'cumulative_consumption', 'vip', 'created_at', 'application', 'player',
         ]
 
