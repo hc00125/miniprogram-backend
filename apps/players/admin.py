@@ -1,9 +1,13 @@
-from django.contrib import admin
+from django import forms
+from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.utils import timezone
 
 from apps.accounts.models import ClientProfile
 from apps.catalog.models import PlayerType
 
+from .approval import approve_player_application, validate_player_name_available
 from .models import Player, PlayerApplication, PlayerProfileUpdateRequest
 
 
@@ -111,8 +115,38 @@ class PlayerProfileUpdateRequestAdmin(admin.ModelAdmin):
         super().save_model(request, obj, form, change)
 
 
+class PlayerApplicationAdminForm(forms.ModelForm):
+    class Meta:
+        model = PlayerApplication
+        fields = '__all__'
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get('status') != PlayerApplication.STATUS_APPROVED:
+            return cleaned
+
+        user = cleaned.get('user') or getattr(self.instance, 'user', None)
+        if not user:
+            self.add_error('user', '申请未绑定用户，不能通过审核')
+            return cleaned
+
+        try:
+            cleaned['name'] = validate_player_name_available(
+                cleaned.get('name'),
+                user_id=user.id,
+                exclude_application_id=self.instance.pk,
+            )
+        except ValidationError as exc:
+            self.add_error('name', exc.messages[0])
+
+        if not cleaned.get('player_type') and not PlayerType.objects.filter(is_active=True).exists():
+            self.add_error('player_type', '没有可用的陪玩类型，请先在后台启用陪玩类型')
+        return cleaned
+
+
 @admin.register(PlayerApplication)
 class PlayerApplicationAdmin(admin.ModelAdmin):
+    form = PlayerApplicationAdminForm
     list_display = [
         'id', 'name', 'masked_real_name', 'player_type', 'contact_wechat',
         'status', 'has_audio_intro', 'submitted_at', 'reviewed_at'
@@ -150,67 +184,55 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
         return '已上传' if obj.audio_intro_url else '未上传'
 
     def save_model(self, request, obj, form, change):
-        was_approved = obj.status == PlayerApplication.STATUS_APPROVED
-        was_rejected = obj.status == PlayerApplication.STATUS_REJECTED
+        requested_status = obj.status
         if not obj.pk:
             obj.reviewed_by = request.user
         elif 'status' in form.changed_data:
             obj.reviewed_by = request.user
             obj.reviewed_at = timezone.now()
-        super().save_model(request, obj, form, change)
 
-        if was_approved and obj.user:
-            ClientProfile.objects.filter(user=obj.user).update(player_status=ClientProfile.PLAYER_STATUS_APPROVED)
-            player = Player.objects.filter(user=obj.user).first()
-            if not player:
-                default_type = PlayerType.objects.filter(is_active=True).order_by('priority').first()
-                Player.objects.create(
-                    user=obj.user,
-                    name=obj.name,
-                    player_type=obj.player_type or default_type,
-                    contact_wechat=obj.contact_wechat,
-                    bio=obj.bio or '',
-                    audio_intro_url=obj.audio_intro_url or '',
-                    audio_intro_title=obj.audio_intro_title or '',
-                    status=Player.STATUS_APPROVED,
-                )
-            else:
-                player.audio_intro_url = obj.audio_intro_url or player.audio_intro_url
-                player.audio_intro_title = obj.audio_intro_title or player.audio_intro_title
-                player.save(update_fields=['audio_intro_url', 'audio_intro_title', 'updated_at'])
-        elif was_rejected and obj.user:
-            ClientProfile.objects.filter(user=obj.user).update(player_status=ClientProfile.PLAYER_STATUS_REJECTED)
+        if requested_status == PlayerApplication.STATUS_APPROVED and obj.user:
+            # 单条审批也必须和正式陪玩创建处于同一事务，避免只保存 approved 状态。
+            with transaction.atomic():
+                super().save_model(request, obj, form, change)
+                approve_player_application(obj.pk, request.user)
+            return
+
+        super().save_model(request, obj, form, change)
+        if requested_status == PlayerApplication.STATUS_REJECTED and obj.user:
+            ClientProfile.objects.filter(user=obj.user).update(
+                player_status=ClientProfile.PLAYER_STATUS_REJECTED,
+                updated_at=timezone.now(),
+            )
 
     @admin.action(description='批准选中的陪玩师申请')
     def approve_applications(self, request, queryset):
-        approved = queryset.filter(status=PlayerApplication.STATUS_PENDING).select_related('user', 'player_type')
-        approved_list = list(approved)
-        user_ids = [app.user_id for app in approved_list]
-        updated = approved.update(
-            status=PlayerApplication.STATUS_APPROVED,
-            reviewed_at=timezone.now(),
-            reviewed_by=request.user,
+        application_ids = list(
+            queryset.filter(status=PlayerApplication.STATUS_PENDING).values_list('id', flat=True)
         )
-        ClientProfile.objects.filter(user_id__in=user_ids).update(player_status=ClientProfile.PLAYER_STATUS_APPROVED)
-        default_type = PlayerType.objects.filter(is_active=True).order_by('priority').first()
-        for app in approved_list:
-            player = Player.objects.filter(user=app.user).first()
-            if not player:
-                Player.objects.create(
-                    user=app.user,
-                    name=app.name,
-                    player_type=app.player_type or default_type,
-                    contact_wechat=app.contact_wechat,
-                    bio=app.bio or '',
-                    audio_intro_url=app.audio_intro_url or '',
-                    audio_intro_title=app.audio_intro_title or '',
-                    status=Player.STATUS_APPROVED,
-                )
-            else:
-                player.audio_intro_url = app.audio_intro_url or player.audio_intro_url
-                player.audio_intro_title = app.audio_intro_title or player.audio_intro_title
-                player.save(update_fields=['audio_intro_url', 'audio_intro_title', 'updated_at'])
-        self.message_user(request, f'已批准 {updated} 条申请')
+        approved_count = 0
+        failures = []
+        for application_id in application_ids:
+            try:
+                # 每条申请独立事务：一条失败不会污染状态，也不会阻止其他申请继续审批。
+                _, application = approve_player_application(application_id, request.user)
+                approved_count += 1
+            except (ValidationError, PlayerApplication.DoesNotExist) as exc:
+                application = PlayerApplication.objects.filter(pk=application_id).first()
+                label = application.name if application else f'申请#{application_id}'
+                message = '; '.join(getattr(exc, 'messages', [])) or str(exc)
+                failures.append(f'{label}：{message}')
+
+        if approved_count:
+            self.message_user(request, f'已批准 {approved_count} 条申请')
+        if failures:
+            self.message_user(
+                request,
+                '以下申请未通过，状态保持待审核：' + ' | '.join(failures[:10]),
+                level=messages.ERROR,
+            )
+        if not approved_count and not failures:
+            self.message_user(request, '没有可批准的待审核申请', level=messages.WARNING)
 
     @admin.action(description='拒绝选中的陪玩师申请')
     def reject_applications(self, request, queryset):
