@@ -80,9 +80,12 @@ def approve_player_application(
     if not application.user_id:
         raise ValidationError('申请未绑定用户，无法通过审核')
 
+    # 审批时再次检查正式陪玩和其他待审/已通过申请，兼容修复前遗留的同名数据。
     name = validate_player_name_available(
         application.name,
         user_id=application.user_id,
+        include_applications=True,
+        exclude_application_id=application.id,
     )
     if player_type_id:
         player_type = PlayerType.objects.filter(id=player_type_id, is_active=True).first()
