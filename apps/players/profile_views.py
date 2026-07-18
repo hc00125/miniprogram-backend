@@ -53,14 +53,14 @@ def public_list(request):
 
     ordering = request.query_params.get('ordering', '-avg_rating')
     ordering_map = {
-        'avg_rating': 'avg_rating_value',
-        '-avg_rating': '-avg_rating_value',
-        'total_orders': 'total_orders',
-        '-total_orders': '-total_orders',
-        'created_at': 'created_at',
-        '-created_at': '-created_at',
+        'avg_rating': ('avg_rating_value', 'id'),
+        '-avg_rating': ('-avg_rating_value', '-rating_count', '-total_orders', 'id'),
+        'total_orders': ('total_orders', 'id'),
+        '-total_orders': ('-total_orders', 'id'),
+        'created_at': ('created_at', 'id'),
+        '-created_at': ('-created_at', 'id'),
     }
-    queryset = queryset.order_by(ordering_map.get(ordering, '-avg_rating_value'), 'id')
+    queryset = queryset.order_by(*ordering_map.get(ordering, ordering_map['-avg_rating']))
 
     result = []
     for player in queryset:
