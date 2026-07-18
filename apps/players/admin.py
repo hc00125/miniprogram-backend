@@ -134,6 +134,7 @@ class PlayerApplicationAdminForm(forms.ModelForm):
             cleaned['name'] = validate_player_name_available(
                 cleaned.get('name'),
                 user_id=user.id,
+                include_applications=True,
                 exclude_application_id=self.instance.pk,
             )
         except ValidationError as exc:
