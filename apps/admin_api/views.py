@@ -1,4 +1,5 @@
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -19,7 +20,8 @@ from apps.catalog.serializers import (
 from apps.common.permissions import IsAdminUser
 from apps.orders.models import Order
 from apps.orders.serializers import BossOrderDetailSerializer, BossOrderListSerializer
-from apps.players.models import Player, PlayerApplication
+from apps.players.approval import approve_player_application
+from apps.players.models import PlayerApplication
 from apps.players.serializers import PlayerApplicationApproveSerializer, PlayerApplicationRejectSerializer, PlayerApplicationSerializer
 
 
@@ -72,31 +74,27 @@ def approve_application(request, application_id):
         return Response({'detail': '申请不存在'}, status=status.HTTP_404_NOT_FOUND)
     serializer = PlayerApplicationApproveSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    player_type_id = serializer.validated_data.get('player_type_id')
-    player_type = PlayerType.objects.filter(id=player_type_id).first() if player_type_id else application.player_type
-    if not player_type:
-        return Response({'detail': '请选择打手类型'}, status=status.HTTP_400_BAD_REQUEST)
 
-    player, _ = Player.objects.update_or_create(
-        user=application.user,
-        defaults={
-            'name': application.name,
-            'player_type': player_type,
-            'contact_wechat': application.contact_wechat,
-            'bio': application.bio,
-            'status': Player.STATUS_APPROVED,
-        },
-    )
-    application.status = PlayerApplication.STATUS_APPROVED
-    application.remark = serializer.validated_data.get('remark', '')
-    application.reviewed_by = request.user
-    application.reviewed_at = timezone.now()
-    application.save()
-    profile = getattr(application.user, 'client_profile', None)
-    if profile:
-        profile.player_status = ClientProfile.PLAYER_STATUS_APPROVED
-        profile.save(update_fields=['player_status', 'updated_at'])
-    return Response({'message': '审核通过', 'application': PlayerApplicationSerializer(application).data, 'player_id': player.id})
+    try:
+        player, application = approve_player_application(
+            application.id,
+            request.user,
+            player_type_id=serializer.validated_data.get('player_type_id'),
+            remark=serializer.validated_data.get('remark', ''),
+        )
+    except ValidationError as exc:
+        return Response(
+            {'detail': '; '.join(exc.messages)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except PlayerApplication.DoesNotExist:
+        return Response({'detail': '申请不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response({
+        'message': '审核通过',
+        'application': PlayerApplicationSerializer(application).data,
+        'player_id': player.id,
+    })
 
 
 @api_view(['POST'])
