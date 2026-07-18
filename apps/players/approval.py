@@ -58,11 +58,18 @@ def validate_player_name_available(
 
 
 @transaction.atomic
-def approve_player_application(application_id, reviewer):
+def approve_player_application(
+    application_id,
+    reviewer,
+    *,
+    player_type_id=None,
+    remark=None,
+):
     """把一条申请原子地转成正式陪玩档案。
 
     正式陪玩创建、申请状态和客户状态必须全部成功才提交；任何一步失败都会回滚，
     从而避免 ``player_status=approved`` 但没有 ``Player`` 记录的半成功数据。
+    Django Admin 与管理端 API 必须统一调用本函数，不能各自复制审批逻辑。
     """
     application = (
         PlayerApplication.objects
@@ -77,9 +84,14 @@ def approve_player_application(application_id, reviewer):
         application.name,
         user_id=application.user_id,
     )
-    player_type = application.player_type or PlayerType.objects.filter(
-        is_active=True,
-    ).order_by('priority', 'id').first()
+    if player_type_id:
+        player_type = PlayerType.objects.filter(id=player_type_id, is_active=True).first()
+        if not player_type:
+            raise ValidationError('陪玩类型不存在或已停用')
+    else:
+        player_type = application.player_type or PlayerType.objects.filter(
+            is_active=True,
+        ).order_by('priority', 'id').first()
     if not player_type:
         raise ValidationError('没有可用的陪玩类型，请先在后台启用陪玩类型')
 
@@ -106,9 +118,13 @@ def approve_player_application(application_id, reviewer):
     application.status = PlayerApplication.STATUS_APPROVED
     application.reviewed_at = reviewed_at
     application.reviewed_by = reviewer
-    application.save(update_fields=[
+    update_fields = [
         'name', 'player_type', 'status', 'reviewed_at', 'reviewed_by',
-    ])
+    ]
+    if remark is not None:
+        application.remark = remark
+        update_fields.append('remark')
+    application.save(update_fields=update_fields)
 
     updated_profiles = ClientProfile.objects.filter(user=application.user).update(
         player_status=ClientProfile.PLAYER_STATUS_APPROVED,
