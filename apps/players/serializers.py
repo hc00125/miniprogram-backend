@@ -1,9 +1,11 @@
 import re
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from apps.catalog.models import PlayerType
 
+from .approval import validate_player_name_available
 from .models import (
     Player,
     PlayerApplication,
@@ -137,6 +139,13 @@ class PlayerApplicationCreateSerializer(serializers.ModelSerializer):
             'name', 'real_name', 'type_id', 'player_type_id', 'contact_wechat',
             'bio', 'audio_intro_url', 'audio_intro_title'
         ]
+
+    def validate_name(self, value):
+        # 提交阶段先占用昵称，避免同名申请进入审批队列；审批时还会再次校验。
+        try:
+            return validate_player_name_available(value, include_applications=True)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages[0]) from exc
 
     def validate_real_name(self, value):
         normalized = re.sub(r'\s+', ' ', value.strip())
