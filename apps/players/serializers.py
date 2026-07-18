@@ -171,8 +171,6 @@ class PlayerApplicationCreateSerializer(serializers.ModelSerializer):
         profile = getattr(user, 'client_profile', None) if user else None
         if not profile:
             raise serializers.ValidationError({'detail': '请先微信登录'})
-        if not profile.nickname_customized:
-            raise serializers.ValidationError({'name': '申请成为陪玩师前，请先设置公开昵称'})
 
         # 陪玩展示名以账号当前昵称为唯一来源，不接受客户端伪造另一个名称。
         try:
