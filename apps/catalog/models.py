@@ -189,6 +189,7 @@ class PackageImage(models.Model):
                 img.save(buf, format='JPEG', quality=85, optimize=True)
                 basename = self.image.name.rsplit('.', 1)[0]
                 self.image.save(f'{basename}.jpg', ContentFile(buf.getvalue()), save=False)
+                super().save(*args, **kwargs)
                 return
             self.image.save(self.image.name, ContentFile(buf.getvalue()), save=False)
         super().save(*args, **kwargs)

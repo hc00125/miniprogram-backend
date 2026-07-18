@@ -73,7 +73,7 @@ def approve_player_application(
     """
     application = (
         PlayerApplication.objects
-        .select_for_update()
+        .select_for_update(of=('self',))
         .select_related('user', 'player_type')
         .get(pk=application_id)
     )
