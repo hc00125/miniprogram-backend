@@ -1,4 +1,3 @@
-import hashlib
 import json
 import uuid
 from urllib.parse import urlencode
@@ -19,6 +18,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.players.models import Player
 
 from .models import ClientProfile
+from .nicknames import get_or_create_wechat_profile
 from .serializers import ClientProfileSerializer, WechatLoginSerializer
 
 
@@ -52,28 +52,6 @@ def resolve_openid(code='', openid=''):
     raise ValueError('微信登录配置不完整，请联系管理员')
 
 
-def make_default_nickname():
-    """生成唯一的默认昵称，如 微信用户001"""
-    prefix = '微信用户'
-    existing = (
-        ClientProfile.objects
-        .filter(nickname__startswith=prefix)
-        .values_list('nickname', flat=True)
-        .order_by('nickname')
-    )
-    used_numbers = set()
-    for nick in existing:
-        num_str = nick[len(prefix):]
-        try:
-            used_numbers.add(int(num_str))
-        except ValueError:
-            pass
-    for i in range(1, 999999):
-        if i not in used_numbers:
-            return f'{prefix}{i:03d}'  # 微信用户001 ~ 微信用户999999
-    return f'{prefix}{999999}'
-
-
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def wechat_login(request):
@@ -89,17 +67,19 @@ def wechat_login(request):
         user.set_unusable_password()
         user.save(update_fields=['password'])
 
-    is_new = not hasattr(user, 'client_profile')
-    profile, created = ClientProfile.objects.get_or_create(user=user, defaults={'openid': openid})
+    try:
+        profile, created = get_or_create_wechat_profile(user, openid)
+    except RuntimeError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
     profile.openid = openid
     profile.unionid = unionid or profile.unionid
 
-    if is_new:
-        # 新用户：生成唯一默认昵称
-        profile.nickname = make_default_nickname()
+    if created:
+        # 新用户默认昵称由 OpenID 的不可逆摘要生成，例如“微信用户-4A8F2D91C7”。
         profile.nickname_customized = False
     else:
-        # 老用户：只有从未自定义过昵称，且微信昵称不是默认占位符时，才覆盖
+        # 老用户：只有从未自定义过昵称，且微信昵称不是默认占位符时，才覆盖。
         wx_nickname = serializer.validated_data.get('nickname')
         if wx_nickname and wx_nickname != '微信用户' and not profile.nickname_customized:
             profile.nickname = wx_nickname
