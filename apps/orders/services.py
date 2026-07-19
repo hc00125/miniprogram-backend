@@ -149,7 +149,7 @@ def create_order(validated_data, user=None, allow_existing_active=False):
         ensure_no_active_orders(validated_data['boss_wechat'])
 
     # 带“最低陪玩等级”的固定规格，由商品定义整单人数，后端不接受前端篡改人数。
-    required_players = int(package.player_count if spec_lineup else (validated_data.get('required_players') or package.player_count))
+    required_players = int(package.player_count)
     if required_players <= 0:
         raise ValidationError({'detail': '人数必须大于 0'})
 
