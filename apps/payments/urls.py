@@ -9,6 +9,7 @@ urlpatterns = [
     path('status/<str:payment_no>', views.status_view),
     path('wechat/query/<str:payment_no>', views.query_wechat_order),
     path('wechat/virtual/query/<str:payment_no>', views.query_wechat_virtual),
+    path('wechat/virtual/query-order/<str:order_no>', views.query_wechat_virtual_by_order),
     path('mock/<str:payment_no>/success', views.mock_success),
     path('wechat/callback', views.wechat_callback),
 ]
