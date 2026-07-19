@@ -1,5 +1,5 @@
 from django.db import transaction
-from django.db.models import Avg, Case, Count, Exists, ExpressionWrapper, F, FloatField, OuterRef, Value, When
+from django.db.models import Avg, Case, Count, Exists, ExpressionWrapper, F, FloatField, OuterRef, Q, Value, When
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -47,9 +47,13 @@ def public_list(request):
     if is_online is not None:
         queryset = queryset.filter(is_online=is_online.lower() == 'true')
 
-    search = request.query_params.get('search')
+    search = (request.query_params.get('search') or '').strip()
     if search:
-        queryset = queryset.filter(name__icontains=search)
+        queryset = queryset.filter(
+            Q(name__icontains=search)
+            | Q(bio__icontains=search)
+            | Q(player_type__name__icontains=search)
+        )
 
     ordering = request.query_params.get('ordering', '-avg_rating')
     ordering_map = {
