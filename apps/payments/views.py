@@ -8,6 +8,7 @@ from rest_framework.exceptions import APIException
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+from .models import Payment
 from .serializers import (
     MiniProgramPaymentCreateSerializer,
     PaymentCreateSerializer,
@@ -24,6 +25,7 @@ from .services import (
     query_wechat_payment,
 )
 from .virtualpay import (
+    VIRTUAL_CHANNEL,
     VirtualPaymentAPIError,
     VirtualPaymentConfigurationError,
     VirtualPaymentError,
@@ -65,6 +67,19 @@ def unexpected_virtual_payment_response(exc, *, action, request, order_no='', pa
         },
         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
+
+
+def virtual_payment_error_response(exc):
+    if isinstance(exc, VirtualPaymentConfigurationError):
+        return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    if isinstance(exc, VirtualPaymentAPIError):
+        return Response(
+            {'detail': str(exc), 'wechat_code': exc.code},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    if isinstance(exc, VirtualPaymentError):
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return None
 
 
 @api_view(['POST'])
@@ -113,15 +128,8 @@ def create_wechat_virtual(request):
             user=request.user,
             **serializer.validated_data,
         )
-    except VirtualPaymentConfigurationError as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-    except VirtualPaymentAPIError as exc:
-        return Response(
-            {'detail': str(exc), 'wechat_code': exc.code},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
-    except VirtualPaymentError as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
+        return virtual_payment_error_response(exc)
     except APIException:
         raise
     except Exception as exc:
@@ -167,15 +175,8 @@ def query_wechat_order(request, payment_no):
 def query_wechat_virtual(request, payment_no):
     try:
         payment = query_virtual_payment(payment_no, request.user)
-    except VirtualPaymentConfigurationError as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-    except VirtualPaymentAPIError as exc:
-        return Response(
-            {'detail': str(exc), 'wechat_code': exc.code},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
-    except VirtualPaymentError as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
+        return virtual_payment_error_response(exc)
     except APIException:
         raise
     except Exception as exc:
@@ -186,6 +187,51 @@ def query_wechat_virtual(request, payment_no):
             payment_no=payment_no,
         )
     return Response(PaymentSerializer(payment).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def query_wechat_virtual_by_order(request, order_no):
+    payments = list(
+        Payment.objects
+        .select_related('order', 'order__boss_user')
+        .filter(
+            order__order_no=order_no,
+            order__boss_user=request.user,
+            channel=VIRTUAL_CHANNEL,
+        )
+        .order_by('-created_at')[:5]
+    )
+    if not payments:
+        return Response({
+            'found': False,
+            'order_no': order_no,
+            'detail': '该订单暂无可核验的微信虚拟支付单',
+        })
+
+    synced_payment = payments[0]
+    for candidate in payments:
+        try:
+            synced_payment = query_virtual_payment(candidate.payment_no, request.user)
+        except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
+            return virtual_payment_error_response(exc)
+        except APIException:
+            raise
+        except Exception as exc:
+            return unexpected_virtual_payment_response(
+                exc,
+                action='query_by_order',
+                request=request,
+                order_no=order_no,
+                payment_no=candidate.payment_no,
+            )
+
+        if synced_payment.status == 'paid' or getattr(synced_payment.order, 'paid', False):
+            break
+
+    data = dict(PaymentSerializer(synced_payment).data)
+    data['found'] = True
+    return Response(data)
 
 
 @api_view(['POST'])
