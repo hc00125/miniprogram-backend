@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import boss_views, catalog_navigation_views, designation_views, payment_views, rating_views
+from . import batch_views, boss_views, catalog_navigation_views, designation_views, payment_views, rating_views
 
 urlpatterns = [
     path('catalog-navigation', catalog_navigation_views.catalog_navigation),
@@ -15,6 +15,7 @@ urlpatterns = [
     path('order/<str:order_no>/designations', designation_views.designations),
     path('order/<str:order_no>/designation/<int:designation_id>/release', designation_views.release),
     path('orders/me', boss_views.my_orders),
+    path('orders/batch', batch_views.create_cart_order_batch),
     path('orders/<str:boss_wechat>', boss_views.boss_orders),
     path('order/<str:order_no>/cancel', boss_views.cancel_order),
     path('order/<str:order_no>/pause', boss_views.pause),
