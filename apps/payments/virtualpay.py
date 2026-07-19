@@ -411,7 +411,10 @@ def notify_goods_delivered(payment):
 def _delivery_succeeded(payment):
     payload = dict(payment.notify_payload or {})
     response = payload.get('delivery_response') or {}
-    return payload.get('delivery_status') == 'succeeded' or int(response.get('errcode') or 0) == 0
+    return (
+        payload.get('delivery_status') == 'succeeded'
+        or (isinstance(response, dict) and bool(response) and int(response.get('errcode') or 0) == 0)
+    )
 
 
 def _save_delivery_result(payment, response=None, error=None):
