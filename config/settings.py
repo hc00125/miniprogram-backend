@@ -233,3 +233,20 @@ WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD = os.environ.get('WECHAT_VIRTUALPAY_SA
 
 # 人民币 → 鱼干兑换比例：每 1 元 RMB = ? 鱼干
 FISH_CRACKER_EXCHANGE_RATE = env_int('FISH_CRACKER_EXCHANGE_RATE', '10')
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'apps.payments.virtualpay': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
