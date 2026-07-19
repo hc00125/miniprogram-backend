@@ -7,7 +7,7 @@ from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Addon, Package, PackageSpec, PlayerType
 from apps.common.money import money
-from apps.orders.models import Order, OrderItem, OrderPlayer, OrderStatusLog
+from apps.orders.models import CartItem, Order, OrderItem, OrderPlayer, OrderStatusLog
 
 from .designations import (
     create_designations,
@@ -17,6 +17,15 @@ from .designations import (
     pending_designation_count,
     validate_designated_players,
 )
+
+
+ACTIVE_ORDER_STATUSES = [
+    Order.STATUS_WAITING,
+    Order.STATUS_PENDING_PAYMENT,
+    Order.STATUS_READY_TO_START,
+    Order.STATUS_IN_PROGRESS,
+]
+MAX_CART_BATCH_ORDERS = 20
 
 
 def generate_order_no():
@@ -118,8 +127,13 @@ def spec_defines_full_lineup(spec):
     return bool(spec and spec.required_player_type_id)
 
 
+def ensure_no_active_orders(boss_wechat):
+    if Order.objects.filter(boss_wechat=boss_wechat, status__in=ACTIVE_ORDER_STATUSES).exists():
+        raise ValidationError({'detail': '您有未完成的订单，请先完成后再下单'})
+
+
 @transaction.atomic
-def create_order(validated_data, user=None):
+def create_order(validated_data, user=None, allow_existing_active=False):
     order_items = normalize_order_items(validated_data)
     first_item = order_items[0]
     package = first_item['package']
@@ -131,18 +145,8 @@ def create_order(validated_data, user=None):
     if spec_lineup and first_item['quantity'] != 1:
         raise ValidationError({'detail': '陪玩类型规格每次只能购买1份，人数由商品默认人数决定'})
 
-    active_statuses = [
-        Order.STATUS_WAITING,
-        Order.STATUS_PENDING_PAYMENT,
-        Order.STATUS_READY_TO_START,
-        Order.STATUS_IN_PROGRESS,
-    ]
-    has_active = Order.objects.filter(
-        boss_wechat=validated_data['boss_wechat'],
-        status__in=active_statuses,
-    ).exists()
-    if has_active:
-        raise ValidationError({'detail': '您有未完成的订单，请先完成后再下单'})
+    if not allow_existing_active:
+        ensure_no_active_orders(validated_data['boss_wechat'])
 
     # 带“最低陪玩等级”的固定规格，由商品定义整单人数，后端不接受前端篡改人数。
     required_players = int(package.player_count if spec_lineup else (validated_data.get('required_players') or package.player_count))
@@ -260,6 +264,55 @@ def create_order(validated_data, user=None):
         reason=reason,
     )
     return order
+
+
+@transaction.atomic
+def create_cart_orders(cart_item_ids, validated_data, user):
+    """将购物车中的每一份商品发布为独立订单，整批成功后再删除购物车项。"""
+    ordered_ids = []
+    seen_ids = set()
+    for raw_id in cart_item_ids or []:
+        item_id = int(raw_id)
+        if item_id not in seen_ids:
+            ordered_ids.append(item_id)
+            seen_ids.add(item_id)
+    if not ordered_ids:
+        raise ValidationError({'detail': '请选择需要结算的购物车商品'})
+
+    locked_items = list(
+        CartItem.objects.select_for_update()
+        .filter(id__in=ordered_ids, user=user)
+        .select_related('package', 'spec')
+    )
+    item_map = {item.id: item for item in locked_items}
+    if len(item_map) != len(ordered_ids):
+        raise ValidationError({'detail': '部分购物车商品不存在、已变化或不属于当前账号'})
+
+    ordered_items = [item_map[item_id] for item_id in ordered_ids]
+    order_count = sum(normalize_quantity(item.quantity) for item in ordered_items)
+    if order_count > MAX_CART_BATCH_ORDERS:
+        raise ValidationError({'detail': f'单次最多发布 {MAX_CART_BATCH_ORDERS} 个独立订单'})
+
+    ensure_no_active_orders(validated_data['boss_wechat'])
+    orders = []
+    for cart_item in ordered_items:
+        for _ in range(normalize_quantity(cart_item.quantity)):
+            order_payload = {
+                'boss_wechat': validated_data['boss_wechat'],
+                'game_id': validated_data.get('game_id'),
+                'package_id': cart_item.package_id,
+                'spec_id': cart_item.spec_id,
+                'quantity': 1,
+                'required_players': cart_item.package.player_count,
+                'addon_details': None,
+                'designated_players': None,
+                'boss_note': validated_data.get('boss_note'),
+                'booked_hours': validated_data.get('booked_hours') or 1.0,
+            }
+            orders.append(create_order(order_payload, user, allow_existing_active=True))
+
+    CartItem.objects.filter(id__in=ordered_ids, user=user).delete()
+    return orders
 
 
 def remaining_type_slots(order):
