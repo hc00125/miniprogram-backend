@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import boss_views, catalog_navigation_views, designation_views, rating_views
+from . import boss_views, catalog_navigation_views, designation_views, payment_views, rating_views
 
 urlpatterns = [
     path('catalog-navigation', catalog_navigation_views.catalog_navigation),
@@ -10,7 +10,7 @@ urlpatterns = [
     path('player-types', boss_views.player_types),
     path('online-players', boss_views.online_players),
     path('order', boss_views.create_order),
-    path('order/<str:order_no>', boss_views.order_detail),
+    path('order/<str:order_no>', payment_views.order_detail),
     path('order/<str:order_no>/renew', boss_views.create_renewal),
     path('order/<str:order_no>/designations', designation_views.designations),
     path('order/<str:order_no>/designation/<int:designation_id>/release', designation_views.release),
