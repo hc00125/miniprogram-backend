@@ -104,10 +104,10 @@ class ConcretePlayerDesignationTests(TestCase):
         self.assertEqual(invitation.extra_amount, Decimal('0.00'))
         self.assertGreater(invitation.expires_at, timezone.now())
 
-    def test_higher_tier_designation_upgrades_to_matching_spec(self):
+    def test_higher_tier_designation_charges_own_slot_without_changing_base_spec(self):
         order = self.create_designated_order(designated_players=[self.other_type_player.id])
 
-        self.assertEqual(order.spec_id, self.high_spec.id)
+        self.assertEqual(order.spec_id, self.spec.id)
         self.assertEqual(order.total_amount, 25.0)
         self.assertEqual(order.designated_players, [self.other_type_player.id])
         self.assertTrue(OrderDesignation.objects.filter(order=order, player=self.other_type_player).exists())
@@ -116,7 +116,7 @@ class ConcretePlayerDesignationTests(TestCase):
         with self.assertRaises(ValidationError) as context:
             self.create_designated_order(spec=self.high_spec, designated_players=[self.designated.id])
 
-        self.assertIn('等级不足', str(context.exception.detail))
+        self.assertIn('不满足该订单要求', str(context.exception.detail))
         self.assertEqual(Order.objects.count(), 0)
 
     def test_public_player_cannot_take_only_reserved_slot(self):
@@ -160,17 +160,16 @@ class ConcretePlayerDesignationTests(TestCase):
         self.assertEqual(order.order_players.count(), 2)
         self.assertEqual(order.order_players.filter(is_designated=True).count(), 2)
 
-    def test_mixed_player_types_use_highest_tier_price(self):
+    def test_mixed_player_types_keep_base_spec_and_sum_individual_slot_prices(self):
         self.package.player_count = 2
         self.package.save(update_fields=['player_count'])
         order = self.create_designated_order(
             required_players=2,
             designated_players=[self.designated.id, self.other_type_player.id],
-            spec=self.high_spec,
         )
 
-        self.assertEqual(order.spec_id, self.high_spec.id)
-        self.assertEqual(order.total_amount, 25.0)
+        self.assertEqual(order.spec_id, self.spec.id)
+        self.assertEqual(order.total_amount, 20.0)  # 娱乐7.5 + 技术12.5
         self.assertEqual(order.designations.count(), 2)
         self.assertEqual(order.designated_players, [self.designated.id, self.other_type_player.id])
 
@@ -279,7 +278,11 @@ class SpecDefinedLineupTests(TestCase):
 
         self.assertEqual(order.required_players, 3)
         self.assertEqual(order.total_amount, 75.0)
-        self.assertEqual(order.designated_types, [{
+        spec_rules = [
+            item for item in (order.designated_types or [])
+            if item.get('source') == 'spec'
+        ]
+        self.assertEqual(spec_rules, [{
             'type_id': self.technical_type.id,
             'count': 3,
             'source': 'spec',
