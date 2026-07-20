@@ -22,6 +22,15 @@ class Player(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name='player_profile')
     name = models.CharField(max_length=50, unique=True)
     player_type = models.ForeignKey('catalog.PlayerType', on_delete=models.PROTECT, related_name='players')
+    minimum_designated_player_type = models.ForeignKey(
+        'catalog.PlayerType',
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name='minimum_designated_players',
+        verbose_name='最低指定计费类型',
+        help_text='老板指定该陪玩时，至少按此类型对应的商品规格单人价计费；留空时按陪玩自身类型计费。',
+    )
     total_orders = models.IntegerField(default=0)
     total_rating = models.FloatField(default=0)
     rating_count = models.IntegerField(default=0)
@@ -51,6 +60,10 @@ class Player(models.Model):
         return self.player_type_id
 
     @property
+    def designated_billing_type(self):
+        return self.minimum_designated_player_type or self.player_type
+
+    @property
     def avg_rating(self):
         if self.rating_count <= 0:
             return 0
@@ -72,7 +85,7 @@ class PlayerApplication(models.Model):
     STATUS_REJECTED = 'rejected'
 
     STATUS_CHOICES = [
-        (STATUS_PENDING, '审核中'),
+        (STATUS_PENDING, '待审核'),
         (STATUS_APPROVED, '已通过'),
         (STATUS_REJECTED, '已拒绝'),
     ]
