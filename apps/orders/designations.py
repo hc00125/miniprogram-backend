@@ -78,6 +78,15 @@ def validate_designated_player_spec(order, players):
     if not players:
         return
 
+    tier_specs = (
+        PackageSpec.objects
+        .select_related('required_player_type')
+        .filter(package_id=order.package_id, is_active=True, required_player_type__isnull=False)
+    )
+    # 护航等不按陪玩等级规格计价的商品，继续沿用自身资格校验和固定价格。
+    if not tier_specs.exists():
+        return
+
     highest_player = max(players, key=lambda player: int(player.player_type.priority or 0))
     highest_type = highest_player.player_type
     highest_priority = int(highest_type.priority or 0)
@@ -85,13 +94,8 @@ def validate_designated_player_spec(order, players):
         raise ValidationError({'designated_players': '指定陪玩等级信息不完整，请联系管理员检查陪玩类型配置'})
 
     expected_spec = (
-        PackageSpec.objects
-        .select_related('required_player_type')
-        .filter(
-            package_id=order.package_id,
-            is_active=True,
-            required_player_type__priority=highest_priority,
-        )
+        tier_specs
+        .filter(required_player_type__priority=highest_priority)
         .order_by('-price', 'sort_order', 'id')
         .first()
     )
@@ -100,7 +104,25 @@ def validate_designated_player_spec(order, players):
             'designated_players': f'当前商品未配置“{highest_type.name}”对应计价规格，请联系管理员补充规格后再下单'
         })
 
-    if order.spec_id != expected_spec.id:
+    selected_spec = (
+        tier_specs
+        .filter(id=order.spec_id)
+        .first()
+    )
+    if not selected_spec:
+        raise ValidationError({
+            'designated_players': f'指定阵容最高等级为“{highest_type.name}”，必须使用“{expected_spec.display_name or expected_spec.name}”计价规格'
+        })
+
+    selected_priority = int(selected_spec.required_player_type.priority or 0)
+    if selected_priority > highest_priority:
+        raise ValidationError({
+            'designated_players': (
+                f'所选规格“{selected_spec.display_name or selected_spec.name}”要求“{selected_spec.required_player_type.name}”及以上等级，'
+                f'指定陪玩等级不足，请更换陪玩或改选对应等级规格。'
+            )
+        })
+    if selected_spec.id != expected_spec.id:
         raise ValidationError({
             'designated_players': (
                 f'指定阵容最高等级为“{highest_type.name}”，'
