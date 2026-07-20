@@ -2,6 +2,7 @@ import logging
 import uuid
 
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import APIException
@@ -26,6 +27,7 @@ from .services import (
 )
 from .virtualpay import (
     VIRTUAL_CHANNEL,
+    VIRTUAL_MODE_GOODS,
     VirtualPaymentAPIError,
     VirtualPaymentConfigurationError,
     VirtualPaymentError,
@@ -40,6 +42,8 @@ from .wechatpay import (
 )
 
 logger = logging.getLogger(__name__)
+
+XPAY_STATUS_CLOSED = 6
 
 
 def ordinary_payment_disabled_response():
@@ -80,6 +84,72 @@ def virtual_payment_error_response(exc):
     if isinstance(exc, VirtualPaymentError):
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     return None
+
+
+def _mark_virtual_payment_closed(payment, reason='微信侧订单已关闭'):
+    updated = Payment.objects.filter(pk=payment.pk, status='paying').update(
+        status='closed',
+        updated_at=timezone.now(),
+    )
+    if updated:
+        logger.info(
+            '[虚拟支付] 关闭不可复用支付单 payment_no=%s order_no=%s reason=%s',
+            payment.payment_no,
+            payment.order_id,
+            reason,
+        )
+    return bool(updated)
+
+
+def reconcile_closed_virtual_payment(order_no, user):
+    """支付前主动核验旧支付单，避免复用微信侧已经关闭的 outTradeNo。"""
+    payment = (
+        Payment.objects
+        .select_related('order', 'order__boss_user')
+        .filter(
+            order__order_no=order_no,
+            order__boss_user=user,
+            channel=VIRTUAL_CHANNEL,
+            scene=VIRTUAL_MODE_GOODS,
+            status='paying',
+        )
+        .order_by('-created_at')
+        .first()
+    )
+    if not payment:
+        return False
+
+    try:
+        synced = query_virtual_payment(payment.payment_no, user)
+    except VirtualPaymentAPIError as exc:
+        if 'ORDER_CLOSED' in str(exc).upper():
+            return _mark_virtual_payment_closed(payment, reason=str(exc)[:200])
+        logger.warning(
+            '[虚拟支付] 支付前核验旧支付单失败，暂不替换 payment_no=%s error=%s',
+            payment.payment_no,
+            exc,
+        )
+        return False
+    except (VirtualPaymentConfigurationError, VirtualPaymentError) as exc:
+        logger.warning(
+            '[虚拟支付] 支付前核验旧支付单失败，暂不替换 payment_no=%s error=%s',
+            payment.payment_no,
+            exc,
+        )
+        return False
+
+    if synced.status == 'paid' or getattr(synced.order, 'paid', False):
+        return False
+
+    order_data = dict((synced.notify_payload or {}).get('query_order') or {})
+    try:
+        xpay_status = int(order_data.get('status') or 0)
+    except (TypeError, ValueError):
+        xpay_status = 0
+
+    if xpay_status == XPAY_STATUS_CLOSED:
+        return _mark_virtual_payment_closed(synced)
+    return False
 
 
 @api_view(['POST'])
@@ -124,6 +194,7 @@ def create_wechat_virtual(request):
     serializer.is_valid(raise_exception=True)
     order_no = serializer.validated_data.get('order_no', '')
     try:
+        reconcile_closed_virtual_payment(order_no, request.user)
         _, payload = create_virtual_payment(
             user=request.user,
             **serializer.validated_data,
