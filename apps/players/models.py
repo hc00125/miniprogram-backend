@@ -85,7 +85,7 @@ class PlayerApplication(models.Model):
     STATUS_REJECTED = 'rejected'
 
     STATUS_CHOICES = [
-        (STATUS_PENDING, '待审核'),
+        (STATUS_PENDING, '审核中'),
         (STATUS_APPROVED, '已通过'),
         (STATUS_REJECTED, '已拒绝'),
     ]
