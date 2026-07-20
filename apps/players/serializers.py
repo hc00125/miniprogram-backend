@@ -19,6 +19,9 @@ class PlayerSerializer(serializers.ModelSerializer):
     type_id = serializers.IntegerField(source='player_type_id', read_only=True)
     type_name = serializers.CharField(source='player_type.name', read_only=True)
     avg_rating = serializers.FloatField(read_only=True)
+    designated_billing_type_id = serializers.SerializerMethodField()
+    designated_billing_type_name = serializers.SerializerMethodField()
+    designated_billing_type_priority = serializers.SerializerMethodField()
     escort_status = serializers.SerializerMethodField()
     escort_status_text = serializers.SerializerMethodField()
     has_escort_qualification = serializers.SerializerMethodField()
@@ -26,12 +29,28 @@ class PlayerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Player
         fields = [
-            'id', 'name', 'type_id', 'type_name', 'contact_wechat', 'bio',
-            'audio_intro_url', 'audio_intro_title',
+            'id', 'name', 'type_id', 'type_name',
+            'designated_billing_type_id', 'designated_billing_type_name', 'designated_billing_type_priority',
+            'contact_wechat', 'bio', 'audio_intro_url', 'audio_intro_title',
             'is_online', 'total_orders', 'avg_rating', 'rating_count',
             'can_accept_orders', 'can_be_designated', 'is_publicly_visible', 'can_withdraw',
             'escort_status', 'escort_status_text', 'has_escort_qualification',
         ]
+
+    def _billing_type(self, obj):
+        return obj.minimum_designated_player_type or obj.player_type
+
+    def get_designated_billing_type_id(self, obj):
+        billing_type = self._billing_type(obj)
+        return billing_type.id if billing_type else None
+
+    def get_designated_billing_type_name(self, obj):
+        billing_type = self._billing_type(obj)
+        return billing_type.name if billing_type else ''
+
+    def get_designated_billing_type_priority(self, obj):
+        billing_type = self._billing_type(obj)
+        return billing_type.priority if billing_type else 0
 
     def get_escort_status(self, obj):
         qualification = getattr(obj, 'escort_qualification', None)
