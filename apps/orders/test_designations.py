@@ -104,12 +104,13 @@ class ConcretePlayerDesignationTests(TestCase):
         self.assertEqual(invitation.extra_amount, Decimal('0.00'))
         self.assertGreater(invitation.expires_at, timezone.now())
 
-    def test_higher_tier_requires_matching_higher_tier_spec(self):
-        with self.assertRaises(ValidationError) as context:
-            self.create_designated_order(designated_players=[self.other_type_player.id])
+    def test_higher_tier_designation_upgrades_to_matching_spec(self):
+        order = self.create_designated_order(designated_players=[self.other_type_player.id])
 
-        self.assertIn('必须使用', str(context.exception.detail))
-        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(order.spec_id, self.high_spec.id)
+        self.assertEqual(order.total_amount, 25.0)
+        self.assertEqual(order.designated_players, [self.other_type_player.id])
+        self.assertTrue(OrderDesignation.objects.filter(order=order, player=self.other_type_player).exists())
 
     def test_lower_tier_cannot_be_designated_for_higher_tier_spec(self):
         with self.assertRaises(ValidationError) as context:
