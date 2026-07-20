@@ -14,18 +14,19 @@ from .models import Player, PlayerApplication, PlayerProfileUpdateRequest
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
     list_display = [
-        'id', 'name', 'player_type', 'status', 'is_online', 'is_publicly_visible',
+        'id', 'name', 'player_type', 'minimum_designated_player_type', 'status', 'is_online', 'is_publicly_visible',
         'can_accept_orders', 'can_be_designated', 'can_withdraw', 'has_audio_intro',
         'total_orders', 'created_at',
     ]
     list_filter = [
         'status', 'is_online', 'is_publicly_visible', 'can_accept_orders',
-        'can_be_designated', 'can_withdraw', 'player_type',
+        'can_be_designated', 'can_withdraw', 'player_type', 'minimum_designated_player_type',
     ]
     search_fields = ['name', 'contact_wechat', 'audio_intro_url', 'audio_intro_title']
     fieldsets = (
         ('基础信息', {
-            'fields': ('user', 'name', 'player_type', 'status', 'is_online', 'contact_wechat', 'bio')
+            'fields': ('user', 'name', 'player_type', 'minimum_designated_player_type', 'status', 'is_online', 'contact_wechat', 'bio'),
+            'description': '“陪玩类型”表示实际能力与接单资格；“最低指定计费类型”只决定老板点名指定时该名额的最低价格，留空则按陪玩自身类型计费。',
         }),
         ('功能权限', {
             'fields': ('can_accept_orders', 'can_be_designated', 'is_publicly_visible', 'can_withdraw'),
