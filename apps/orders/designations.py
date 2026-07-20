@@ -53,14 +53,6 @@ def validate_designated_players(raw_ids, required_players):
     if missing:
         raise ValidationError({'designated_players': '部分指定陪玩不存在或未通过审核'})
 
-    # 方案二：一张订单可以指定多名陪玩，但阵容必须属于同一陪玩类型。
-    player_type_ids = {player.player_type_id for player in players}
-    if len(player_type_ids) > 1:
-        type_names = sorted({player.player_type.name for player in players if player.player_type})
-        raise ValidationError({
-            'designated_players': f'当前仅支持指定同类型陪玩，已选择：{"、".join(type_names)}'
-        })
-
     blocked = [player.name for player in players if not player.can_be_designated]
     if blocked:
         raise ValidationError({'designated_players': f"{'、'.join(blocked)}当前不接受指定"})
@@ -82,30 +74,37 @@ def validate_designated_players(raw_ids, required_players):
 
 
 def validate_designated_player_spec(order, players):
-    """指定具体陪玩时，陪玩等级必须达到商品规格的最低要求。"""
-    if not players or not order.spec_id:
-        return
-    spec = (
-        PackageSpec.objects
-        .select_related('required_player_type')
-        .filter(id=order.spec_id, package_id=order.package_id, is_active=True)
-        .first()
-    )
-    if not spec or not spec.required_player_type_id:
+    """混合指定阵容按最高陪玩等级锁定对应价格规格。"""
+    if not players:
         return
 
-    required_priority = int(spec.required_player_type.priority or 0)
-    incompatible = [
-        player.name
-        for player in players
-        if int(player.player_type.priority or 0) < required_priority
-    ]
-    if incompatible:
-        required_name = spec.required_player_type.name
+    highest_player = max(players, key=lambda player: int(player.player_type.priority or 0))
+    highest_type = highest_player.player_type
+    highest_priority = int(highest_type.priority or 0)
+    if highest_priority <= 0:
+        raise ValidationError({'designated_players': '指定陪玩等级信息不完整，请联系管理员检查陪玩类型配置'})
+
+    expected_spec = (
+        PackageSpec.objects
+        .select_related('required_player_type')
+        .filter(
+            package_id=order.package_id,
+            is_active=True,
+            required_player_type__priority=highest_priority,
+        )
+        .order_by('-price', 'sort_order', 'id')
+        .first()
+    )
+    if not expected_spec:
+        raise ValidationError({
+            'designated_players': f'当前商品未配置“{highest_type.name}”对应计价规格，请联系管理员补充规格后再下单'
+        })
+
+    if order.spec_id != expected_spec.id:
         raise ValidationError({
             'designated_players': (
-                f'所选规格“{spec.display_name or spec.name}”要求“{required_name}”及以上等级，'
-                f'指定陪玩“{"、".join(incompatible)}”等级不足，请更换陪玩或改选较低等级规格。'
+                f'指定阵容最高等级为“{highest_type.name}”，'
+                f'必须使用“{expected_spec.display_name or expected_spec.name}”计价规格'
             )
         })
 
