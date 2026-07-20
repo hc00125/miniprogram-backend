@@ -164,6 +164,7 @@ class ConcretePlayerDesignationTests(TestCase):
         order = self.create_designated_order(
             required_players=2,
             designated_players=[self.designated.id, self.other_type_player.id],
+            spec=self.high_spec,
         )
 
         self.assertEqual(order.spec_id, self.high_spec.id)
