@@ -59,20 +59,25 @@ class DesignatedPlayerPricingTests(TestCase):
             'booked_hours': 1,
         }
 
-    def test_technical_player_upgrades_entertainment_order_to_technical_price(self):
+    def test_technical_player_uses_technical_slot_price_without_changing_base_spec(self):
         order = create_order(self.payload(self.entertainment_spec, self.technical_player))
         designation = OrderDesignation.objects.get(order=order, player=self.technical_player)
 
         self.assertEqual(Decimal(designation.extra_amount), Decimal('0.00'))
-        self.assertEqual(order.spec_id, self.technical_spec.id)
+        self.assertEqual(order.spec_id, self.entertainment_spec.id)
         self.assertEqual(Decimal(str(order.total_amount)), Decimal('25.00'))
-        self.assertIn('指定陪玩等级计价', order.boss_note)
+        pricing_lines = [
+            item for item in (order.designated_types or [])
+            if item.get('source') == 'designated_pricing'
+        ]
+        self.assertEqual(len(pricing_lines), 1)
+        self.assertEqual(pricing_lines[0]['effective_billing_type_name'], self.technical_type.name)
 
     def test_entertainment_player_cannot_use_technical_spec(self):
         with self.assertRaises(ValidationError) as context:
             create_order(self.payload(self.technical_spec, self.entertainment_player))
 
-        self.assertIn('等级不足', str(context.exception.detail))
+        self.assertIn('不满足该订单要求', str(context.exception.detail))
         self.assertEqual(Order.objects.count(), 0)
 
     def test_matching_spec_creates_zero_fee_designation(self):
