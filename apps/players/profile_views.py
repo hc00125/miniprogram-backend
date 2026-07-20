@@ -25,7 +25,10 @@ def public_list(request):
     queryset = (
         Player.objects
         .filter(status=Player.STATUS_APPROVED, is_publicly_visible=True)
-        .select_related('player_type', 'user', 'user__client_profile')
+        .select_related(
+            'player_type', 'minimum_designated_player_type',
+            'user', 'user__client_profile',
+        )
         .annotate(
             has_active_order=Exists(active_orders),
             avg_rating_value=Case(
@@ -53,6 +56,7 @@ def public_list(request):
             Q(name__icontains=search)
             | Q(bio__icontains=search)
             | Q(player_type__name__icontains=search)
+            | Q(minimum_designated_player_type__name__icontains=search)
         )
 
     ordering = request.query_params.get('ordering', '-avg_rating')
@@ -69,6 +73,7 @@ def public_list(request):
     result = []
     for player in queryset:
         profile = getattr(player.user, 'client_profile', None) if player.user else None
+        billing_type = player.minimum_designated_player_type or player.player_type
         result.append({
             'id': player.id,
             'name': player.name,
@@ -76,6 +81,9 @@ def public_list(request):
             'type_name': player.player_type.name if player.player_type else '',
             'type_priority': player.player_type.priority if player.player_type else 0,
             'price_extra': player.player_type.price_extra if player.player_type else 0,
+            'designated_billing_type_id': billing_type.id if billing_type else None,
+            'designated_billing_type_name': billing_type.name if billing_type else '',
+            'designated_billing_type_priority': billing_type.priority if billing_type else 0,
             'avatar_url': profile.avatar_url if profile else None,
             'bio': player.bio,
             'audio_intro_url': player.audio_intro_url,
@@ -86,6 +94,11 @@ def public_list(request):
                 'priority': player.player_type.priority,
                 'price_extra': player.player_type.price_extra or 0,
             } if player.player_type else None,
+            'designated_billing_type': {
+                'id': billing_type.id,
+                'name': billing_type.name,
+                'priority': billing_type.priority,
+            } if billing_type else None,
             'avg_rating': round(player.avg_rating, 1) if player.avg_rating else 0,
             'rating_count': player.rating_count or 0,
             'total_orders': player.total_orders or 0,
