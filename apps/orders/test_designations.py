@@ -158,17 +158,18 @@ class ConcretePlayerDesignationTests(TestCase):
         self.assertEqual(order.order_players.count(), 2)
         self.assertEqual(order.order_players.filter(is_designated=True).count(), 2)
 
-    def test_mixed_player_types_are_rejected(self):
+    def test_mixed_player_types_use_highest_tier_price(self):
         self.package.player_count = 2
         self.package.save(update_fields=['player_count'])
-        with self.assertRaises(ValidationError) as context:
-            self.create_designated_order(
-                required_players=2,
-                designated_players=[self.designated.id, self.other_type_player.id],
-            )
+        order = self.create_designated_order(
+            required_players=2,
+            designated_players=[self.designated.id, self.other_type_player.id],
+        )
 
-        self.assertIn('当前仅支持指定同类型陪玩', str(context.exception.detail))
-        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(order.spec_id, self.high_spec.id)
+        self.assertEqual(order.total_amount, 25.0)
+        self.assertEqual(order.designations.count(), 2)
+        self.assertEqual(order.designated_players, [self.designated.id, self.other_type_player.id])
 
     def test_decline_releases_slot_to_public_hall(self):
         order = self.create_designated_order()
