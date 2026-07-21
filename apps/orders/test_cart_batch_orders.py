@@ -46,7 +46,6 @@ class CartBatchOrderTests(TestCase):
             'game_id': 'owner-game-id',
             'cart_item_ids': item_ids,
             'boss_note': '请一起安排',
-            'booked_hours': 1,
         }, format='json')
         force_authenticate(request, user=self.user)
         return create_cart_order_batch(request)
@@ -72,14 +71,21 @@ class CartBatchOrderTests(TestCase):
         self.assertTrue(all(order.items.get().quantity == 1 for order in orders))
         self.assertEqual(CartItem.objects.filter(user=self.user).count(), 0)
 
-    def test_cart_quantity_expands_to_independent_orders(self):
+    def test_cart_quantity_becomes_single_order_duration(self):
         item = self.add_cart_item(self.male_package, self.male_spec, quantity=2)
 
         response = self.post_batch([item.id])
 
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data['order_count'], 2)
-        self.assertEqual(Order.objects.filter(boss_user=self.user, package=self.male_package).count(), 2)
+        self.assertEqual(response.data['order_count'], 1)
+        orders = Order.objects.filter(boss_user=self.user, package=self.male_package)
+        self.assertEqual(orders.count(), 1)
+        order = orders.get()
+        self.assertEqual(order.booked_hours, 2)
+        self.assertEqual(order.total_price_per_hour, 20)
+        self.assertEqual(order.total_amount, 40)
+        self.assertEqual(order.items.get().quantity, 2)
+        self.assertEqual(order.items.get().amount, 40)
 
     def test_existing_active_order_blocks_new_batch(self):
         existing = self.add_cart_item(self.male_package, self.male_spec)
