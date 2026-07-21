@@ -1,5 +1,9 @@
+from decimal import Decimal
+
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
+
+from apps.common.money import money
 
 from .designated_pricing import calculate_designated_pricing
 from .models import Order
@@ -24,8 +28,11 @@ def apply_designated_pricing(order):
     result = calculate_designated_pricing(order)
     if not result:
         return None
-    order.total_price_per_hour = float(result['total'])
-    order.total_amount = float(result['total'])
+
+    per_hour = money(result['total'])
+    booked_hours = Decimal(str(order.booked_hours or 1))
+    order.total_price_per_hour = float(per_hour)
+    order.total_amount = float(money(per_hour * booked_hours))
     order.designated_types = result['designated_types']
     return result
 
@@ -34,7 +41,7 @@ def apply_designated_pricing(order):
 def calculate_individual_designated_pricing(sender, instance, **kwargs):
     """
     保存待接单/待支付订单前，按每个指定陪玩的最低指定计费类型分别计算。
-    不再把整张订单升级成指定阵容中的最高等级规格。
+    total_price_per_hour 保存每小时费用，total_amount 再乘预订时长。
     """
     apply_designated_pricing(instance)
 
