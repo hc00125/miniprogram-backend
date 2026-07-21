@@ -14,5 +14,13 @@ class OrdersConfig(AppConfig):
 
         designations.validate_designated_player_spec = validate_designated_player_spec
 
+        # 商品数量在小时制服务中表示预订时长。保持既有视图接口不变，
+        # 将创建订单与购物车批量下单切换到统一的时长语义实现。
+        from . import batch_views, boss_views
+        from .duration_services import create_cart_orders, create_order
+
+        boss_views.create_order_service = create_order
+        batch_views.create_cart_orders = create_cart_orders
+
         # 订单信号分文件加载：计价相关与付款前取消后的陪玩释放逻辑互不混杂。
         from . import cancel_signals, signals  # noqa: F401
