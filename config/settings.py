@@ -37,6 +37,12 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-produ
 DEBUG = env_bool('DJANGO_DEBUG', 'true')
 ALLOWED_HOSTS = [host.strip() for host in os.environ.get('DJANGO_ALLOWED_HOSTS', '*').split(',') if host.strip()]
 
+# 维护模式 — 开启后所有 API 返回 503（除健康检查外）
+MAINTENANCE_MODE = env_bool('MAINTENANCE_MODE', 'false')
+
+# 功能开关 — 停用指定打手功能（加入阵容按钮变灰）
+FEATURE_DESIGNATE_DISABLED = env_bool('FEATURE_DESIGNATE_DISABLED', 'false')
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -71,6 +77,7 @@ except ImportError:
     pass
 
 MIDDLEWARE = [
+    'apps.common.maintenance.MaintenanceModeMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',

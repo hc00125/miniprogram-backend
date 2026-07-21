@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Avg, Case, Count, Exists, ExpressionWrapper, F, FloatField, OuterRef, Q, Value, When
 from rest_framework.decorators import api_view, permission_classes
@@ -103,7 +104,7 @@ def public_list(request):
             'rating_count': player.rating_count or 0,
             'total_orders': player.total_orders or 0,
             'is_online': player.is_online,
-            'can_be_designated': player.can_be_designated,
+            'can_be_designated': False if settings.FEATURE_DESIGNATE_DISABLED else player.can_be_designated,
             'status': '接单中' if player.has_active_order else ('在线' if player.is_online else '离线'),
             'created_at': player.created_at.isoformat() if player.created_at else None,
         })
