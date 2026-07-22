@@ -76,7 +76,10 @@ def get_order_or_response(order_no):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def packages(request):
-    qs = Package.objects.filter(is_active=True).select_related('group').prefetch_related(
+    qs = Package.objects.filter(
+        is_active=True,
+        selling_mode=Package.SELLING_MODE_PUBLIC,
+    ).select_related('group', 'group__game_service').prefetch_related(
         Prefetch(
             'specs',
             queryset=PackageSpec.objects.filter(is_active=True).order_by('sort_order', 'id'),
@@ -344,6 +347,8 @@ def cart(request):
     package = Package.objects.filter(id=data['package_id'], is_active=True).first()
     if not package:
         return Response({'detail': '商品不存在或已下架'}, status=status.HTTP_404_NOT_FOUND)
+    if package.selling_mode == Package.SELLING_MODE_PLAYER_DESIGNATED:
+        return Response({'detail': '陪玩师专属商品请直接下单，不支持加入购物车'}, status=status.HTTP_400_BAD_REQUEST)
 
     spec = None
     spec_id = data.get('spec_id')

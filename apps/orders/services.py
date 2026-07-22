@@ -95,7 +95,7 @@ def normalize_order_items(validated_data):
         package_id = item.get('package_id')
         if not package_id:
             raise ValidationError({'detail': '商品参数缺失'})
-        package = Package.objects.filter(id=package_id, is_active=True).first()
+        package = Package.objects.filter(id=package_id, is_active=True).select_related('owner_player').first()
         if not package:
             raise ValidationError({'detail': f'商品 {package_id} 不存在或已下架'})
 
@@ -127,6 +127,24 @@ def spec_defines_full_lineup(spec):
     return bool(spec and spec.required_player_type_id)
 
 
+def is_targeted_product(package):
+    return package.selling_mode == Package.SELLING_MODE_PLAYER_DESIGNATED
+
+
+def validate_targeted_product(package):
+    """Validate a one-person product without trusting any player id from the client."""
+    player = package.owner_player
+    if not player:
+        raise ValidationError({'detail': '该陪玩师商品未配置所属陪玩师，暂时无法下单'})
+    if package.player_count != 1:
+        raise ValidationError({'detail': '陪玩师专属商品必须配置为单人服务'})
+    if player.status != player.STATUS_APPROVED or not player.can_be_designated:
+        raise ValidationError({'detail': '该陪玩师当前暂不接受指定'})
+    if not player.can_accept_orders:
+        raise ValidationError({'detail': '该陪玩师当前暂不接单'})
+    return player
+
+
 def ensure_no_active_orders(boss_wechat):
     if Order.objects.filter(boss_wechat=boss_wechat, status__in=ACTIVE_ORDER_STATUSES).exists():
         raise ValidationError({'detail': '您有未完成的订单，请先完成后再下单'})
@@ -138,14 +156,21 @@ def create_order(validated_data, user=None, allow_existing_active=False):
     first_item = order_items[0]
     package = first_item['package']
     spec = first_item['spec']
-    spec_lineup = spec_defines_full_lineup(spec)
+    targeted_order = is_targeted_product(package)
+    target_player = validate_targeted_product(package) if targeted_order else None
+    spec_lineup = spec_defines_full_lineup(spec) and not targeted_order
+
+    if targeted_order and len(order_items) != 1:
+        raise ValidationError({'detail': '陪玩师专属商品不支持与其他商品合并结算'})
+    if targeted_order and (validated_data.get('designated_players') or []):
+        raise ValidationError({'detail': '陪玩师已由商品锁定，请勿额外传入指定陪玩'})
 
     if spec_lineup and len(order_items) != 1:
         raise ValidationError({'detail': '带陪玩类型的规格不能与其他商品合并结算'})
     if spec_lineup and first_item['quantity'] != 1:
         raise ValidationError({'detail': '陪玩类型规格每次只能购买1份，人数由商品默认人数决定'})
 
-    if not allow_existing_active:
+    if not allow_existing_active and not targeted_order:
         ensure_no_active_orders(validated_data['boss_wechat'])
 
     # 带“最低陪玩等级”的固定规格，由商品定义整单人数，后端不接受前端篡改人数。
@@ -153,7 +178,7 @@ def create_order(validated_data, user=None, allow_existing_active=False):
     if required_players <= 0:
         raise ValidationError({'detail': '人数必须大于 0'})
 
-    designated_player_objects = validate_designated_players(
+    designated_player_objects = [] if targeted_order else validate_designated_players(
         validated_data.get('designated_players') or [],
         required_players,
     )
@@ -161,7 +186,7 @@ def create_order(validated_data, user=None, allow_existing_active=False):
 
     addon_details = validated_data.get('addon_details') or []
     addon_id = validated_data.get('addon_id')
-    if spec_lineup and (addon_details or addon_id):
+    if (spec_lineup or targeted_order) and (addon_details or addon_id):
         raise ValidationError({'detail': '已选择陪玩类型规格，不能再叠加特殊陪类型'})
 
     first_addon = None
@@ -206,9 +231,9 @@ def create_order(validated_data, user=None, allow_existing_active=False):
         raise ValidationError({'detail': '指定陪玩和特殊陪名额总数不能超过下单人数'})
 
     subtotal = sum((item['amount'] for item in order_items), Decimal('0'))
-    # 第一版具体指定陪玩不额外加价，保持固定规格金额，兼容微信虚拟支付。
+    # 商品规格是唯一价格来源；陪玩师专属商品以规格单价 × 服务时长结算。
     total_price = money(subtotal + addon_price)
-    booked_hours = validated_data.get('booked_hours') or 1.0
+    booked_hours = first_item['quantity'] if targeted_order else (validated_data.get('booked_hours') or 1.0)
     display_name = package.name if len(order_items) == 1 else f'{package.name}等{len(order_items)}件商品'
 
     order = Order.objects.create(
@@ -227,12 +252,15 @@ def create_order(validated_data, user=None, allow_existing_active=False):
         designated_types=designated_types or None,
         designated_players=designated_player_ids or None,
         boss_note=build_order_note(validated_data.get('boss_note'), order_items),
-        total_price_per_hour=total_price,
+        total_price_per_hour=first_item['unit_price'] if targeted_order else total_price,
         total_amount=total_price,
-        status=Order.STATUS_WAITING,
+        status=Order.STATUS_PENDING_PAYMENT if targeted_order else Order.STATUS_WAITING,
         is_custom=package.is_custom,
         booked_hours=booked_hours,
         order_type=Order.ORDER_TYPE_NORMAL,
+        fulfillment_mode=(Order.FULFILLMENT_MODE_TARGETED if targeted_order else Order.FULFILLMENT_MODE_PUBLIC),
+        target_player=target_player,
+        target_player_name_snapshot=target_player.name if target_player else '',
     )
 
     for item in order_items:
@@ -251,10 +279,12 @@ def create_order(validated_data, user=None, allow_existing_active=False):
             sort_order=item['sort_order'],
         )
 
-    create_designations(order, designated_player_objects)
     if designated_player_objects:
+        create_designations(order, designated_player_objects)
         names = '、'.join(player.name for player in designated_player_objects)
         reason = f'创建订单并向 {names} 发出指定邀请，其余名额进入抢单大厅'
+    elif targeted_order:
+        reason = f'创建 {target_player.name} 的专属商品订单，支付成功后将通知该陪玩师确认'
     else:
         reason = '创建订单并自动派单到抢单大厅'
     OrderStatusLog.objects.create(
@@ -289,6 +319,8 @@ def create_cart_orders(cart_item_ids, validated_data, user):
         raise ValidationError({'detail': '部分购物车商品不存在、已变化或不属于当前账号'})
 
     ordered_items = [item_map[item_id] for item_id in ordered_ids]
+    if any(is_targeted_product(item.package) for item in ordered_items):
+        raise ValidationError({'detail': '陪玩师专属商品请从陪玩师详情页直接指定下单，不支持购物车结算'})
     order_count = sum(normalize_quantity(item.quantity) for item in ordered_items)
     if order_count > MAX_CART_BATCH_ORDERS:
         raise ValidationError({'detail': f'单次最多发布 {MAX_CART_BATCH_ORDERS} 个独立订单'})
@@ -344,6 +376,8 @@ def remaining_type_slots(order):
 
 
 def can_player_grab_order(order, player):
+    if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+        return False
     expire_due_designations(order=order)
     if order.order_players.filter(player=player).exists():
         return False
@@ -382,7 +416,11 @@ def assign_designated_slot(order, player):
 def grab_order(order_no, player, operator=None):
     order = Order.objects.select_for_update(of=('self',)).select_related('package', 'addon').get(order_no=order_no)
     expire_due_designations(order=order)
-    if order.status != Order.STATUS_WAITING or order.order_type != Order.ORDER_TYPE_NORMAL:
+    if (
+        order.status != Order.STATUS_WAITING
+        or order.order_type != Order.ORDER_TYPE_NORMAL
+        or order.fulfillment_mode != Order.FULFILLMENT_MODE_PUBLIC
+    ):
         raise ValidationError({'detail': '订单已被抢或状态已变更'})
     if order.order_players.filter(player=player).exists():
         raise ValidationError({'detail': '您已经接了这个订单'})

@@ -80,10 +80,34 @@ class Package(models.Model):
         (PRODUCT_TYPE_SPECIAL, '特色单'),
     ]
 
+    SELLING_MODE_PUBLIC = 'public'
+    SELLING_MODE_PLAYER_DESIGNATED = 'player_designated'
+    SELLING_MODE_CHOICES = [
+        (SELLING_MODE_PUBLIC, '普通商城商品'),
+        (SELLING_MODE_PLAYER_DESIGNATED, '陪玩师专属商品'),
+    ]
+
     name = models.CharField(max_length=80, verbose_name='商品名称')
     product_type = models.CharField(
         max_length=30, choices=PRODUCT_TYPE_CHOICES,
         default=PRODUCT_TYPE_NORMAL, verbose_name='商品类型',
+    )
+    selling_mode = models.CharField(
+        max_length=30,
+        choices=SELLING_MODE_CHOICES,
+        default=SELLING_MODE_PUBLIC,
+        db_index=True,
+        verbose_name='销售方式',
+        help_text='陪玩师专属商品只能由所属陪玩师接受，不会进入公开抢单大厅。',
+    )
+    owner_player = models.ForeignKey(
+        'players.Player',
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name='service_products',
+        verbose_name='所属陪玩师',
+        help_text='仅“陪玩师专属商品”需要填写；下单时由后端据此锁定服务人员。',
     )
     group = models.ForeignKey(
         PackageGroup, on_delete=models.SET_NULL,
@@ -134,6 +158,11 @@ class Package(models.Model):
                 condition=Q(package_family__isnull=False),
                 name='uniq_package_family_player_count',
             ),
+            models.UniqueConstraint(
+                fields=['owner_player'],
+                condition=Q(selling_mode='player_designated'),
+                name='uniq_player_designated_service_product',
+            ),
         ]
 
     def __str__(self):
@@ -141,6 +170,16 @@ class Package(models.Model):
 
     def clean(self):
         super().clean()
+        if self.selling_mode == self.SELLING_MODE_PLAYER_DESIGNATED:
+            errors = {}
+            if not self.owner_player_id:
+                errors['owner_player'] = '陪玩师专属商品必须选择所属陪玩师。'
+            if self.player_count != 1:
+                errors['player_count'] = '陪玩师专属商品只能配置为 1 人。'
+            if self.package_family_id:
+                errors['package_family'] = '陪玩师专属商品不使用装备商品族。请将装备配置维护为商品规格。'
+            if errors:
+                raise ValidationError(errors)
         if not self.package_family_id:
             return
 
@@ -166,7 +205,7 @@ class Package(models.Model):
         # Existing ordinary packages remain fully backwards compatible.  Family
         # members opt into validation so API writes cannot create an ambiguous
         # 1/2/3-person equipment matrix.
-        if self.package_family_id:
+        if self.package_family_id or self.selling_mode == self.SELLING_MODE_PLAYER_DESIGNATED:
             self.full_clean()
         return super().save(*args, **kwargs)
 

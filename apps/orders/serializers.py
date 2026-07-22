@@ -242,6 +242,7 @@ class RenewalFieldsMixin(serializers.ModelSerializer):
 class BossOrderDetailSerializer(RenewalFieldsMixin):
     package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
+    target_player_id = serializers.IntegerField(read_only=True, allow_null=True)
     players = serializers.SerializerMethodField()
     items = OrderItemSerializer(many=True, read_only=True)
     pricing_lines = OrderPricingLineSerializer(many=True, read_only=True)
@@ -258,6 +259,7 @@ class BossOrderDetailSerializer(RenewalFieldsMixin):
             'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
             'pricing_mode', 'composition_sku_id', 'composition_key', 'composition_virtual_spec_id',
             'composition_price_per_hour', 'composition_pricing_error', 'pricing_lines',
+            'fulfillment_mode', 'target_player_id', 'target_player_name_snapshot',
             'order_type', 'parent_order_no', 'renewal_index', 'renewal_count', 'renewal_booked_hours',
             'renewal_paid_amount', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew', 'renewals',
         ]
@@ -296,6 +298,7 @@ class BossOrderListSerializer(RenewalFieldsMixin):
         fields = [
             'order_no', 'package_name', 'item_count', 'status', 'total_price_per_hour',
             'total_amount', 'paid', 'created_at', 'kook_room_number', 'order_type',
+            'fulfillment_mode', 'target_player_name_snapshot',
             'renewal_count', 'renewal_booked_hours', 'renewal_paid_amount', 'total_booked_hours',
             'pending_renewal_order_no', 'can_renew',
         ]
@@ -322,7 +325,8 @@ class AvailableOrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             'order_no', 'package_name', 'addon_name', 'required_players', 'current_players',
-            'total_price_per_hour', 'booked_hours', 'boss_note', 'is_custom', 'can_grab',
+            'total_price_per_hour', 'total_amount', 'booked_hours', 'boss_note', 'is_custom', 'can_grab',
+            'fulfillment_mode', 'target_player_name_snapshot',
             'is_designated', 'designated_type_ids', 'created_at', 'kook_room_number'
         ]
 

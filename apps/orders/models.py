@@ -37,6 +37,13 @@ class Order(models.Model):
         (PRICING_MODE_COMPOSITION, '指定陪玩组合定价'),
     ]
 
+    FULFILLMENT_MODE_PUBLIC = 'public'
+    FULFILLMENT_MODE_TARGETED = 'targeted'
+    FULFILLMENT_MODE_CHOICES = [
+        (FULFILLMENT_MODE_PUBLIC, '公开抢单'),
+        (FULFILLMENT_MODE_TARGETED, '指定陪玩师商品'),
+    ]
+
     order_no = models.CharField(max_length=20, unique=True, db_index=True)
     boss_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name='boss_orders')
     boss_wechat = models.CharField(max_length=50)
@@ -131,6 +138,27 @@ class Order(models.Model):
         blank=True,
         default='',
         verbose_name='组合定价配置错误',
+    )
+    fulfillment_mode = models.CharField(
+        max_length=20,
+        choices=FULFILLMENT_MODE_CHOICES,
+        default=FULFILLMENT_MODE_PUBLIC,
+        db_index=True,
+        verbose_name='履约方式',
+    )
+    target_player = models.ForeignKey(
+        'players.Player',
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name='targeted_orders',
+        verbose_name='指定服务陪玩师',
+    )
+    target_player_name_snapshot = models.CharField(
+        max_length=100,
+        blank=True,
+        default='',
+        verbose_name='指定服务陪玩师名称快照',
     )
 
     class Meta:

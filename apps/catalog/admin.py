@@ -412,14 +412,14 @@ class PackageGroupAdmin(admin.ModelAdmin):
 class PackageAdmin(admin.ModelAdmin):
     form = PackageAdminForm
     list_display = [
-        'id', 'cover_thumb', 'config_status', 'name', 'product_type', 'group',
+        'id', 'cover_thumb', 'config_status', 'name', 'product_type', 'selling_mode', 'owner_player', 'group',
         'package_family', 'player_count', 'base_price', 'active_spec_count', 'image_summary',
         'sort_order', 'is_active', 'is_custom', 'sold_count', 'created_at',
     ]
-    list_filter = ['group', 'package_family', 'product_type', 'is_active', 'is_custom']
+    list_filter = ['group', 'package_family', 'product_type', 'selling_mode', 'is_active', 'is_custom']
     search_fields = ['name', 'description', 'rules_text', 'detail_text']
     list_editable = ['player_count', 'base_price', 'sort_order', 'is_active', 'is_custom']
-    list_select_related = ['group', 'package_family']
+    list_select_related = ['group', 'package_family', 'owner_player']
     ordering = ['sort_order', 'id']
     list_per_page = 30
     inlines = [PackageImageInline, PackageSpecInline]
@@ -449,8 +449,8 @@ class PackageAdmin(admin.ModelAdmin):
             'description': '保存商品后，这里会显示前端读取到的主图、价格、图片数量、规格数量和配置问题。',
         }),
         ('常用配置', {
-            'fields': ['name', 'product_type', 'group', 'package_family', 'player_count', 'base_price', 'original_price', 'description'],
-            'description': '日常上架主要填这里。保底单建议 product_type 选择“保底单”，然后用列表页操作“一键生成电视台保底九档规格”。',
+            'fields': ['name', 'product_type', 'selling_mode', 'owner_player', 'group', 'package_family', 'player_count', 'base_price', 'original_price', 'description'],
+            'description': '陪玩师专属商品：选择销售方式“陪玩师专属商品”和所属陪玩师，人数固定为 1；装备套餐维护在下方规格中，并为每个规格绑定微信虚拟商品。',
         }),
         ('旧图片 URL 字段（兼容旧数据，通常不用填）', {
             'classes': ['collapse'],

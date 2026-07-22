@@ -161,6 +161,70 @@ def create_designations(order, players):
     ]
 
 
+def create_targeted_designation(order):
+    """Create the invitation only after a designated-product order is paid."""
+    if order.fulfillment_mode != Order.FULFILLMENT_MODE_TARGETED:
+        return None
+    if not order.target_player_id:
+        raise ValidationError({'detail': '指定商品缺少所属陪玩师，无法发送邀请'})
+
+    designation, created = OrderDesignation.objects.get_or_create(
+        order=order,
+        player_id=order.target_player_id,
+        defaults={
+            'status': OrderDesignation.STATUS_PENDING,
+            'extra_amount': DESIGNATION_EXTRA_AMOUNT,
+            'expires_at': timezone.now() + timedelta(minutes=DESIGNATION_TTL_MINUTES),
+        },
+    )
+    if created:
+        sync_designated_players_snapshot(order)
+        OrderStatusLog.objects.create(
+            order=order,
+            from_status=order.status,
+            to_status=order.status,
+            reason=f'支付成功，已向指定陪玩师 {order.target_player_name_snapshot or designation.player.name} 发出专属服务邀请',
+        )
+    return designation
+
+
+def cancel_targeted_order(order, reason, operator=None):
+    """A rejected or expired direct order never returns to the public queue."""
+    if order.fulfillment_mode != Order.FULFILLMENT_MODE_TARGETED:
+        return None
+    if order.status == Order.STATUS_CANCELLED:
+        return None
+
+    previous_status = order.status
+    order.status = Order.STATUS_CANCELLED
+    order.canceled_at = timezone.now()
+    order.cancel_reason = reason
+    order.save(update_fields=['status', 'canceled_at', 'cancel_reason'])
+
+    refund = None
+    if order.paid:
+        payment = order.payments.filter(status='paid').order_by('-paid_at', '-created_at').first()
+        if payment:
+            from apps.payments.services import create_refund
+
+            try:
+                refund = create_refund(payment.payment_no, payment.amount, reason=reason, operator=operator)
+            except ValidationError:
+                # A duplicate refund must not undo the order cancellation.  The
+                # existing refund remains visible in the operations backend.
+                refund = order.refunds.order_by('-created_at').first()
+
+    refund_note = '，已创建退款申请' if refund else ''
+    OrderStatusLog.objects.create(
+        order=order,
+        from_status=previous_status,
+        to_status=order.status,
+        operator=operator,
+        reason=f'{reason}{refund_note}',
+    )
+    return refund
+
+
 def sync_designated_players_snapshot(order):
     active_ids = list(
         order.designations
@@ -185,8 +249,11 @@ def expire_due_designations(order=None, now=None):
     if not affected_order_ids:
         return 0
     updated = queryset.update(status=OrderDesignation.STATUS_EXPIRED, responded_at=now)
-    for order_obj in Order.objects.filter(id__in=affected_order_ids):
+    for order_obj in Order.objects.filter(id__in=affected_order_ids).select_related('target_player'):
         sync_designated_players_snapshot(order_obj)
+        if order_obj.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+            cancel_targeted_order(order_obj, '指定陪玩师未在规定时间内确认服务')
+            continue
         OrderStatusLog.objects.create(
             order=order_obj,
             from_status=order_obj.status,
@@ -223,7 +290,13 @@ def finalize_lineup_if_full(order, operator=None, reason='接单人数已满，�
     if order.status != Order.STATUS_WAITING:
         return order
     old_status = order.status
-    order.status = Order.STATUS_PENDING_PAYMENT
+    if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+        if not order.paid:
+            raise ValidationError({'detail': '指定商品订单尚未支付，暂不能接受服务'})
+        order.status = Order.STATUS_READY_TO_START
+        reason = '指定陪玩师已接受服务，订单可开始'
+    else:
+        order.status = Order.STATUS_PENDING_PAYMENT
     order.save(update_fields=['status'])
     OrderStatusLog.objects.create(
         order=order,
@@ -263,6 +336,9 @@ def accept_designation(order_no, player, operator=None):
         designation.responded_at = timezone.now()
         designation.save(update_fields=['status', 'responded_at'])
         sync_designated_players_snapshot(order)
+        if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+            cancel_targeted_order(order, '指定陪玩师未在规定时间内确认服务')
+            raise ValidationError({'detail': '指定邀请已超时，订单已取消并进入退款流程'})
         raise ValidationError({'detail': '指定邀请已超时，名额已转为公开抢单'})
     if order.order_players.filter(player=player).exists():
         designation.status = OrderDesignation.STATUS_ACCEPTED
@@ -312,6 +388,9 @@ def decline_designation(order_no, player, operator=None):
     designation.responded_at = timezone.now()
     designation.save(update_fields=['status', 'responded_at'])
     sync_designated_players_snapshot(order)
+    if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+        cancel_targeted_order(order, f'指定陪玩师 {player.name} 已拒绝服务', operator=operator)
+        return order
     OrderStatusLog.objects.create(
         order=order,
         from_status=order.status,
@@ -342,6 +421,9 @@ def release_designation(order, designation_id, operator=None):
     designation.responded_at = timezone.now()
     designation.save(update_fields=['status', 'responded_at'])
     sync_designated_players_snapshot(order)
+    if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+        cancel_targeted_order(order, f'老板取消指定陪玩师 {designation.player.name}', operator=operator)
+        return designation
     OrderStatusLog.objects.create(
         order=order,
         from_status=order.status,

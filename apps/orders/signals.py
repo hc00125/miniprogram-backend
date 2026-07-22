@@ -15,6 +15,8 @@ PRICING_FIELDS = {'total_price_per_hour', 'total_amount', 'designated_types'}
 
 def should_recalculate(order):
     return bool(
+        order.fulfillment_mode == Order.FULFILLMENT_MODE_PUBLIC
+        and
         order.pricing_mode != Order.PRICING_MODE_COMPOSITION
         and
         order.order_type == Order.ORDER_TYPE_NORMAL
@@ -27,6 +29,8 @@ def should_recalculate(order):
 
 def should_recalculate_composition(order):
     return bool(
+        order.fulfillment_mode == Order.FULFILLMENT_MODE_PUBLIC
+        and
         order.pricing_mode == Order.PRICING_MODE_COMPOSITION
         and order.order_type == Order.ORDER_TYPE_NORMAL
         and order.package_id
@@ -60,7 +64,10 @@ def calculate_individual_designated_pricing(sender, instance, **kwargs):
     # Composition orders have a different invariant: their price must come
     # from one static CompositionSku.  Repricing is persisted post-save when
     # a designation changes so legacy signals never overwrite that snapshot.
-    if instance.pricing_mode == Order.PRICING_MODE_COMPOSITION:
+    if (
+        instance.pricing_mode == Order.PRICING_MODE_COMPOSITION
+        or instance.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
+    ):
         return
     apply_designated_pricing(instance)
 

@@ -238,6 +238,14 @@ WECHAT_VIRTUALPAY_SANDBOX_PRODUCT_ID = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX
 WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN = env_int('WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN', '1500')
 WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD', '四套四弹')
 
+# WeChat subscription message for paid player-designated product orders.  The
+# field mapping is an administrator-controlled JSON object, for example:
+# {"thing1":"{package_name}","time2":"{created_at}","thing3":"{boss_contact}"}
+WECHAT_PLAYER_ORDER_TEMPLATE_ID = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_ID', '')
+WECHAT_PLAYER_ORDER_TEMPLATE_PAGE = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_PAGE', 'pages/player/my-orders/index')
+WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS', '{}')
+WECHAT_SUBSCRIBE_MESSAGE_MINIPROGRAM_STATE = os.environ.get('WECHAT_SUBSCRIBE_MESSAGE_MINIPROGRAM_STATE', 'formal')
+
 # 人民币 → 鱼干兑换比例：每 1 元 RMB = ? 鱼干
 FISH_CRACKER_EXCHANGE_RATE = env_int('FISH_CRACKER_EXCHANGE_RATE', '10')
 

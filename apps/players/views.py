@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.files.storage import default_storage
 from django.db.models import Avg, Case, Count, Exists, ExpressionWrapper, F, FloatField, OuterRef, Value, When
@@ -17,7 +18,7 @@ from apps.common.tokens import generate_session_token
 from apps.orders.models import Order, Rating
 from apps.orders.serializers import AvailableOrderSerializer, OrderActionSerializer, OrderKookRoomSerializer, PlayerOrderDetailSerializer, PlayerOrderListSerializer
 from apps.orders.services import can_player_grab_order, complete_order as complete_order_service, grab_order as grab_order_service, pause_order, resume_order, start_timer
-from .models import Player, PlayerApplication
+from .models import Player, PlayerApplication, PlayerOrderNoticeSubscription
 from .serializers import PlayerApplicationCreateSerializer, PlayerApplicationSerializer, PlayerLoginSerializer, PlayerSerializer
 
 
@@ -124,6 +125,60 @@ def update_online_status(request):
 @permission_classes([IsApprovedPlayer])
 def me(request):
     return Response(PlayerSerializer(current_player(request.user)).data)
+
+
+@api_view(['GET'])
+@permission_classes([IsApprovedPlayer])
+def order_notice_config(request):
+    template_id = (settings.WECHAT_PLAYER_ORDER_TEMPLATE_ID or '').strip()
+    player = current_player(request.user)
+    subscription = PlayerOrderNoticeSubscription.objects.filter(
+        player=player,
+        template_id=template_id,
+    ).first() if template_id else None
+    return Response({
+        'enabled': bool(template_id),
+        'template_id': template_id,
+        'page': settings.WECHAT_PLAYER_ORDER_TEMPLATE_PAGE,
+        'available_count': subscription.available_count if subscription else 0,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsApprovedPlayer])
+def confirm_order_notice_subscription(request):
+    template_id = str(request.data.get('template_id') or '').strip()
+    accepted = request.data.get('accepted') is True
+    configured_template = (settings.WECHAT_PLAYER_ORDER_TEMPLATE_ID or '').strip()
+    if not configured_template or template_id != configured_template:
+        return Response({'detail': '接单订阅消息模板未配置或已更新'}, status=status.HTTP_400_BAD_REQUEST)
+    if not accepted:
+        return Response({
+            'message': '未授权接单订阅消息',
+            'enabled': True,
+            'template_id': configured_template,
+            'page': settings.WECHAT_PLAYER_ORDER_TEMPLATE_PAGE,
+            'available_count': 0,
+        })
+
+    player = current_player(request.user)
+    subscription, _ = PlayerOrderNoticeSubscription.objects.get_or_create(
+        player=player,
+        defaults={'template_id': configured_template},
+    )
+    if subscription.template_id != configured_template:
+        subscription.template_id = configured_template
+        subscription.available_count = 0
+    subscription.available_count += 1
+    subscription.last_subscribed_at = timezone.now()
+    subscription.save(update_fields=['template_id', 'available_count', 'last_subscribed_at', 'updated_at'])
+    return Response({
+        'message': '已开启下一次接单提醒',
+        'enabled': True,
+        'template_id': configured_template,
+        'page': settings.WECHAT_PLAYER_ORDER_TEMPLATE_PAGE,
+        'available_count': subscription.available_count,
+    })
 
 
 @api_view(['GET'])

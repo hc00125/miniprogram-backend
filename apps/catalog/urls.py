@@ -4,5 +4,5 @@ from . import api_views
 
 
 urlpatterns = [
-    path('players/<int:player_id>/offers', api_views.player_offers),
+    path('players/<int:player_id>/products', api_views.player_service_products),
 ]

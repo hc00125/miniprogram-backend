@@ -79,6 +79,29 @@ class Player(models.Model):
         return self.name
 
 
+class PlayerOrderNoticeSubscription(models.Model):
+    """One-time WeChat subscription-message permissions granted by a player."""
+
+    player = models.OneToOneField(
+        Player,
+        on_delete=models.CASCADE,
+        related_name='order_notice_subscription',
+        verbose_name='陪玩师',
+    )
+    template_id = models.CharField(max_length=128, blank=True, default='', verbose_name='订阅消息模板 ID')
+    available_count = models.PositiveIntegerField(default=0, verbose_name='可发送次数')
+    last_subscribed_at = models.DateTimeField(blank=True, null=True, verbose_name='最近授权时间')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'player_order_notice_subscriptions'
+        verbose_name = '陪玩师接单订阅消息授权'
+        verbose_name_plural = '陪玩师接单订阅消息授权'
+
+    def __str__(self):
+        return f'{self.player.name} - {self.available_count}'
+
+
 class PlayerApplication(models.Model):
     STATUS_PENDING = 'pending'
     STATUS_APPROVED = 'approved'

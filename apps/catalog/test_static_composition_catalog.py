@@ -135,23 +135,34 @@ class StaticCompositionCatalogTests(TestCase):
         self.assertFalse(PlayerOffer.objects.available().exists())
         self.assertEqual(disabled_offer.is_active, False)
 
-    def test_player_offer_api_returns_only_available_equipment_families(self):
+    def test_player_service_products_api_returns_only_owned_direct_products(self):
         player = Player.objects.create(
             name='商品族接口测试陪玩',
             player_type=self.gold,
             status=Player.STATUS_APPROVED,
             can_be_designated=True,
         )
-        PlayerOffer.objects.create(player=player, package_family=self.family)
-        hidden_family = PackageFamily.objects.create(name='隐藏装备', code='test-hidden-equipment')
-        PlayerOffer.objects.create(player=player, package_family=hidden_family, is_active=False)
+        direct_product = Package.objects.create(
+            name='商品族接口测试陪玩专属四套四弹',
+            group=self.group,
+            base_price=25,
+            player_count=1,
+            selling_mode=Package.SELLING_MODE_PLAYER_DESIGNATED,
+            owner_player=player,
+            is_active=True,
+        )
+        PackageSpec.objects.create(
+            package=direct_product,
+            name='四套四弹',
+            price=25,
+            is_active=True,
+        )
 
-        response = self.client.get(f'/api/catalog/players/{player.id}/offers')
+        response = self.client.get(f'/api/catalog/players/{player.id}/products')
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload['player_id'], player.id)
-        self.assertEqual(len(payload['offers']), 1)
-        family = payload['offers'][0]['package_family']
-        self.assertEqual(family['id'], self.family.id)
-        self.assertEqual([package['player_count'] for package in family['packages']], [1, 2, 3])
+        self.assertEqual([product['id'] for product in payload['products']], [direct_product.id])
+        self.assertEqual(payload['products'][0]['owner_player_id'], player.id)
+        self.assertEqual(payload['products'][0]['selling_mode'], Package.SELLING_MODE_PLAYER_DESIGNATED)

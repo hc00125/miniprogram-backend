@@ -96,8 +96,13 @@ def decline(request, order_no):
         )
     except Order.DoesNotExist:
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    message = (
+        '已拒绝指定服务，订单已取消并进入退款流程'
+        if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
+        else '已拒绝指定邀请，名额已转为公开抢单'
+    )
     return Response({
-        'message': '已拒绝指定邀请，名额已转为公开抢单',
+        'message': message,
         'order_no': order.order_no,
         'status': order.status,
     })

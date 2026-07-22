@@ -9,6 +9,8 @@ urlpatterns = [
     path('online-status', permission_views.update_online_status),
     path('logout', views.logout),
     path('me', views.me),
+    path('order-notice-config', views.order_notice_config),
+    path('order-notice-subscription', views.confirm_order_notice_subscription),
     path('profile-settings', profile_views.profile_settings),
     path('escort-qualification', escort_views.escort_qualification),
     path('apply', views.apply),

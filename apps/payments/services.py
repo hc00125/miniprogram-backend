@@ -251,15 +251,29 @@ def mark_payment_paid(payment, third_trade_no='', payload=None):
         finalize_paid_renewal(order, paid_at=paid_at)
     else:
         if order.status == Order.STATUS_PENDING_PAYMENT:
-            order.status = Order.STATUS_READY_TO_START
+            order.status = (
+                Order.STATUS_WAITING
+                if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
+                else Order.STATUS_READY_TO_START
+            )
             order_update_fields.append('status')
         order.save(update_fields=order_update_fields)
+        if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+            from apps.orders.designations import create_targeted_designation
+            from apps.orders.targeted_notifications import notify_paid_targeted_order
+
+            create_targeted_designation(order)
+            transaction.on_commit(lambda order_id=order.id: notify_paid_targeted_order(order_id))
         if old_status != order.status:
             OrderStatusLog.objects.create(
                 order=order,
                 from_status=old_status,
                 to_status=order.status,
-                reason='老板付款成功，等待陪玩开打',
+                reason=(
+                    '老板付款成功，等待指定陪玩师确认服务'
+                    if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
+                    else '老板付款成功，等待陪玩开打'
+                ),
             )
     return payment
 

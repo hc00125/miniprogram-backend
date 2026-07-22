@@ -111,6 +111,9 @@ class PackageSerializer(serializers.ModelSerializer):
     package_family_id = serializers.IntegerField(read_only=True, allow_null=True)
     package_family_code = serializers.CharField(source='package_family.code', allow_null=True, read_only=True)
     package_family_name = serializers.CharField(source='package_family.name', allow_null=True, read_only=True)
+    owner_player_id = serializers.IntegerField(read_only=True, allow_null=True)
+    owner_player_name = serializers.CharField(source='owner_player.name', allow_null=True, read_only=True)
+    owner_player_type_name = serializers.CharField(source='owner_player.player_type.name', allow_null=True, read_only=True)
     cover_url = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     thumb_url = serializers.SerializerMethodField()
@@ -122,7 +125,7 @@ class PackageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Package
         fields = [
-            'id', 'name', 'product_type', 'group_id', 'group_name',
+            'id', 'name', 'product_type', 'selling_mode', 'owner_player_id', 'owner_player_name', 'owner_player_type_name', 'group_id', 'group_name',
             'game_service_id', 'game_service_name',
             'package_family_id', 'package_family_code', 'package_family_name',
             'player_count', 'base_price', 'original_price', 'requires_escort_qualification',
@@ -171,12 +174,13 @@ class PackageWriteSerializer(serializers.ModelSerializer):
     """管理员创建/编辑商品用，需要传 group_id"""
     group_id = serializers.IntegerField(required=False, allow_null=True)
     package_family_id = serializers.IntegerField(required=False, allow_null=True)
+    owner_player_id = serializers.IntegerField(required=False, allow_null=True)
     _missing = object()
 
     class Meta:
         model = Package
         fields = [
-            'id', 'name', 'product_type', 'group_id', 'package_family_id',
+            'id', 'name', 'product_type', 'selling_mode', 'owner_player_id', 'group_id', 'package_family_id',
             'player_count', 'base_price', 'original_price', 'requires_escort_qualification',
             'description', 'cover_url', 'image_url', 'thumb_url', 'picture_url',
             'gallery_images', 'detail_images', 'detail_text', 'rules_text',
@@ -199,22 +203,38 @@ class PackageWriteSerializer(serializers.ModelSerializer):
         except PackageFamily.DoesNotExist as exc:
             raise serializers.ValidationError({'package_family_id': '装备商品族不存在'}) from exc
 
+    def resolve_owner_player(self, owner_player_id):
+        if owner_player_id is None:
+            return None
+        from apps.players.models import Player
+
+        try:
+            return Player.objects.get(pk=owner_player_id)
+        except Player.DoesNotExist as exc:
+            raise serializers.ValidationError({'owner_player_id': '所属陪玩师不存在'}) from exc
+
     def create(self, validated_data):
         group_id = validated_data.pop('group_id', self._missing)
         package_family_id = validated_data.pop('package_family_id', self._missing)
+        owner_player_id = validated_data.pop('owner_player_id', self._missing)
         if group_id is not self._missing:
             validated_data['group'] = self.resolve_group(group_id)
         if package_family_id is not self._missing:
             validated_data['package_family'] = self.resolve_package_family(package_family_id)
+        if owner_player_id is not self._missing:
+            validated_data['owner_player'] = self.resolve_owner_player(owner_player_id)
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
         group_id = validated_data.pop('group_id', self._missing)
         package_family_id = validated_data.pop('package_family_id', self._missing)
+        owner_player_id = validated_data.pop('owner_player_id', self._missing)
         if group_id is not self._missing:
             validated_data['group'] = self.resolve_group(group_id)
         if package_family_id is not self._missing:
             validated_data['package_family'] = self.resolve_package_family(package_family_id)
+        if owner_player_id is not self._missing:
+            validated_data['owner_player'] = self.resolve_owner_player(owner_player_id)
         return super().update(instance, validated_data)
 
 
