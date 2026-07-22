@@ -9,6 +9,7 @@ from .models import (
     OrderEditLog,
     OrderItem,
     OrderPlayer,
+    OrderPricingLine,
     OrderStatusLog,
     Rating,
 )
@@ -22,6 +23,19 @@ class OrderItemInline(admin.TabularInline):
         'unit_price', 'quantity', 'amount', 'image_url', 'description', 'sort_order',
     ]
     can_delete = False
+
+
+class OrderPricingLineInline(admin.TabularInline):
+    model = OrderPricingLine
+    extra = 0
+    can_delete = False
+    readonly_fields = [
+        'source', 'player_id_snapshot', 'player_name_snapshot',
+        'billing_player_type_id', 'billing_player_type_name',
+        'package_id_snapshot', 'package_name_snapshot', 'spec_id_snapshot',
+        'spec_name_snapshot', 'quantity', 'unit_price', 'amount', 'sort_order',
+        'created_at',
+    ]
 
 
 class OrderPlayerInline(admin.TabularInline):
@@ -65,17 +79,17 @@ class OrderAdmin(admin.ModelAdmin):
             'fields': ('kook_room_number', 'kook_room_updated_at', 'kook_room_updated_by')
         }),
         ('金额与时间', {
-            'fields': ('total_price_per_hour', 'total_amount', 'paid', 'payment_method', 'payment_confirmed_at', 'booked_hours', 'timer_started_at', 'start_time', 'end_time', 'duration_minutes')
+            'fields': ('pricing_mode', 'total_price_per_hour', 'total_amount', 'composition_price_per_hour', 'composition_pricing_error', 'paid', 'payment_method', 'payment_confirmed_at', 'booked_hours', 'timer_started_at', 'start_time', 'end_time', 'duration_minutes')
         }),
         ('订单快照与备注', {
-            'fields': ('spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot', 'addon', 'addon_details', 'required_players', 'designated_types', 'designated_players', 'boss_note', 'is_custom', 'custom_price')
+            'fields': ('spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot', 'composition_sku_id', 'composition_key', 'composition_virtual_spec_id', 'addon', 'addon_details', 'required_players', 'designated_types', 'designated_players', 'boss_note', 'is_custom', 'custom_price')
         }),
         ('取消信息', {
             'fields': ('canceled_at', 'cancel_reason'),
             'classes': ('collapse',),
         }),
     )
-    inlines = [OrderItemInline, OrderPlayerInline, OrderDesignationInline]
+    inlines = [OrderItemInline, OrderPricingLineInline, OrderPlayerInline, OrderDesignationInline]
 
     def has_delete_permission(self, request, obj=None):
         # 正式环境禁止物理删除订单；开发环境也只允许超级管理员在显式开关开启后删除。
@@ -148,6 +162,16 @@ class OrderItemAdmin(admin.ModelAdmin):
     list_display = ['id', 'order', 'package_name', 'spec_display_name', 'unit_price', 'quantity', 'amount', 'created_at']
     list_filter = ['package']
     search_fields = ['order__order_no', 'package_name', 'spec_name', 'spec_display_name']
+
+
+@admin.register(OrderPricingLine)
+class OrderPricingLineAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'order', 'source', 'player_name_snapshot', 'billing_player_type_name',
+        'package_name_snapshot', 'spec_name_snapshot', 'quantity', 'unit_price', 'amount',
+    ]
+    list_filter = ['source', 'billing_player_type_name']
+    search_fields = ['order__order_no', 'player_name_snapshot', 'package_name_snapshot', 'spec_name_snapshot']
 
 
 @admin.register(Rating)

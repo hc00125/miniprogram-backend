@@ -5,7 +5,7 @@ from rest_framework import serializers
 
 from apps.common.money import money
 
-from .models import CartItem, Order, OrderItem, OrderPlayer, Rating
+from .models import CartItem, Order, OrderItem, OrderPlayer, OrderPricingLine, Rating
 
 
 class OrderCreateItemSerializer(serializers.Serializer):
@@ -37,6 +37,37 @@ class OrderCreateSerializer(serializers.Serializer):
         return attrs
 
 
+class DesignatedDraftSerializer(serializers.Serializer):
+    """Input contract for server-side static designated-play drafts."""
+
+    draft_id = serializers.IntegerField(required=False, min_value=1)
+    boss_wechat = serializers.CharField(required=False, allow_blank=True, max_length=50)
+    game_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    base_spec_id = serializers.IntegerField(required=False, min_value=1)
+    designated_player_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=True,
+    )
+    # Alias accepted temporarily so old clients that use the legacy field name
+    # cannot bypass server-side pricing while they migrate.
+    designated_players = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
+    booked_hours = serializers.IntegerField(required=False, min_value=1, max_value=24)
+    boss_note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    def validate(self, attrs):
+        if 'designated_player_ids' not in attrs and 'designated_players' in attrs:
+            attrs['designated_player_ids'] = attrs.pop('designated_players')
+        else:
+            attrs.pop('designated_players', None)
+        return attrs
+
+
 class OrderRenewalCreateSerializer(serializers.Serializer):
     units = serializers.IntegerField(required=False, default=1, min_value=1, max_value=10)
 
@@ -60,6 +91,17 @@ class OrderItemSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'package_id', 'package_name', 'spec_id', 'spec_name', 'spec_display_name',
             'unit_price', 'quantity', 'amount', 'image_url', 'description', 'sort_order'
+        ]
+
+
+class OrderPricingLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderPricingLine
+        fields = [
+            'id', 'source', 'player_id_snapshot', 'player_name_snapshot',
+            'billing_player_type_id', 'billing_player_type_name',
+            'package_id_snapshot', 'package_name_snapshot', 'spec_id_snapshot',
+            'spec_name_snapshot', 'quantity', 'unit_price', 'amount', 'sort_order',
         ]
 
 
@@ -202,6 +244,7 @@ class BossOrderDetailSerializer(RenewalFieldsMixin):
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     players = serializers.SerializerMethodField()
     items = OrderItemSerializer(many=True, read_only=True)
+    pricing_lines = OrderPricingLineSerializer(many=True, read_only=True)
     renewals = serializers.SerializerMethodField()
 
     class Meta:
@@ -213,6 +256,8 @@ class BossOrderDetailSerializer(RenewalFieldsMixin):
             'custom_price', 'created_at', 'booked_hours', 'timer_started_at', 'paused_duration', 'is_paused',
             'last_paused_at', 'players', 'items', 'kook_room_number', 'kook_room_updated_at',
             'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
+            'pricing_mode', 'composition_sku_id', 'composition_key', 'composition_virtual_spec_id',
+            'composition_price_per_hour', 'composition_pricing_error', 'pricing_lines',
             'order_type', 'parent_order_no', 'renewal_index', 'renewal_count', 'renewal_booked_hours',
             'renewal_paid_amount', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew', 'renewals',
         ]

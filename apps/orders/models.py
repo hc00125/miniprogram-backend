@@ -30,6 +30,13 @@ class Order(models.Model):
         (ORDER_TYPE_RENEWAL, '续单'),
     ]
 
+    PRICING_MODE_LEGACY = 'legacy'
+    PRICING_MODE_COMPOSITION = 'composition'
+    PRICING_MODE_CHOICES = [
+        (PRICING_MODE_LEGACY, '普通定价'),
+        (PRICING_MODE_COMPOSITION, '指定陪玩组合定价'),
+    ]
+
     order_no = models.CharField(max_length=20, unique=True, db_index=True)
     boss_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name='boss_orders')
     boss_wechat = models.CharField(max_length=50)
@@ -86,6 +93,46 @@ class Order(models.Model):
     )
     renewal_index = models.PositiveIntegerField(default=0, verbose_name='续单序号')
 
+    # 组合定价订单不依赖陪玩师身份定价。这里保留静态组合 SKU 与虚拟商品规格的
+    # 不可变快照，避免后台后续调整商品关系影响已发出的订单。
+    pricing_mode = models.CharField(
+        max_length=20,
+        choices=PRICING_MODE_CHOICES,
+        default=PRICING_MODE_LEGACY,
+        db_index=True,
+        verbose_name='定价模式',
+    )
+    composition_sku_id = models.PositiveBigIntegerField(
+        blank=True,
+        null=True,
+        db_index=True,
+        verbose_name='组合结算SKU ID快照',
+    )
+    composition_key = models.CharField(
+        max_length=180,
+        blank=True,
+        default='',
+        verbose_name='组合结算SKU键快照',
+    )
+    composition_virtual_spec_id = models.PositiveBigIntegerField(
+        blank=True,
+        null=True,
+        verbose_name='组合虚拟商品规格ID快照',
+    )
+    composition_price_per_hour = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        verbose_name='组合每小时价格快照',
+    )
+    composition_pricing_error = models.CharField(
+        max_length=300,
+        blank=True,
+        default='',
+        verbose_name='组合定价配置错误',
+    )
+
     class Meta:
         db_table = 'orders'
         verbose_name = '订单'
@@ -126,6 +173,92 @@ class OrderItem(models.Model):
 
     def __str__(self):
         return f'{self.order.order_no} - {self.package_name} x{self.quantity}'
+
+
+class OrderPricingLine(models.Model):
+    """组合定价订单的不可变价格明细。
+
+    `player_id_snapshot` 仅用于审计和界面展示；组合 SKU 的匹配与金额只依赖
+    陪玩类型计数，不会因具体陪玩师身份形成新的价格。
+    """
+
+    SOURCE_PUBLIC = 'public'
+    SOURCE_DESIGNATED = 'designated'
+    SOURCE_CHOICES = [
+        (SOURCE_PUBLIC, '公开抢单名额'),
+        (SOURCE_DESIGNATED, '指定陪玩名额'),
+    ]
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='pricing_lines')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    player_id_snapshot = models.PositiveBigIntegerField(blank=True, null=True)
+    player_name_snapshot = models.CharField(max_length=100, blank=True, default='')
+    billing_player_type_id = models.PositiveBigIntegerField(blank=True, null=True)
+    billing_player_type_name = models.CharField(max_length=60, blank=True, default='')
+    package_id_snapshot = models.PositiveBigIntegerField(blank=True, null=True)
+    package_name_snapshot = models.CharField(max_length=120, blank=True, default='')
+    spec_id_snapshot = models.PositiveBigIntegerField(blank=True, null=True)
+    spec_name_snapshot = models.CharField(max_length=120, blank=True, default='')
+    quantity = models.PositiveSmallIntegerField(default=1)
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'order_pricing_lines'
+        verbose_name = '订单价格明细'
+        verbose_name_plural = '订单价格明细'
+        ordering = ['sort_order', 'id']
+
+    def __str__(self):
+        return f'{self.order.order_no} - {self.source} - {self.amount}'
+
+
+class DesignatedOrderDraft(models.Model):
+    """老板配置指定陪玩时的服务端草稿。
+
+    草稿只保存选择，不保存客户端报价；提交时会重新从静态组合 SKU 计算并校验。
+    """
+
+    STATUS_DRAFT = 'draft'
+    STATUS_SUBMITTED = 'submitted'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, '编辑中'),
+        (STATUS_SUBMITTED, '已提交'),
+    ]
+
+    boss_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='designated_order_drafts',
+    )
+    boss_wechat = models.CharField(max_length=50)
+    game_id = models.CharField(max_length=100, blank=True, null=True)
+    package = models.ForeignKey('catalog.Package', on_delete=models.PROTECT, related_name='designated_order_drafts')
+    base_spec = models.ForeignKey('catalog.PackageSpec', on_delete=models.PROTECT, related_name='designated_order_drafts')
+    designated_player_ids = models.JSONField(default=list, blank=True)
+    booked_hours = models.PositiveSmallIntegerField(default=1)
+    boss_note = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True)
+    submitted_order = models.OneToOneField(
+        Order,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='designated_draft',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'designated_order_drafts'
+        verbose_name = '指定陪玩草稿'
+        verbose_name_plural = '指定陪玩草稿'
+        ordering = ['-updated_at', '-id']
+
+    def __str__(self):
+        return f'草稿#{self.pk} - {self.boss_wechat}'
 
 
 class OrderPlayer(models.Model):

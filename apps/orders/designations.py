@@ -134,7 +134,20 @@ def validate_designated_player_spec(order, players):
 def create_designations(order, players):
     if not players:
         return []
-    validate_designated_player_spec(order, players)
+    if order.pricing_mode == Order.PRICING_MODE_COMPOSITION:
+        # The static-composition resolver validates eligibility and pricing by
+        # package-family/type signature.  Do not run the legacy same-package
+        # tier lookup here: a designated gold slot is intentionally priced by
+        # the sibling one-person package, not by a spec on the base package.
+        from .composition_pricing import quote_composition_for_order
+
+        quote = quote_composition_for_order(order, require_virtual_binding=False)
+        quoted_ids = quote['designated_player_ids']
+        actual_ids = [player.id for player in players]
+        if quoted_ids != actual_ids:
+            raise ValidationError({'designated_players': '指定陪玩选择与组合报价不一致，请重新报价'})
+    else:
+        validate_designated_player_spec(order, players)
     expires_at = timezone.now() + timedelta(minutes=DESIGNATION_TTL_MINUTES)
     return [
         OrderDesignation.objects.create(

@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
@@ -12,6 +13,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from apps.catalog.models import CompositionSku
 from apps.orders.models import Order
 
 from .models import Payment, VirtualProductBinding
@@ -175,6 +177,9 @@ def xpay_post(endpoint, payload):
 
 
 def resolve_virtual_product(order):
+    if order.pricing_mode == Order.PRICING_MODE_COMPOSITION:
+        return resolve_composition_virtual_product(order)
+
     items = list(order.items.select_related('package', 'spec').order_by('sort_order', 'id'))
     if len(items) != 1:
         raise ValidationError({'detail': '当前沙箱测试仅支持单个商品结算，请不要合并多个商品'})
@@ -233,6 +238,86 @@ def resolve_virtual_product(order):
     }
 
 
+def _composition_duration(order):
+    try:
+        raw_duration = Decimal(str(order.booked_hours))
+        duration = int(raw_duration)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValidationError({'detail': '静态组合订单的时长必须是正整数小时'}) from exc
+    if duration < 1 or raw_duration != Decimal(duration):
+        raise ValidationError({'detail': '静态组合订单的时长必须是正整数小时'})
+    return duration
+
+
+def resolve_composition_virtual_product(order):
+    """Map a composition-priced order to its one static virtual product.
+
+    The concrete designated players never participate in this lookup.  The
+    order must still point at the active catalog CompositionSku with the exact
+    key, internal virtual spec and per-hour price snapshot it was quoted with.
+    """
+    if order.composition_pricing_error:
+        # A decline/timeout is allowed to free its seat even when operations
+        # forgot the fallback SKU.  If they repair that configuration later,
+        # lazily re-match it here; otherwise payment remains blocked with the
+        # recorded configuration error and never falls back to legacy pricing.
+        from apps.orders.composition_pricing import reprice_composition_order
+
+        previous_error = order.composition_pricing_error
+        try:
+            reprice_composition_order(order, require_virtual_binding=True)
+        except ValidationError:
+            raise ValidationError({
+                'detail': f'当前指定组合缺少可支付的静态 SKU 配置：{previous_error}',
+            })
+    if not order.composition_sku_id:
+        raise ValidationError({'detail': '静态组合订单缺少组合 SKU 快照，不能发起支付'})
+    sku = (
+        CompositionSku.objects.select_related('virtual_package_spec')
+        .filter(pk=order.composition_sku_id, is_active=True)
+        .first()
+    )
+    if not sku:
+        raise ValidationError({'detail': '当前组合 SKU 已下架或不存在，不能发起支付'})
+    if not sku.virtual_package_spec_id:
+        raise ValidationError({'detail': '当前组合 SKU 未配置内部虚拟商品规格'})
+    if order.composition_key != sku.composition_key:
+        raise ValidationError({'detail': '订单组合 SKU 键与当前静态配置不一致，不能支付'})
+    if order.composition_virtual_spec_id != sku.virtual_package_spec_id:
+        raise ValidationError({'detail': '订单虚拟商品规格与当前组合 SKU 不一致，不能支付'})
+
+    per_hour_fen = amount_to_cents(sku.total_price_per_hour)
+    snapshot_fen = amount_to_cents(order.composition_price_per_hour)
+    if per_hour_fen <= 0 or snapshot_fen != per_hour_fen:
+        raise ValidationError({'detail': '订单组合价格快照与静态 SKU 不一致，不能支付'})
+    if amount_to_cents(sku.virtual_package_spec.price) != per_hour_fen:
+        raise ValidationError({'detail': '组合 SKU 的内部虚拟规格价格不正确，不能支付'})
+
+    binding = sku.active_virtual_binding()
+    if not binding:
+        raise ValidationError({'detail': '当前组合 SKU 未绑定价格一致的微信虚拟商品，不能支付'})
+    if binding.spec_id != sku.virtual_package_spec_id or binding.goods_price_fen != per_hour_fen:
+        raise ValidationError({'detail': '组合 SKU 微信虚拟商品绑定不一致，不能支付'})
+
+    quantity = _composition_duration(order)
+    expected_total_fen = binding.goods_price_fen * quantity
+    actual_total_fen = amount_to_cents(get_order_amount(order))
+    if actual_total_fen != expected_total_fen:
+        raise ValidationError({'detail': '静态组合订单总金额与“组合 SKU 单价 × 时长”不一致，不能支付'})
+
+    return {
+        'product_id': binding.product_id,
+        'goods_price_fen': binding.goods_price_fen,
+        'quantity': quantity,
+        'expected_total_fen': expected_total_fen,
+        'source': f'composition_sku:{sku.id}',
+        'item_id': None,
+        'composition_sku_id': sku.id,
+        'composition_key': sku.composition_key,
+        'virtual_package_spec_id': sku.virtual_package_spec_id,
+    }
+
+
 def _product_from_payment(payment, fallback=None):
     stored = dict(payment.notify_payload or {})
     fallback = fallback or {}
@@ -246,6 +331,10 @@ def _product_from_payment(payment, fallback=None):
     }
     if not product['product_id'] or product['goods_price_fen'] <= 0:
         raise VirtualPaymentError('已有支付单缺少微信虚拟道具信息，请联系管理员处理')
+    if stored.get('composition_sku_id'):
+        product['composition_sku_id'] = stored.get('composition_sku_id')
+        product['composition_key'] = stored.get('composition_key', '')
+        product['virtual_package_spec_id'] = stored.get('virtual_package_spec_id')
     return product
 
 
@@ -322,7 +411,16 @@ def create_virtual_payment(order_no, user, code):
     if existing:
         ensure_order_owner(existing.order, user)
         if not existing.expires_at or existing.expires_at > now:
-            product = _product_from_payment(existing)
+            if existing.order.pricing_mode == Order.PRICING_MODE_COMPOSITION:
+                # Do not reuse a stale virtual order after the static SKU has
+                # been disabled or its product binding no longer matches.
+                current = resolve_virtual_product(existing.order)
+                product = _product_from_payment(existing, current)
+                for field in ('product_id', 'goods_price_fen', 'quantity', 'expected_total_fen'):
+                    if product[field] != current[field]:
+                        raise ValidationError({'detail': '已有支付单与当前静态组合 SKU 不一致，请重新创建支付单'})
+            else:
+                product = _product_from_payment(existing)
             return existing, _build_virtual_payment_payload(
                 existing,
                 existing.order,
@@ -369,7 +467,12 @@ def create_virtual_payment(order_no, user, code):
             .first()
         )
         if active:
-            product = _product_from_payment(active, product)
+            stored_product = _product_from_payment(active, product)
+            if order.pricing_mode == Order.PRICING_MODE_COMPOSITION:
+                for field in ('product_id', 'goods_price_fen', 'quantity', 'expected_total_fen'):
+                    if stored_product[field] != product[field]:
+                        raise ValidationError({'detail': '已有支付单与当前静态组合 SKU 不一致，请重新创建支付单'})
+            product = stored_product
             return active, _build_virtual_payment_payload(active, order, product, env, session_key)
 
         Payment.objects.filter(
