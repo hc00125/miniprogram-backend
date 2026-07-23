@@ -105,7 +105,6 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
-                'django.contrib.messages.context_processors.messages',
             ],
         },
     }
@@ -171,7 +170,7 @@ SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', 'false')
 SECURE_HSTS_SECONDS = env_int('SECURE_HSTS_SECONDS', '0' if DEBUG else '31536000')
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'false' if DEBUG else 'true')
 SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', 'false')
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if env_bool('SECURE_PROXY_SSL_HEADER', 'true') else None
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if env_bool('SECURE_SSL_REDIRECT', 'true') else None
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
