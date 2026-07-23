@@ -4,13 +4,14 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from apps.players.models import Player
+from apps.players.models import Player, PlayerServiceListing
 
 from .models import Package, PackageImage, PackageSpec, PlayerOffer
 from .serializers import PackageSerializer, PlayerOfferSerializer
 
 
 def player_service_products_queryset(player_id):
+    """Legacy personal products kept for existing data and historical orders."""
     return (
         Package.objects
         .filter(
@@ -35,40 +36,97 @@ def player_service_products_queryset(player_id):
     )
 
 
+def shared_listing_products(player, request):
+    listings = list(
+        PlayerServiceListing.objects
+        .filter(
+            player=player,
+            status=PlayerServiceListing.STATUS_APPROVED,
+            is_available=True,
+            spec__is_active=True,
+            spec__package__is_active=True,
+        )
+        .select_related(
+            'spec__required_player_type',
+            'spec__package__group__game_service',
+        )
+        .order_by('sort_order', 'spec__package__sort_order', 'spec__sort_order', 'id')
+    )
+    if not listings:
+        return []
+
+    packages = []
+    package_map = {}
+    listing_map = {}
+    for listing in listings:
+        package = listing.spec.package
+        if package.id not in package_map:
+            package.active_specs = []
+            package_map[package.id] = package
+            packages.append(package)
+        package_map[package.id].active_specs.append(listing.spec)
+        listing_map[listing.spec_id] = listing
+
+    image_queryset = PackageImage.objects.filter(
+        package_id__in=package_map,
+        is_active=True,
+    ).order_by('image_type', 'sort_order', 'id')
+    images_by_package = {}
+    for image in image_queryset:
+        images_by_package.setdefault(image.package_id, []).append(image)
+    for package in packages:
+        package.active_images = images_by_package.get(package.id, [])
+
+    payload = PackageSerializer(packages, many=True, context={'request': request}).data
+    for product in payload:
+        product['selling_mode'] = Package.SELLING_MODE_PLAYER_DESIGNATED
+        product['owner_player_id'] = player.id
+        product['owner_player_name'] = player.name
+        product['owner_player_type_name'] = player.player_type.name if player.player_type_id else None
+        product_listing_ids = []
+        for spec_payload in product.get('specs') or []:
+            listing = listing_map.get(spec_payload.get('id'))
+            if not listing:
+                continue
+            spec_payload['listing_id'] = listing.id
+            spec_payload['listing_status'] = listing.status
+            spec_payload['listing_description'] = listing.custom_description
+            product_listing_ids.append(listing.id)
+        product['listing_id'] = product_listing_ids[0] if len(product_listing_ids) == 1 else None
+    return payload
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def player_service_products(request, player_id):
-    """Return the active, one-person products owned by this player.
-
-    The endpoint deliberately exposes only products whose owner is the requested
-    player, so clients never choose or submit an arbitrary target player id.
-    """
+    """Keep the boss-facing contract stable while listings replace copied products."""
     player = Player.objects.filter(
         pk=player_id,
         status=Player.STATUS_APPROVED,
         can_be_designated=True,
         is_publicly_visible=True,
-    ).first()
+    ).select_related('player_type').first()
     if not player:
         return Response({'detail': '陪玩师不存在或暂不接受指定'}, status=status.HTTP_404_NOT_FOUND)
 
-    products = player_service_products_queryset(player.id)
+    products = shared_listing_products(player, request)
+    if not products:
+        products = PackageSerializer(
+            player_service_products_queryset(player.id),
+            many=True,
+            context={'request': request},
+        ).data
     return Response({
         'player_id': player.id,
         'player_name': player.name,
-        'products': PackageSerializer(products, many=True, context={'request': request}).data,
+        'products': products,
     })
 
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def player_offers(request, player_id):
-    """List equipment families that may be selected for one designated player.
-
-    This is deliberately a catalog-only endpoint: it exposes configured offers
-    and static package/spec compatibility, while an order draft still owns
-    availability conflicts, the selected duration, and the final quote.
-    """
+    """Legacy package-family offer endpoint retained until its callers are removed."""
     player = Player.objects.filter(
         pk=player_id,
         status=Player.STATUS_APPROVED,
