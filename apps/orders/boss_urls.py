@@ -5,6 +5,7 @@ from . import (
     boss_views,
     catalog_navigation_views,
     designation_views,
+    listing_order_views,
     payment_views,
     rating_views,
 )
@@ -17,6 +18,7 @@ urlpatterns = [
     path('player-types', boss_views.player_types),
     path('online-players', boss_views.online_players),
     path('order', boss_views.create_order),
+    path('listing-order', listing_order_views.create_order),
     path('order/<str:order_no>', payment_views.order_detail),
     path('order/<str:order_no>/renew', boss_views.create_renewal),
     path('order/<str:order_no>/designations', designation_views.designations),
