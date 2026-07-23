@@ -43,6 +43,9 @@ MAINTENANCE_MODE = env_bool('MAINTENANCE_MODE', 'false')
 # 功能开关 — 停用指定打手功能（加入阵容按钮变灰）
 FEATURE_DESIGNATE_DISABLED = env_bool('FEATURE_DESIGNATE_DISABLED', 'false')
 
+# 陪玩共享服务上架审核：默认人工审核；开启后仅符合等级/权限规则的普通服务自动上架。
+PLAYER_SERVICE_LISTING_AUTO_APPROVE = env_bool('PLAYER_SERVICE_LISTING_AUTO_APPROVE', 'false')
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -258,10 +261,8 @@ LOGGING = {
         },
     },
     'loggers': {
-        'apps.payments.virtualpay': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': False,
-        },
+        'django': {'handlers': ['console'], 'level': 'INFO'},
+        'apps.payments': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'apps.orders.targeted_notifications': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
     },
 }
