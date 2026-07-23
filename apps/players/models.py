@@ -187,4 +187,101 @@ class PlayerProfileUpdateRequest(models.Model):
         return f'{self.player.name} - {self.get_status_display()}'
 
 
+class PlayerServiceListing(models.Model):
+    """A player's self-service listing of one platform-owned shared specification."""
+
+    STATUS_PENDING = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_OFFLINE = 'offline'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, '待审核'),
+        (STATUS_APPROVED, '已上架'),
+        (STATUS_REJECTED, '已拒绝'),
+        (STATUS_OFFLINE, '已下架'),
+    ]
+
+    player = models.ForeignKey(
+        Player,
+        on_delete=models.CASCADE,
+        related_name='service_listings',
+        verbose_name='陪玩师',
+    )
+    spec = models.ForeignKey(
+        'catalog.PackageSpec',
+        on_delete=models.PROTECT,
+        related_name='player_service_listings',
+        verbose_name='共享服务规格',
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    is_available = models.BooleanField(default=True, db_index=True, verbose_name='当前可预约')
+    custom_description = models.CharField(max_length=300, blank=True, default='', verbose_name='个人服务说明')
+    sort_order = models.IntegerField(default=0, verbose_name='个人排序')
+    rejection_reason = models.CharField(max_length=300, blank=True, default='', verbose_name='拒绝原因')
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='reviewed_player_service_listings',
+        verbose_name='审核人',
+    )
+    reviewed_at = models.DateTimeField(blank=True, null=True, verbose_name='审核时间')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'player_service_listings'
+        verbose_name = '陪玩共享服务上架'
+        verbose_name_plural = '陪玩共享服务上架'
+        ordering = ['sort_order', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['player', 'spec'],
+                name='uniq_player_shared_service_spec',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['player', 'status', 'is_available'], name='player_listing_public_idx'),
+        ]
+
+    @property
+    def package(self):
+        return self.spec.package
+
+    def automatic_approval_error(self):
+        player = self.player
+        spec = self.spec
+        package = spec.package
+        if player.status != Player.STATUS_APPROVED:
+            return '陪玩师账号尚未通过审核'
+        if not player.can_accept_orders or not player.can_be_designated:
+            return '陪玩师当前未开放接单或指定权限'
+        if not package.is_active or not spec.is_active:
+            return '共享商品或规格已下架'
+        required_type = spec.required_player_type
+        billing_type = player.designated_billing_type
+        if required_type and (not billing_type or billing_type.priority < required_type.priority):
+            return f'当前陪玩等级未达到“{required_type.name}”要求'
+        if package.requires_escort_qualification:
+            return '护航类服务需要管理员人工审核资格'
+        return ''
+
+    @property
+    def is_publicly_sellable(self):
+        return bool(
+            self.status == self.STATUS_APPROVED
+            and self.is_available
+            and self.player.status == Player.STATUS_APPROVED
+            and self.player.can_accept_orders
+            and self.player.can_be_designated
+            and self.player.is_publicly_visible
+            and self.spec.is_active
+            and self.spec.package.is_active
+        )
+
+    def __str__(self):
+        return f'{self.player.name} - {self.spec}'
+
+
 from .escort_models import PlayerEscortApplication, PlayerEscortQualification  # noqa: E402,F401
