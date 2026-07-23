@@ -1,4 +1,4 @@
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -37,9 +37,17 @@ def player_service_products_queryset(player_id):
 
 
 def shared_listing_products(player, request):
+    payment_binding = (
+        Q(spec__virtual_payment_bindings__is_active=True)
+        | Q(
+            spec__package__virtual_payment_bindings__is_active=True,
+            spec__package__virtual_payment_bindings__spec__isnull=True,
+        )
+    )
     listings = list(
         PlayerServiceListing.objects
         .filter(
+            payment_binding,
             player=player,
             status=PlayerServiceListing.STATUS_APPROVED,
             is_available=True,
@@ -50,6 +58,7 @@ def shared_listing_products(player, request):
             'spec__required_player_type',
             'spec__package__group__game_service',
         )
+        .distinct()
         .order_by('sort_order', 'spec__package__sort_order', 'spec__sort_order', 'id')
     )
     if not listings:
@@ -110,12 +119,13 @@ def player_service_products(request, player_id):
         return Response({'detail': '陪玩师不存在或暂不接受指定'}, status=status.HTTP_404_NOT_FOUND)
 
     products = shared_listing_products(player, request)
-    if not products:
-        products = PackageSerializer(
-            player_service_products_queryset(player.id),
-            many=True,
-            context={'request': request},
-        ).data
+    legacy_products = PackageSerializer(
+        player_service_products_queryset(player.id),
+        many=True,
+        context={'request': request},
+    ).data
+    products.extend(legacy_products)
+    products.sort(key=lambda item: (int(item.get('sort_order') or 0), int(item.get('id') or 0)))
     return Response({
         'player_id': player.id,
         'player_name': player.name,
