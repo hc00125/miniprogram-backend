@@ -1,10 +1,12 @@
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 
 from apps.common.money import money
 from apps.orders.models import Order, OrderItem, OrderStatusLog
+from apps.payments.models import VirtualProductBinding
 from apps.players.models import Player, PlayerServiceListing
 
 from .services import build_order_note, generate_order_no, normalize_order_items
@@ -45,6 +47,15 @@ def create_listing_order(validated_data, listing_id, user=None):
         raise ValidationError({'detail': '陪玩师已由上架记录锁定，请勿额外传入指定陪玩'})
     if validated_data.get('addon_details') or validated_data.get('addon_id'):
         raise ValidationError({'detail': '指定陪玩服务暂不支持叠加特殊陪类型'})
+
+    expected_unit_fen = int(round(float(first_item['unit_price']) * 100))
+    has_payment_binding = VirtualProductBinding.objects.filter(
+        Q(spec_id=spec.id) | Q(package_id=package.id, spec__isnull=True),
+        is_active=True,
+        goods_price_fen=expected_unit_fen,
+    ).exists()
+    if not has_payment_binding:
+        raise ValidationError({'detail': '该共享规格的微信虚拟道具绑定已失效，请联系管理员处理'})
 
     total_price = money(sum((item['amount'] for item in order_items), Decimal('0')))
     booked_hours = first_item['quantity']
