@@ -105,6 +105,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'django.contrib.messages.context_processors.messages',
             ],
         },
     }
@@ -261,8 +262,10 @@ LOGGING = {
         },
     },
     'loggers': {
-        'django': {'handlers': ['console'], 'level': 'INFO'},
-        'apps.payments': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
-        'apps.orders.targeted_notifications': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'apps.payments.virtualpay': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
     },
 }
