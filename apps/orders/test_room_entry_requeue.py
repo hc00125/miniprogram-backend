@@ -5,6 +5,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from apps.catalog.models import Package, PlayerType
+from apps.payments.models import Payment
 from apps.players.models import Player
 
 from .models import Order, OrderPlayer, OrderStatusLog
@@ -41,7 +42,7 @@ class RoomEntryRequeueTests(TestCase):
             total_orders=0,
         )
 
-    def create_paid_ready_order(self):
+    def create_pending_order(self):
         order = create_order({
             'boss_wechat': 'room-entry-openid',
             'game_id': 'ROOM-ENTRY-TEST',
@@ -53,7 +54,10 @@ class RoomEntryRequeueTests(TestCase):
         order = grab_order(order.order_no, self.first_player, self.first_user)
         relation = order.order_players.get(player=self.first_player)
         self.assertIsNone(relation.room_join_deadline)
+        return order
 
+    def create_paid_ready_order(self):
+        order = self.create_pending_order()
         paid_at = timezone.now()
         order.paid = True
         order.status = Order.STATUS_READY_TO_START
@@ -61,6 +65,26 @@ class RoomEntryRequeueTests(TestCase):
         order.save(update_fields=['paid', 'status', 'payment_confirmed_at'])
         start_room_entry_window(order, paid_at)
         return order
+
+    def test_verified_payment_signal_starts_timer_before_order_row_updates(self):
+        order = self.create_pending_order()
+        paid_at = timezone.now()
+        payment = Payment.objects.create(
+            payment_no='ROOMENTRY-PAY-1',
+            order=order,
+            channel='wechat_virtual',
+            scene='miniprogram',
+            amount=20,
+            status='created',
+        )
+
+        payment.status = 'paid'
+        payment.paid_at = paid_at
+        payment.save(update_fields=['status', 'paid_at'])
+
+        relation = order.order_players.get(player=self.first_player)
+        self.assertIsNotNone(relation.room_join_deadline)
+        self.assertEqual(relation.room_join_deadline, paid_at + timedelta(minutes=10))
 
     def test_timeout_releases_player_and_reopens_paid_order(self):
         order = self.create_paid_ready_order()
