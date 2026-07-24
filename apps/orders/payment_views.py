@@ -33,7 +33,6 @@ def reconcile_pending_virtual_payment(order, user):
         try:
             synced = query_virtual_payment(payment.payment_no, user)
         except VirtualPaymentError as exc:
-            # 订单详情仍应正常返回；前端后续刷新时会再次核验。
             logger.warning(
                 '[虚拟支付] 订单详情主动核验失败 order_no=%s payment_no=%s error=%s',
                 order.order_no,
@@ -64,8 +63,8 @@ def order_detail(request, order_no):
     if not can_access_order(order, request.user):
         return forbidden_response()
 
-    # 待支付页面每次刷新都兜底检查10分钟支付期限。即使定时任务暂时
-    # 没有运行，老板再次进入订单时也会立即释放超时占用的陪玩阵容。
+    # 页面刷新是定时任务之外的第二道兜底：支付期结束后先进入微信核验期，
+    # 核验仍未付款才取消并释放服务阵容。
     if order.status == Order.STATUS_PENDING_PAYMENT and not order.paid:
         if expire_due_unpaid_order(order):
             order, error_response = get_order_or_response(order_no)
@@ -73,11 +72,12 @@ def order_detail(request, order_no):
                 return error_response
 
     if reconcile_pending_virtual_payment(order, request.user):
-        # 支付核验可能已经更新订单状态，重新读取以避免返回旧的“待支付”。
         order, error_response = get_order_or_response(order_no)
         if error_response:
             return error_response
 
     data = BossOrderDetailSerializer(order).data
     data.update(payment_deadline_payload(order))
+    data['cancel_reason'] = order.cancel_reason or ''
+    data['canceled_at'] = order.canceled_at.isoformat() if order.canceled_at else None
     return Response(data)
