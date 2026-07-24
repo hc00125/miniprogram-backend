@@ -7,6 +7,10 @@ class OrdersConfig(AppConfig):
     verbose_name = '订单管理'
 
     def ready(self):
+        # 支付窗口使用独立的一对一审计模型，必须在应用启动时注册，供迁移、
+        # 系统检查、API 和运营后台共同使用。
+        from . import payment_window_models  # noqa: F401
+
         # 兼容既有指定邀请流程：create_designations 会在运行时读取模块级校验函数，
         # 这里替换为“基础规格 + 每位陪玩最低指定计费类型”的新规则。
         from . import designations
@@ -22,5 +26,8 @@ class OrdersConfig(AppConfig):
         boss_views.create_order_service = create_order
         batch_views.create_cart_orders = create_cart_orders
 
-        # 订单信号分文件加载：计价相关与付款前取消后的陪玩释放逻辑互不混杂。
-        from . import cancel_signals, signals  # noqa: F401
+        # 订单信号分文件加载：计价、付款前取消、支付窗口固化互不混杂。
+        from . import cancel_signals, payment_window_signals, signals  # noqa: F401
+
+        # 支付窗口单独作为只读运营审计页面展示。
+        from . import payment_window_admin  # noqa: F401
