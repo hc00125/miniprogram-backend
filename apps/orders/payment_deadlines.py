@@ -76,12 +76,16 @@ def persist_payment_window(order, started_at=None, force_reset=False):
 def payment_window_for_order(order, create_if_active=True):
     if not order or not order.pk:
         return None
-    try:
-        return order.payment_window
-    except OrderPaymentWindow.DoesNotExist:
-        if create_if_active and order.status == Order.STATUS_PENDING_PAYMENT and not order.paid:
-            return persist_payment_window(order)
-        return None
+
+    # Query explicitly rather than reading the reverse one-to-one descriptor.
+    # The descriptor caches its first result and can become stale after an
+    # operational reset or a backfill in the same request/test transaction.
+    window = OrderPaymentWindow.objects.filter(order_id=order.pk).first()
+    if window:
+        return window
+    if create_if_active and order.status == Order.STATUS_PENDING_PAYMENT and not order.paid:
+        return persist_payment_window(order)
+    return None
 
 
 def payment_window_started_at(order):
