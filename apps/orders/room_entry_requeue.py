@@ -15,9 +15,13 @@ ROOM_ENTRY_TTL_MINUTES = 10
 ROOM_ENTRY_TIMEOUT_REASON_PREFIX = '陪玩进入房间超时'
 
 
-def start_room_entry_window(order, started_at=None):
-    """Start the room-entry clock only after the boss has paid."""
-    if not order or not order.pk or not order.paid:
+def start_room_entry_window(order, started_at=None, payment_verified=False):
+    """Start the room-entry clock only after the boss payment is verified.
+
+    Payment is persisted before the business order is updated inside the payment
+    transaction, so the payment signal passes ``payment_verified=True``.
+    """
+    if not order or not order.pk or (not order.paid and not payment_verified):
         return 0
     started_at = started_at or order.payment_confirmed_at or timezone.now()
     deadline = started_at + timedelta(minutes=ROOM_ENTRY_TTL_MINUTES)
@@ -72,7 +76,11 @@ def normalize_room_entry_deadline(sender, instance, created, **kwargs):
 def start_room_entry_after_payment(sender, instance, **kwargs):
     if instance.status != 'paid':
         return
-    start_room_entry_window(instance.order, instance.paid_at or timezone.now())
+    start_room_entry_window(
+        instance.order,
+        instance.paid_at or timezone.now(),
+        payment_verified=True,
+    )
 
 
 @receiver(post_save, sender=Order, dispatch_uid='keep_paid_replacement_order_ready')
