@@ -6,6 +6,7 @@ from rest_framework.response import Response
 
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.orders.models import Order, OrderPlayer, OrderStatusLog
+from apps.orders.room_entry_requeue import expire_room_entry_relation
 
 
 @api_view(['POST'])
@@ -30,6 +31,14 @@ def confirm_room_entry(request, order_no):
 
     now = timezone.now()
     relation.refresh_room_join_status(now=now)
+    if relation.room_join_status == OrderPlayer.ROOM_ENTRY_OVERDUE:
+        if expire_room_entry_relation(relation.id, now=now):
+            return Response(
+                {'detail': '您未在付款后10分钟内确认进入，本次已视为拒单，订单名额已转入公共抢单大厅'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response({'detail': '进入房间时间已超过10分钟，请联系客服核实'}, status=status.HTTP_409_CONFLICT)
+
     if relation.room_join_status in {
         OrderPlayer.ROOM_ENTRY_CONFIRMED,
         OrderPlayer.ROOM_ENTRY_LATE_CONFIRMED,
@@ -42,10 +51,7 @@ def confirm_room_entry(request, order_no):
             'room_join_deadline': relation.room_join_deadline,
         })
 
-    was_late = bool(relation.room_join_deadline and now > relation.room_join_deadline)
-    relation.room_join_status = (
-        OrderPlayer.ROOM_ENTRY_LATE_CONFIRMED if was_late else OrderPlayer.ROOM_ENTRY_CONFIRMED
-    )
+    relation.room_join_status = OrderPlayer.ROOM_ENTRY_CONFIRMED
     relation.room_join_confirmed_at = now
     relation.save(update_fields=['room_join_status', 'room_join_confirmed_at'])
     OrderStatusLog.objects.create(
@@ -53,17 +59,13 @@ def confirm_room_entry(request, order_no):
         from_status=order.status,
         to_status=order.status,
         operator=request.user if getattr(request.user, 'is_authenticated', False) else None,
-        reason=(
-            f'陪玩 {player.name} 超时后确认进入老板房间'
-            if was_late
-            else f'陪玩 {player.name} 已确认进入老板房间'
-        ),
+        reason=f'陪玩 {player.name} 已确认进入老板房间',
     )
     return Response({
-        'message': '已记录进入房间' if not was_late else '已记录进入房间，本次为超时确认，等待管理员核实',
+        'message': '已记录进入房间',
         'room_join_status': relation.room_join_status,
         'room_join_status_text': relation.get_room_join_status_display(),
         'room_join_confirmed_at': relation.room_join_confirmed_at,
         'room_join_deadline': relation.room_join_deadline,
-        'was_late': was_late,
+        'was_late': False,
     })
