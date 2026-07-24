@@ -102,6 +102,7 @@ class RoomEntryRequeueTests(TestCase):
         self.assertEqual(order.status, Order.STATUS_WAITING)
         self.assertFalse(order.order_players.filter(player=self.first_player).exists())
         self.assertEqual(self.first_player.total_orders, 0)
+        self.assertFalse(can_player_grab_order(order, self.first_player))
         self.assertTrue(can_player_grab_order(order, self.replacement))
         self.assertTrue(OrderStatusLog.objects.filter(
             order=order,
