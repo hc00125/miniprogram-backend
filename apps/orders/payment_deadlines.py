@@ -8,6 +8,7 @@ from rest_framework.exceptions import ValidationError
 from apps.payments.models import Payment
 
 from .models import Order, OrderStatusLog
+from .payment_window_models import OrderPaymentWindow
 
 
 logger = logging.getLogger(__name__)
@@ -21,44 +22,99 @@ REMOTE_UNPAID = 'unpaid'
 REMOTE_UNKNOWN = 'unknown'
 
 
-def payment_window_started_at(order):
-    """Return when the current pending-payment window started.
+def payment_window_values(started_at=None):
+    started_at = started_at or timezone.now()
+    deadline_at = started_at + timedelta(minutes=PAYMENT_TIMEOUT_MINUTES)
+    return {
+        'started_at': started_at,
+        'deadline_at': deadline_at,
+        'confirmation_deadline_at': deadline_at + timedelta(
+            seconds=PAYMENT_CONFIRMATION_GRACE_SECONDS,
+        ),
+    }
 
-    Public orders enter pending payment only after the lineup is full, while
-    targeted and renewal orders are created directly in pending payment. The
-    status log therefore gives all flows one authoritative clock source.
-    """
-    started_at = (
+
+def _legacy_payment_window_started_at(order):
+    return (
         OrderStatusLog.objects
         .filter(order=order, to_status=Order.STATUS_PENDING_PAYMENT)
         .order_by('-created_at')
         .values_list('created_at', flat=True)
         .first()
+    ) or order.created_at
+
+
+def persist_payment_window(order, started_at=None, force_reset=False):
+    """Create the immutable operational clock used by all payment surfaces.
+
+    ``force_reset`` is only used when a new transition into pending payment is
+    written. Normal reads never extend an existing reservation window.
+    """
+    if not order or not order.pk:
+        return None
+    started_at = started_at or _legacy_payment_window_started_at(order)
+    values = payment_window_values(started_at)
+
+    if force_reset:
+        window, _ = OrderPaymentWindow.objects.update_or_create(
+            order=order,
+            defaults={
+                **values,
+                'expired_at': None,
+                'expire_reason': '',
+            },
+        )
+        return window
+
+    window, _ = OrderPaymentWindow.objects.get_or_create(
+        order=order,
+        defaults=values,
     )
-    return started_at or order.created_at
+    return window
+
+
+def payment_window_for_order(order, create_if_active=True):
+    if not order or not order.pk:
+        return None
+    try:
+        return order.payment_window
+    except OrderPaymentWindow.DoesNotExist:
+        if create_if_active and order.status == Order.STATUS_PENDING_PAYMENT and not order.paid:
+            return persist_payment_window(order)
+        return None
+
+
+def payment_window_started_at(order):
+    window = payment_window_for_order(order)
+    return window.started_at if window else _legacy_payment_window_started_at(order)
 
 
 def payment_deadline_at(order):
     if order.status != Order.STATUS_PENDING_PAYMENT or order.paid:
         return None
-    return payment_window_started_at(order) + timedelta(minutes=PAYMENT_TIMEOUT_MINUTES)
+    window = payment_window_for_order(order)
+    return window.deadline_at if window else None
 
 
 def payment_confirmation_deadline_at(order):
-    deadline = payment_deadline_at(order)
-    if not deadline:
+    if order.status != Order.STATUS_PENDING_PAYMENT or order.paid:
         return None
-    return deadline + timedelta(seconds=PAYMENT_CONFIRMATION_GRACE_SECONDS)
+    window = payment_window_for_order(order)
+    return window.confirmation_deadline_at if window else None
 
 
 def payment_deadline_payload(order, now=None):
     now = now or timezone.now()
-    deadline = payment_deadline_at(order)
-    confirmation_deadline = payment_confirmation_deadline_at(order)
-    if not deadline or not confirmation_deadline:
+    window = payment_window_for_order(order, create_if_active=True)
+    started_at = window.started_at if window else None
+    stored_deadline = window.deadline_at if window else None
+    stored_confirmation_deadline = window.confirmation_deadline_at if window else None
+
+    if order.status != Order.STATUS_PENDING_PAYMENT or order.paid or not window:
         return {
-            'payment_deadline_at': None,
-            'payment_confirmation_deadline_at': None,
+            'payment_window_started_at': started_at,
+            'payment_deadline_at': stored_deadline,
+            'payment_confirmation_deadline_at': stored_confirmation_deadline,
             'payment_remaining_seconds': 0,
             'payment_confirmation_remaining_seconds': 0,
             'payment_timeout_minutes': PAYMENT_TIMEOUT_MINUTES,
@@ -67,18 +123,19 @@ def payment_deadline_payload(order, now=None):
             'can_start_payment': False,
         }
 
-    payment_remaining = max(0, int((deadline - now).total_seconds()))
-    confirmation_remaining = max(0, int((confirmation_deadline - now).total_seconds()))
-    if now < deadline:
+    payment_remaining = max(0, int((stored_deadline - now).total_seconds()))
+    confirmation_remaining = max(0, int((stored_confirmation_deadline - now).total_seconds()))
+    if now < stored_deadline:
         phase = 'open'
-    elif now < confirmation_deadline:
+    elif now < stored_confirmation_deadline:
         phase = 'confirming'
     else:
         phase = 'overdue'
 
     return {
-        'payment_deadline_at': deadline,
-        'payment_confirmation_deadline_at': confirmation_deadline,
+        'payment_window_started_at': started_at,
+        'payment_deadline_at': stored_deadline,
+        'payment_confirmation_deadline_at': stored_confirmation_deadline,
         'payment_remaining_seconds': payment_remaining,
         'payment_confirmation_remaining_seconds': confirmation_remaining,
         'payment_timeout_minutes': PAYMENT_TIMEOUT_MINUTES,
@@ -129,6 +186,16 @@ def _refresh_active_remote_payment(order):
     return REMOTE_UNPAID
 
 
+def mark_payment_window_expired(order, expired_at=None, reason=PAYMENT_TIMEOUT_REASON):
+    window = persist_payment_window(order)
+    if not window:
+        return None
+    window.expired_at = expired_at or timezone.now()
+    window.expire_reason = reason or PAYMENT_TIMEOUT_REASON
+    window.save(update_fields=['expired_at', 'expire_reason', 'updated_at'])
+    return window
+
+
 def expire_due_unpaid_order(order, now=None, verify_remote=True):
     """Cancel one unpaid order after its payment and confirmation windows.
 
@@ -145,15 +212,11 @@ def expire_due_unpaid_order(order, now=None, verify_remote=True):
     if not deadline or not confirmation_deadline or deadline > now:
         return False
 
-    remote_state = REMOTE_UNPAID
     if verify_remote:
         remote_state = _refresh_active_remote_payment(order)
         if remote_state in {REMOTE_PAID, REMOTE_UNKNOWN}:
             return False
 
-    # The payment window is closed, but keep the lineup during the short
-    # reconciliation grace period so a delayed WeChat result cannot cause a
-    # paid-but-cancelled order.
     if confirmation_deadline > now:
         return False
 
@@ -175,6 +238,7 @@ def expire_due_unpaid_order(order, now=None, verify_remote=True):
             return False
 
         cancel_order(locked, PAYMENT_TIMEOUT_REASON)
+        mark_payment_window_expired(locked, expired_at=now, reason=PAYMENT_TIMEOUT_REASON)
         return True
 
 
