@@ -17,7 +17,9 @@ from .payment_deadlines import (
     expire_due_unpaid_order,
     expire_due_unpaid_orders,
     payment_deadline_payload,
+    persist_payment_window,
 )
+from .payment_window_models import OrderPaymentWindow
 from .services import create_order, grab_order
 
 
@@ -70,9 +72,23 @@ class PaymentDeadlineTests(TestCase):
         )
         self.assertIsNotNone(log)
         OrderStatusLog.objects.filter(pk=log.pk).update(created_at=started_at)
+        persist_payment_window(order, started_at=started_at, force_reset=True)
         return started_at
 
-    def test_pending_payment_payload_counts_from_lineup_completion(self):
+    def test_pending_payment_transition_persists_auditable_window(self):
+        order = self.create_pending_payment_order()
+
+        window = OrderPaymentWindow.objects.get(order=order)
+
+        self.assertEqual(window.deadline_at, window.started_at + timedelta(minutes=10))
+        self.assertEqual(
+            window.confirmation_deadline_at,
+            window.deadline_at + timedelta(seconds=PAYMENT_CONFIRMATION_GRACE_SECONDS),
+        )
+        self.assertIsNone(window.expired_at)
+        self.assertEqual(window.expire_reason, '')
+
+    def test_pending_payment_payload_counts_from_persisted_window(self):
         order = self.create_pending_payment_order()
         started_at = self.backdate_payment_window(order, minutes=3)
 
@@ -80,6 +96,7 @@ class PaymentDeadlineTests(TestCase):
 
         self.assertEqual(payload['payment_timeout_minutes'], 10)
         self.assertEqual(payload['payment_remaining_seconds'], 7 * 60)
+        self.assertEqual(payload['payment_window_started_at'], started_at)
         self.assertEqual(payload['payment_deadline_at'], started_at + timedelta(minutes=10))
         self.assertEqual(payload['payment_phase'], 'open')
         self.assertTrue(payload['can_start_payment'])
@@ -102,7 +119,7 @@ class PaymentDeadlineTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
 
-    def test_due_order_is_cancelled_after_confirmation_grace(self):
+    def test_due_order_is_cancelled_and_window_is_audited_after_grace(self):
         order = self.create_pending_payment_order()
         self.backdate_payment_window(order, minutes=12)
 
@@ -111,12 +128,15 @@ class PaymentDeadlineTests(TestCase):
         self.assertTrue(expired)
         order.refresh_from_db()
         relation = order.order_players.get(player=self.player)
+        window = OrderPaymentWindow.objects.get(order=order)
         self.player.refresh_from_db()
         self.assertEqual(order.status, Order.STATUS_CANCELLED)
         self.assertEqual(order.cancel_reason, PAYMENT_TIMEOUT_REASON)
         self.assertEqual(relation.status, ORDER_PLAYER_CANCELLED_STATUS)
         self.assertIsNone(relation.room_join_deadline)
         self.assertEqual(self.player.total_orders, 0)
+        self.assertIsNotNone(window.expired_at)
+        self.assertEqual(window.expire_reason, PAYMENT_TIMEOUT_REASON)
 
     def test_order_inside_window_is_not_cancelled(self):
         order = self.create_pending_payment_order()
