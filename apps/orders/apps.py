@@ -30,10 +30,12 @@ class OrdersConfig(AppConfig):
         from . import cancel_signals, payment_window_signals, room_entry_requeue, signals  # noqa: F401
 
         # 已付款订单因陪玩进入超时重新补位时，补齐阵容后直接回到“待开打”，
-        # 不能再次进入支付阶段。同步替换 designations 与 services 中的已导入引用。
+        # 不能再次进入支付阶段。同步替换所有已导入引用。
         from . import services
+        from apps.players import permission_views
 
         original_finalize = designations.finalize_lineup_if_full
+        original_can_grab = services.can_player_grab_order
 
         def finalize_lineup_if_full(order, operator=None, reason='接单人数已满，等待老板付款'):
             return room_entry_requeue.finalize_lineup_with_paid_replacement(
@@ -43,8 +45,17 @@ class OrdersConfig(AppConfig):
                 reason,
             )
 
+        def can_player_grab_order(order, player):
+            return room_entry_requeue.can_player_grab_after_room_timeout(
+                original_can_grab,
+                order,
+                player,
+            )
+
         designations.finalize_lineup_if_full = finalize_lineup_if_full
         services.finalize_lineup_if_full = finalize_lineup_if_full
+        services.can_player_grab_order = can_player_grab_order
+        permission_views.can_player_grab_order = can_player_grab_order
 
         # 支付窗口单独作为只读运营审计页面展示。
         from . import payment_window_admin  # noqa: F401
