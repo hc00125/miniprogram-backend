@@ -28,6 +28,29 @@ def start_room_entry_window(order, started_at=None):
     )
 
 
+def finalize_lineup_with_paid_replacement(original_finalize, order, operator=None, reason='接单人数已满，等待老板付款'):
+    """Complete a paid replacement lineup without opening a second payment window."""
+    if (
+        order.order_players.count() >= order.required_players
+        and order.status == Order.STATUS_WAITING
+        and order.order_type == Order.ORDER_TYPE_NORMAL
+        and order.fulfillment_mode == Order.FULFILLMENT_MODE_PUBLIC
+        and order.paid
+    ):
+        old_status = order.status
+        order.status = Order.STATUS_READY_TO_START
+        order.save(update_fields=['status'])
+        OrderStatusLog.objects.create(
+            order=order,
+            from_status=old_status,
+            to_status=order.status,
+            operator=operator,
+            reason='已付款补位单人数补齐，无需老板重复支付',
+        )
+        return order
+    return original_finalize(order, operator, reason)
+
+
 @receiver(post_save, sender=OrderPlayer, dispatch_uid='normalize_room_entry_deadline')
 def normalize_room_entry_deadline(sender, instance, created, **kwargs):
     if not created:
@@ -54,7 +77,7 @@ def start_room_entry_after_payment(sender, instance, **kwargs):
 
 @receiver(post_save, sender=Order, dispatch_uid='keep_paid_replacement_order_ready')
 def keep_paid_replacement_order_ready(sender, instance, **kwargs):
-    """A paid replacement order must never ask the boss to pay again."""
+    """Defensive fallback if another path tries to reopen payment for a paid order."""
     if (
         instance.order_type == Order.ORDER_TYPE_NORMAL
         and instance.fulfillment_mode == Order.FULFILLMENT_MODE_PUBLIC
