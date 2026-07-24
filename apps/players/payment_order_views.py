@@ -11,12 +11,7 @@ from apps.orders.serializers import PlayerOrderDetailSerializer
 @api_view(['GET'])
 @permission_classes([IsApprovedPlayer])
 def order_detail(request, order_no):
-    """Return the player-facing order detail with the boss payment window.
-
-    Players need to distinguish an active ten-minute lineup reservation from
-    the short WeChat reconciliation phase. Refreshing this endpoint also keeps
-    the unpaid-order expiry fallback consistent with the boss detail page.
-    """
+    """Return player order detail with the boss payment reservation window."""
     player = current_player(request.user)
     order = (
         Order.objects
@@ -42,4 +37,6 @@ def order_detail(request, order_no):
 
     data = PlayerOrderDetailSerializer(order).data
     data.update(payment_deadline_payload(order))
+    data['cancel_reason'] = order.cancel_reason or ''
+    data['canceled_at'] = order.canceled_at.isoformat() if order.canceled_at else None
     return Response(data)
