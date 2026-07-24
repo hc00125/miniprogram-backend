@@ -26,8 +26,8 @@ class OrdersConfig(AppConfig):
         boss_views.create_order_service = create_order
         batch_views.create_cart_orders = create_cart_orders
 
-        # 订单信号分文件加载：计价、付款前取消、支付窗口固化互不混杂。
-        from . import cancel_signals, payment_window_signals, signals  # noqa: F401
+        # 订单信号分文件加载：计价、付款前取消、支付窗口固化、付款后进入房间补位互不混杂。
+        from . import cancel_signals, payment_window_signals, room_entry_requeue, signals  # noqa: F401
 
         # 支付窗口单独作为只读运营审计页面展示。
         from . import payment_window_admin  # noqa: F401
