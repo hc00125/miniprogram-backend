@@ -16,11 +16,7 @@ ROOM_ENTRY_TIMEOUT_REASON_PREFIX = '陪玩进入房间超时'
 
 
 def start_room_entry_window(order, started_at=None, payment_verified=False):
-    """Start the room-entry clock only after the boss payment is verified.
-
-    Payment is persisted before the business order is updated inside the payment
-    transaction, so the payment signal passes ``payment_verified=True``.
-    """
+    """Start the room-entry clock only after the boss payment is verified."""
     if not order or not order.pk or (not order.paid and not payment_verified):
         return 0
     started_at = started_at or order.payment_confirmed_at or timezone.now()
@@ -30,6 +26,18 @@ def start_room_entry_window(order, started_at=None, payment_verified=False):
         room_join_confirmed_at=None,
         room_join_status=OrderPlayer.ROOM_ENTRY_PENDING,
     )
+
+
+def can_player_grab_after_room_timeout(original_can_grab, order, player):
+    """A player treated as rejecting this order cannot immediately reclaim it."""
+    user_id = getattr(player, 'user_id', None)
+    if user_id and OrderStatusLog.objects.filter(
+        order=order,
+        operator_id=user_id,
+        reason__startswith=ROOM_ENTRY_TIMEOUT_REASON_PREFIX,
+    ).exists():
+        return False
+    return original_can_grab(order, player)
 
 
 def finalize_lineup_with_paid_replacement(original_finalize, order, operator=None, reason='接单人数已满，等待老板付款'):
@@ -68,7 +76,6 @@ def normalize_room_entry_deadline(sender, instance, created, **kwargs):
             room_join_status=OrderPlayer.ROOM_ENTRY_PENDING,
         )
     elif instance.room_join_deadline is not None:
-        # Legacy model.save starts the clock at grab time. Clear it until payment.
         OrderPlayer.objects.filter(pk=instance.pk).update(room_join_deadline=None)
 
 
@@ -85,7 +92,6 @@ def start_room_entry_after_payment(sender, instance, **kwargs):
 
 @receiver(post_save, sender=Order, dispatch_uid='keep_paid_replacement_order_ready')
 def keep_paid_replacement_order_ready(sender, instance, **kwargs):
-    """Defensive fallback if another path tries to reopen payment for a paid order."""
     if (
         instance.order_type == Order.ORDER_TYPE_NORMAL
         and instance.fulfillment_mode == Order.FULFILLMENT_MODE_PUBLIC
@@ -140,7 +146,6 @@ def expire_room_entry_relation(relation_id, now=None):
     player_name = player.name
     operator = player.user if getattr(player, 'user_id', None) else None
 
-    # Delete the active seat so all existing lineup/count logic immediately sees a vacancy.
     relation.delete()
     player.total_orders = max(0, int(player.total_orders or 0) - 1)
     player.save(update_fields=['total_orders'])
