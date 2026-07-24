@@ -266,57 +266,90 @@ def query_wechat_virtual(request, payment_no):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
-def callback(request, channel):
-    try:
-        payment = Payment.objects.get(payment_no=request.data.get('payment_no'))
-    except Payment.DoesNotExist:
-        log_callback(channel, request.data, request.data.get('payment_no', ''), False, 'payment not found')
-        return Response({'detail': '支付单不存在'}, status=status.HTTP_404_NOT_FOUND)
-    if request.data.get('success'):
-        mark_payment_paid(payment, request.data.get('third_trade_no', ''), request.data)
-        log_callback(channel, request.data, payment.payment_no, True, 'paid')
-        return Response({'message': '支付成功'})
-    payment.status = 'failed'
-    payment.notify_payload = request.data
-    payment.updated_at = timezone.now()
-    payment.save(update_fields=['status', 'notify_payload', 'updated_at'])
-    log_callback(channel, request.data, payment.payment_no, True, 'failed')
-    return Response({'message': '支付失败'})
+@permission_classes([IsAuthenticated])
+def query_wechat_virtual_by_order(request, order_no):
+    payments = list(
+        Payment.objects
+        .select_related('order', 'order__boss_user')
+        .filter(
+            order__order_no=order_no,
+            order__boss_user=request.user,
+            channel=VIRTUAL_CHANNEL,
+        )
+        .order_by('-created_at')[:5]
+    )
+    if not payments:
+        return Response({
+            'found': False,
+            'order_no': order_no,
+            'detail': '该订单暂无可核验的微信虚拟支付单',
+        })
+
+    synced_payment = payments[0]
+    for candidate in payments:
+        try:
+            synced_payment = query_virtual_payment(candidate.payment_no, request.user)
+        except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
+            return virtual_payment_error_response(exc)
+        except APIException:
+            raise
+        except Exception as exc:
+            return unexpected_virtual_payment_response(
+                exc,
+                action='query_by_order',
+                request=request,
+                order_no=order_no,
+                payment_no=candidate.payment_no,
+            )
+
+        if synced_payment.status == 'paid' or getattr(synced_payment.order, 'paid', False):
+            break
+
+    data = dict(PaymentSerializer(synced_payment).data)
+    data['found'] = True
+    return Response(data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def mock_success(request, payment_no):
+    if not settings.ENABLE_MOCK_PAYMENT:
+        return Response({'detail': '模拟支付未启用'}, status=status.HTTP_404_NOT_FOUND)
+    payment = get_payment_for_user(payment_no, request.user)
+    payment = mark_payment_paid(payment, 'mock_paid', {'mock': True})
+    return Response(PaymentSerializer(payment).data)
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def wechat_callback(request):
     try:
-        handle_wechat_notification(request.headers, request.body)
-    except WechatPaySignatureError as exc:
-        logger.warning('微信支付回调验签失败: %s', exc)
-        return Response({'code': 'FAIL', 'message': str(exc)}, status=status.HTTP_401_UNAUTHORIZED)
-    except WechatPayError as exc:
-        logger.exception('微信支付回调处理失败: %s', exc)
-        return Response({'code': 'FAIL', 'message': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as exc:
-        logger.exception('微信支付回调异常: %s', exc)
-        return Response({'code': 'FAIL', 'message': '系统处理异常'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    return Response({'code': 'SUCCESS', 'message': '成功'})
+        raw_body = request.body.decode('utf-8')
+    except UnicodeDecodeError:
+        return Response(
+            {'code': 'FAIL', 'message': '回调报文编码错误'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def virtual_callback(request):
-    payment_no = request.data.get('order_id') or request.data.get('payment_no') or ''
     try:
-        payment = Payment.objects.select_related('order').filter(payment_no=payment_no).first()
-        if not payment:
-            raise VirtualPaymentError('支付单不存在')
-        if int(request.data.get('status') or 0) not in {2, 3, 4}:
-            return Response({'errcode': 0, 'errmsg': 'OK'})
-        mark_payment_paid(payment, request.data.get('wx_order_id', ''), request.data)
-    except VirtualPaymentError as exc:
-        logger.warning('微信虚拟支付回调处理失败 payment_no=%s error=%s', payment_no, exc)
-        return Response({'errcode': -1, 'errmsg': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as exc:
-        logger.exception('微信虚拟支付回调异常 payment_no=%s error=%s', payment_no, exc)
-        return Response({'errcode': -1, 'errmsg': '系统处理异常'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    return Response({'errcode': 0, 'errmsg': 'OK'})
+        handle_wechat_notification(request.headers, raw_body)
+    except WechatPaySignatureError as exc:
+        log_callback('wechat', {'error': str(exc)}, verified=False, result='signature failed')
+        return Response(
+            {'code': 'FAIL', 'message': '签名验证失败'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except WechatPayConfigurationError as exc:
+        log_callback('wechat', {'error': str(exc)}, verified=False, result='configuration error')
+        return Response(
+            {'code': 'FAIL', 'message': '服务器支付配置错误'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    except WechatPayError as exc:
+        log_callback('wechat', {'error': str(exc)}, verified=True, result='callback rejected')
+        return Response(
+            {'code': 'FAIL', 'message': str(exc)[:200]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(status=status.HTTP_204_NO_CONTENT)
