@@ -57,7 +57,8 @@ class UnpaidOrderCancellationTests(TestCase):
         self.player.refresh_from_db()
 
         self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
-        self.assertIsNotNone(relation.room_join_deadline)
+        # 进入房间倒计时只在老板付款成功后启动，待支付期间不计算陪玩迟到。
+        self.assertIsNone(relation.room_join_deadline)
         self.assertEqual(self.player.total_orders, 1)
 
         cancel_order(order, '老板在支付前主动取消', self.boss)
