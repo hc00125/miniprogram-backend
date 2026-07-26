@@ -1,23 +1,33 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from apps.players.models import PlayerApplication
 from apps.players.serializers import PlayerApplicationSerializer, PlayerSerializer
 
 from .models import ClientProfile
-from .vip import vip_snapshot
+from .vip import qmoney, vip_snapshot
 
 
 class ClientProfileSerializer(serializers.ModelSerializer):
     application = serializers.SerializerMethodField()
     player = serializers.SerializerMethodField()
     vip = serializers.SerializerMethodField()
+    wallet = serializers.SerializerMethodField()
 
     class Meta:
         model = ClientProfile
         fields = [
             'id', 'openid', 'nickname', 'nickname_customized', 'avatar_url', 'role', 'player_status',
-            'cumulative_consumption', 'vip', 'created_at', 'application', 'player',
+            'cumulative_consumption', 'vip', 'wallet', 'created_at', 'application', 'player',
         ]
+
+    def get_wallet(self, obj):
+        from apps.wallet.models import ClientWallet
+
+        wallet = ClientWallet.objects.filter(profile=obj).only('balance').first()
+        balance = wallet.balance if wallet else Decimal('0.00')
+        return {'balance': str(qmoney(balance))}
 
     def get_application(self, obj):
         application = PlayerApplication.objects.filter(user=obj.user).order_by('-submitted_at').first()
