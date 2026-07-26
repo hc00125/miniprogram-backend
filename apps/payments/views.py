@@ -5,7 +5,7 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
@@ -19,6 +19,7 @@ from .serializers import (
     VirtualPaymentCreateSerializer,
 )
 from .services import (
+    close_payment,
     create_miniprogram_payment,
     create_payment,
     get_payment_for_user,
@@ -308,6 +309,20 @@ def query_wechat_virtual_by_order(request, order_no):
     data = dict(PaymentSerializer(synced_payment).data)
     data['found'] = True
     return Response(data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def close_wechat_virtual(request, payment_no):
+    """用户主动关闭进行中的微信虚拟支付单（例如取消收银台后），
+    以便立即改用余额支付。幂等：非 paying 状态原样返回。
+    迟到的微信侧支付完成由 mark_payment_paid 的迟到捕获守卫兜底。"""
+    payment = get_payment_for_user(payment_no, request.user)
+    if payment.channel != VIRTUAL_CHANNEL:
+        raise ValidationError({'detail': '该支付单不是微信虚拟支付'})
+    if payment.status == 'paying':
+        payment = close_payment(payment, reason='用户取消支付', call_wechat=False)
+    return Response({'payment_no': payment.payment_no, 'status': payment.status})
 
 
 @api_view(['POST'])

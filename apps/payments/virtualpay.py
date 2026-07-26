@@ -597,6 +597,10 @@ def query_virtual_payment(payment_no, user):
     paid_fee = int(order_data.get('paid_fee') or 0)
 
     with transaction.atomic():
+        # 统一锁序：先锁 order 再锁 payment（与 mark_payment_paid、
+        # wallet.pay_order_with_balance 一致），避免跨事务循环等待。
+        # Payment.order 是 to_field='order_no' 外键，order_id 即订单号字符串。
+        Order.objects.select_for_update().get(order_no=payment.order_id)
         payment = (
             Payment.objects
             .select_for_update(of=('self',))
@@ -627,6 +631,9 @@ def query_virtual_payment(payment_no, user):
             )
 
     # 到这里数据库中的 paid/order.paid 已经提交。发货失败只记录并等待重试。
-    if xpay_status in PAID_XPAY_STATUSES:
+    # 仅当本单确实被标记为已支付时才 ack 发货：迟到捕获（订单已由其他支付单
+    # 支付，mark_payment_paid 拒绝重复标记）不发货，微信会对未发货的虚拟支付
+    # 订单自动退款，这是对重复扣款的正确补偿。
+    if xpay_status in PAID_XPAY_STATUSES and payment.status == 'paid':
         return _deliver_paid_payment(payment)
     return payment

@@ -11,12 +11,15 @@ from apps.players.models import Player
 from .cancel_signals import ORDER_PLAYER_CANCELLED_STATUS
 from .models import Order, OrderStatusLog
 from .payment_deadlines import (
+    PAYMENT_CONFIRMATION_GRACE_SECONDS,
     PAYMENT_TIMEOUT_REASON,
     ensure_payment_window_open,
     expire_due_unpaid_order,
     expire_due_unpaid_orders,
     payment_deadline_payload,
+    persist_payment_window,
 )
+from .payment_window_models import OrderPaymentWindow
 from .services import create_order, grab_order
 
 
@@ -59,8 +62,8 @@ class PaymentDeadlineTests(TestCase):
         }, self.boss)
         return grab_order(order.order_no, self.player, self.player_user)
 
-    def backdate_payment_window(self, order, minutes):
-        started_at = timezone.now() - timedelta(minutes=minutes)
+    def backdate_payment_window(self, order, minutes=0, seconds=0):
+        started_at = timezone.now() - timedelta(minutes=minutes, seconds=seconds)
         log = (
             OrderStatusLog.objects
             .filter(order=order, to_status=Order.STATUS_PENDING_PAYMENT)
@@ -69,37 +72,75 @@ class PaymentDeadlineTests(TestCase):
         )
         self.assertIsNotNone(log)
         OrderStatusLog.objects.filter(pk=log.pk).update(created_at=started_at)
+        persist_payment_window(order, started_at=started_at, force_reset=True)
         return started_at
 
-    def test_pending_payment_payload_counts_from_lineup_completion(self):
+    def test_pending_payment_transition_persists_auditable_window(self):
         order = self.create_pending_payment_order()
-        started_at = self.backdate_payment_window(order, 3)
+
+        window = OrderPaymentWindow.objects.get(order=order)
+
+        self.assertEqual(window.deadline_at, window.started_at + timedelta(minutes=10))
+        self.assertEqual(
+            window.confirmation_deadline_at,
+            window.deadline_at + timedelta(seconds=PAYMENT_CONFIRMATION_GRACE_SECONDS),
+        )
+        self.assertIsNone(window.expired_at)
+        self.assertEqual(window.expire_reason, '')
+
+    def test_pending_payment_payload_counts_from_persisted_window(self):
+        order = self.create_pending_payment_order()
+        started_at = self.backdate_payment_window(order, minutes=3)
 
         payload = payment_deadline_payload(order, now=started_at + timedelta(minutes=3))
 
         self.assertEqual(payload['payment_timeout_minutes'], 10)
         self.assertEqual(payload['payment_remaining_seconds'], 7 * 60)
+        self.assertEqual(payload['payment_window_started_at'], started_at)
         self.assertEqual(payload['payment_deadline_at'], started_at + timedelta(minutes=10))
+        self.assertEqual(payload['payment_phase'], 'open')
+        self.assertTrue(payload['can_start_payment'])
 
-    def test_due_order_is_cancelled_and_player_is_released(self):
+    def test_expired_payment_window_enters_confirmation_phase_first(self):
         order = self.create_pending_payment_order()
-        self.backdate_payment_window(order, 11)
+        started_at = self.backdate_payment_window(order, minutes=10, seconds=20)
+
+        payload = payment_deadline_payload(order, now=started_at + timedelta(minutes=10, seconds=20))
+        expired = expire_due_unpaid_order(order, now=timezone.now(), verify_remote=False)
+
+        self.assertEqual(payload['payment_phase'], 'confirming')
+        self.assertGreater(payload['payment_confirmation_remaining_seconds'], 0)
+        self.assertLessEqual(
+            payload['payment_confirmation_remaining_seconds'],
+            PAYMENT_CONFIRMATION_GRACE_SECONDS,
+        )
+        self.assertFalse(payload['can_start_payment'])
+        self.assertFalse(expired)
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
+
+    def test_due_order_is_cancelled_and_window_is_audited_after_grace(self):
+        order = self.create_pending_payment_order()
+        self.backdate_payment_window(order, minutes=12)
 
         expired = expire_due_unpaid_order(order, now=timezone.now(), verify_remote=False)
 
         self.assertTrue(expired)
         order.refresh_from_db()
         relation = order.order_players.get(player=self.player)
+        window = OrderPaymentWindow.objects.get(order=order)
         self.player.refresh_from_db()
         self.assertEqual(order.status, Order.STATUS_CANCELLED)
         self.assertEqual(order.cancel_reason, PAYMENT_TIMEOUT_REASON)
         self.assertEqual(relation.status, ORDER_PLAYER_CANCELLED_STATUS)
         self.assertIsNone(relation.room_join_deadline)
         self.assertEqual(self.player.total_orders, 0)
+        self.assertIsNotNone(window.expired_at)
+        self.assertEqual(window.expire_reason, PAYMENT_TIMEOUT_REASON)
 
     def test_order_inside_window_is_not_cancelled(self):
         order = self.create_pending_payment_order()
-        self.backdate_payment_window(order, 9)
+        self.backdate_payment_window(order, minutes=9)
 
         expired = expire_due_unpaid_orders(now=timezone.now())
 
@@ -107,9 +148,20 @@ class PaymentDeadlineTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
 
-    def test_payment_creation_guard_cancels_expired_order(self):
+    def test_payment_creation_guard_blocks_confirmation_phase(self):
         order = self.create_pending_payment_order()
-        self.backdate_payment_window(order, 11)
+        self.backdate_payment_window(order, minutes=10, seconds=10)
+
+        with self.assertRaises(ValidationError) as context:
+            ensure_payment_window_open(order.order_no, self.boss)
+
+        self.assertIn('系统正在核验微信支付结果', str(context.exception.detail))
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
+
+    def test_payment_creation_guard_cancels_expired_order_after_grace(self):
+        order = self.create_pending_payment_order()
+        self.backdate_payment_window(order, minutes=12)
 
         with self.assertRaises(ValidationError) as context:
             ensure_payment_window_open(order.order_no, self.boss)
