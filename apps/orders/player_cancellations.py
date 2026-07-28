@@ -50,6 +50,7 @@ def _set_replacement_state(order, record, relation, now):
     state.required_player_type_id = record.player_type_id_snapshot
     state.required_player_type_name = record.player_type_name_snapshot
     state.latest_cancellation = record
+    state.current_designation = None
     state.resolved_at = None
     state.save()
     return state
@@ -148,16 +149,28 @@ def cancel_player_order(order_no, player, reason, operator=None):
     player.total_orders = max(0, int(player.total_orders or 0) - 1)
     player.save(update_fields=['total_orders'])
 
+    update_fields = []
+    if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED and order.target_player_id == player.id:
+        order.target_player = None
+        order.target_player_name_snapshot = ''
+        update_fields.extend(['target_player', 'target_player_name_snapshot'])
+
     if state.mode == OrderReplacementState.MODE_PUBLIC:
         if previous_status != Order.STATUS_IN_PROGRESS:
             order.status = Order.STATUS_WAITING
-            order.save(update_fields=['status'])
+            update_fields.append('status')
         if previous_status == Order.STATUS_PENDING_PAYMENT and not order.paid:
             from apps.payments.services import close_unpaid_payments_for_order
             close_unpaid_payments_for_order(order, reason='陪玩取消接单，阵容需要重新补齐')
     elif previous_status != Order.STATUS_IN_PROGRESS:
         order.status = Order.STATUS_WAITING
-        order.save(update_fields=['status'])
+        update_fields.append('status')
+
+    if update_fields:
+        order.save(update_fields=list(dict.fromkeys(update_fields)))
+
+    from .designations import sync_designated_players_snapshot
+    sync_designated_players_snapshot(order)
 
     fine_text = '使用免罚机会' if preview['used_free_chance'] else f'罚款¥{preview["fine_rmb"]}（{preview["fine_fish"]}鱼干）'
     until_text = timezone.localtime(preview['suspended_until']).strftime('%Y-%m-%d %H:%M')
