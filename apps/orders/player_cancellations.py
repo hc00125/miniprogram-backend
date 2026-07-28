@@ -147,7 +147,8 @@ def cancel_player_order(order_no, player, reason, operator=None):
 
     relation.delete()
     player.total_orders = max(0, int(player.total_orders or 0) - 1)
-    player.save(update_fields=['total_orders'])
+    player.is_online = False
+    player.save(update_fields=['total_orders', 'is_online'])
 
     update_fields = []
     if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED and order.target_player_id == player.id:
