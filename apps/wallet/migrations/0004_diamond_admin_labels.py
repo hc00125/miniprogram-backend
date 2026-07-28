@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import migrations, models
 
 
@@ -28,17 +30,17 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='clientwallet',
             name='balance',
-            field=models.DecimalField(decimal_places=2, default=0, max_digits=12, verbose_name='人民币等值余额(元)'),
+            field=models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=12, verbose_name='人民币等值余额(元)'),
         ),
         migrations.AlterField(
             model_name='clientwallet',
             name='recharged_total',
-            field=models.DecimalField(decimal_places=2, default=0, max_digits=12, verbose_name='累计充值(元)'),
+            field=models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=12, verbose_name='累计充值(元)'),
         ),
         migrations.AlterField(
             model_name='clientwallet',
             name='spent_total',
-            field=models.DecimalField(decimal_places=2, default=0, max_digits=12, verbose_name='累计余额支付(元)'),
+            field=models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=12, verbose_name='累计余额支付(元)'),
         ),
         migrations.AlterField(
             model_name='rechargeproduct',
