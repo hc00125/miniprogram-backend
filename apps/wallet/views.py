@@ -13,7 +13,8 @@ from apps.payments.virtualpay import (
     VirtualPaymentError,
 )
 
-from .models import ClientWallet, ClientWalletLedger, RechargeOrder, RechargeProduct
+from .diamonds import DIAMONDS_PER_YUAN, qyuan, yuan_to_diamonds
+from .models import ALLOWED_RECHARGE_AMOUNTS, ClientWallet, ClientWalletLedger, RechargeOrder, RechargeProduct
 from .serializers import BalancePaymentCreateSerializer, RechargeCreateSerializer
 from .services import (
     create_recharge,
@@ -33,6 +34,26 @@ def _missing_profile_response():
     return Response({'detail': '请先微信登录'}, status=status.HTTP_404_NOT_FOUND)
 
 
+def _local_iso(value):
+    return timezone.localtime(value).isoformat() if value else None
+
+
+def _recharge_payload(recharge):
+    payload = recharge_status_payload(recharge)
+    payload.update({
+        'pay_amount_yuan': str(qyuan(recharge.amount)),
+        'diamonds': yuan_to_diamonds(recharge.amount),
+        'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+        'created_at': _local_iso(recharge.created_at),
+        'paid_at': _local_iso(recharge.paid_at),
+        'credited_at': _local_iso(recharge.credited_at),
+    })
+    if recharge.status == RechargeOrder.STATUS_CREDITED:
+        wallet = ClientWallet.objects.filter(profile_id=recharge.profile_id).first()
+        payload['balance_diamonds'] = yuan_to_diamonds(wallet.balance if wallet else 0)
+    return payload
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def overview(request):
@@ -40,10 +61,21 @@ def overview(request):
     if not profile:
         return _missing_profile_response()
     wallet = ClientWallet.objects.filter(profile=profile).first()
+    balance = qmoney(wallet.balance if wallet else 0)
+    recharged_total = qmoney(wallet.recharged_total if wallet else 0)
+    spent_total = qmoney(wallet.spent_total if wallet else 0)
     return Response({
-        'balance': str(qmoney(wallet.balance if wallet else 0)),
-        'recharged_total': str(qmoney(wallet.recharged_total if wallet else 0)),
-        'spent_total': str(qmoney(wallet.spent_total if wallet else 0)),
+        # 旧字段保留一个发布周期供历史客户端使用；新客户端只展示整数钻石字段。
+        'balance': str(balance),
+        'recharged_total': str(recharged_total),
+        'spent_total': str(spent_total),
+        'balance_yuan': str(balance),
+        'recharged_total_yuan': str(recharged_total),
+        'spent_total_yuan': str(spent_total),
+        'balance_diamonds': yuan_to_diamonds(balance),
+        'recharged_total_diamonds': yuan_to_diamonds(recharged_total),
+        'spent_total_diamonds': yuan_to_diamonds(spent_total),
+        'diamonds_per_yuan': DIAMONDS_PER_YUAN,
     })
 
 
@@ -53,10 +85,20 @@ def recharge_packages(request):
     profile = _get_request_profile(request)
     if not profile:
         return _missing_profile_response()
-    products = RechargeProduct.objects.filter(is_active=True).order_by('sort_order', 'id')
+    products = (
+        RechargeProduct.objects
+        .filter(is_active=True, amount__in=ALLOWED_RECHARGE_AMOUNTS)
+        .order_by('sort_order', 'id')
+    )
     return Response({
+        'diamonds_per_yuan': DIAMONDS_PER_YUAN,
         'results': [
-            {'id': product.id, 'amount': str(qmoney(product.amount))}
+            {
+                'id': product.id,
+                'amount': str(qmoney(product.amount)),
+                'pay_amount_yuan': str(qmoney(product.amount)),
+                'diamonds': product.diamond_amount,
+            }
             for product in products
         ],
     })
@@ -71,9 +113,9 @@ def recharge_create(request):
     serializer = RechargeCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     try:
-        _recharge, payload = create_recharge(
+        recharge, payload = create_recharge(
             request.user,
-            serializer.validated_data['product_id'],
+            serializer.validated_data['recharge_product_id'],
             serializer.validated_data.get('code') or '',
         )
     except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
@@ -82,6 +124,11 @@ def recharge_create(request):
         raise
     except Exception as exc:
         return unexpected_virtual_payment_response(exc, action='recharge_create', request=request)
+    payload.update({
+        'pay_amount_yuan': str(qyuan(recharge.amount)),
+        'diamonds': yuan_to_diamonds(recharge.amount),
+        'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+    })
     return Response(payload)
 
 
@@ -101,7 +148,30 @@ def recharge_query(request, recharge_no):
             request=request,
             payment_no=recharge_no,
         )
-    return Response(recharge_status_payload(recharge))
+    return Response(_recharge_payload(recharge))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def recharge_orders(request):
+    profile = _get_request_profile(request)
+    if not profile:
+        return _missing_profile_response()
+    try:
+        page = max(1, int(request.query_params.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = min(100, max(1, int(request.query_params.get('page_size', 20))))
+    except (TypeError, ValueError):
+        page_size = 20
+    queryset = RechargeOrder.objects.filter(profile=profile).order_by('-created_at', '-id')
+    count = queryset.count()
+    start = (page - 1) * page_size
+    return Response({
+        'count': count,
+        'results': [_recharge_payload(item) for item in queryset[start:start + page_size]],
+    })
 
 
 @api_view(['GET'])
@@ -137,6 +207,8 @@ def transactions(request):
                 'entry_type': entry.entry_type,
                 'amount': str(qmoney(entry.amount)),
                 'balance_after': str(qmoney(entry.balance_after)),
+                'amount_diamonds': yuan_to_diamonds(entry.amount),
+                'balance_after_diamonds': yuan_to_diamonds(entry.balance_after),
                 'note': entry.note,
                 'created_at': timezone.localtime(entry.created_at).isoformat(),
             }
@@ -163,7 +235,7 @@ def recharge_mock_success(request, recharge_no):
     if recharge.channel != RechargeOrder.CHANNEL_MOCK:
         raise ValidationError({'detail': '该充值单不支持模拟支付'})
     recharge = mark_recharge_paid(recharge, 'mock_paid', {'mock': True})
-    return Response(recharge_status_payload(recharge))
+    return Response(_recharge_payload(recharge))
 
 
 @api_view(['POST'])
@@ -188,4 +260,11 @@ def pay_balance_create(request):
             request=request,
             order_no=order_no,
         )
+    result.update({
+        'amount_yuan': str(qyuan(result.get('amount'))),
+        'amount_diamonds': yuan_to_diamonds(result.get('amount')),
+        'balance_yuan': str(qyuan(result.get('balance'))),
+        'balance_diamonds': yuan_to_diamonds(result.get('balance')),
+        'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+    })
     return Response(result)
