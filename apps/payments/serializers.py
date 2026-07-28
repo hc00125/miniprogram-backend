@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from apps.wallet.diamonds import DIAMONDS_PER_YUAN
@@ -78,5 +80,5 @@ class RefundSerializer(serializers.ModelSerializer):
 
 class RefundCreateSerializer(serializers.Serializer):
     payment_no = serializers.CharField()
-    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0.01)
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
     reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
