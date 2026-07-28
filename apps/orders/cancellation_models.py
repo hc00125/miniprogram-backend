@@ -125,6 +125,14 @@ class OrderReplacementState(models.Model):
         null=True,
         related_name='replacement_states',
     )
+    current_designation = models.ForeignKey(
+        'orders.OrderDesignation',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='replacement_states',
+        verbose_name='当前补位邀请',
+    )
     resolved_at = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
