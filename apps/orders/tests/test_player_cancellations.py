@@ -155,9 +155,10 @@ class PlayerCancellationFlowTests(TestCase):
         designation = reassign_replacement(order, replacement_player.id)
         accepted_order = accept_replacement_designation(order.order_no, replacement_player)
 
+        designation.refresh_from_db()
         accepted_order.refresh_from_db()
         replacement = OrderReplacementState.objects.get(order=accepted_order)
-        self.assertEqual(designation.status, 'pending')
+        self.assertEqual(designation.status, 'accepted')
         self.assertEqual(accepted_order.status, Order.STATUS_IN_PROGRESS)
         self.assertTrue(OrderPlayer.objects.filter(order=accepted_order, player=replacement_player).exists())
         self.assertEqual(replacement.status, OrderReplacementState.STATUS_RESOLVED)
