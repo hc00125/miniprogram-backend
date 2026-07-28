@@ -16,17 +16,25 @@ class Command(BaseCommand):
             whole_yuan = int(Decimal(amount))
             product_id = f'recharge_{whole_yuan}'
             expected_ids.add(product_id)
-            product, created = RechargeProduct.objects.update_or_create(
+            product, created = RechargeProduct.objects.get_or_create(
                 product_id=product_id,
                 defaults={
                     'amount': amount,
                     'goods_price_fen': whole_yuan * 100,
-                    'is_active': True,
+                    # 必须等微信后台道具创建、审核和上架完成后，由管理员手工启用。
+                    'is_active': False,
                     'sort_order': sort_order * 10,
-                    'remark': f'支付¥{whole_yuan}，到账💎{whole_yuan * 10}',
+                    'remark': f'支付¥{whole_yuan}，到账💎{whole_yuan * 10}；启用前核对微信道具',
                 },
             )
-            action = '创建' if created else '校准'
+            RechargeProduct.objects.filter(pk=product.pk).update(
+                amount=amount,
+                goods_price_fen=whole_yuan * 100,
+                sort_order=sort_order * 10,
+                remark=f'支付¥{whole_yuan}，到账💎{whole_yuan * 10}；启用前核对微信道具',
+            )
+            product.refresh_from_db()
+            action = '创建（未启用）' if created else '校准（保留原启用状态）'
             self.stdout.write(f'{action} {product.product_id}: ¥{amount} → 💎{product.diamond_amount}')
 
         disabled = RechargeProduct.objects.exclude(product_id__in=expected_ids).filter(is_active=True).update(is_active=False)
