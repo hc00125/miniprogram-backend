@@ -7,18 +7,24 @@ from .models import PlayerEarning, Withdrawal
 
 class PlayerEarningSerializer(serializers.ModelSerializer):
     order_no = serializers.CharField(source='order.order_no', read_only=True)
+    boss_name = serializers.SerializerMethodField()
     package_name = serializers.SerializerMethodField()
     status_text = serializers.SerializerMethodField()
 
     class Meta:
         model = PlayerEarning
         fields = [
-            'id', 'order_no', 'package_name', 'gross_amount', 'commission_rate',
+            'id', 'order_no', 'boss_name', 'package_name', 'gross_amount', 'commission_rate',
             'commission_amount', 'net_amount', 'reversed_amount', 'debt_offset_amount',
             'status', 'status_text', 'review_until',
             'available_at', 'available_amount', 'withdrawing_amount', 'withdrawn_amount',
             'freeze_reason', 'created_at',
         ]
+
+    def get_boss_name(self, obj):
+        profile = getattr(obj.order.boss_user, 'client_profile', None)
+        nickname = (getattr(profile, 'nickname', '') or '').strip()
+        return nickname or '未设置昵称'
 
     def get_package_name(self, obj):
         return obj.order.package_name_snapshot or getattr(obj.order.package, 'name', '') or '陪玩服务'
