@@ -1,7 +1,8 @@
 from django import forms
 from django.contrib import admin, messages
 from django.contrib.admin.helpers import ActionForm
-from rest_framework.exceptions import ValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from .diamonds import diamonds_to_yuan, yuan_to_diamonds
 from .models import ClientWallet, ClientWalletLedger, RechargeOrder, RechargeProduct
@@ -55,7 +56,7 @@ class ClientWalletAdmin(admin.ModelAdmin):
             amount_yuan = diamonds_to_yuan(abs(diamond_value))
             if diamond_value < 0:
                 amount_yuan = -amount_yuan
-        except (ValueError, ValidationError):
+        except (ValueError, DjangoValidationError, DRFValidationError):
             self.message_user(request, '调整钻石必须是非零整数', level=messages.ERROR)
             return
 
@@ -69,8 +70,9 @@ class ClientWalletAdmin(admin.ModelAdmin):
                     operator=request.user,
                 )
                 success_count += 1
-            except ValidationError as exc:
-                self.message_user(request, f'{wallet}: {exc.detail}', level=messages.WARNING)
+            except (DjangoValidationError, DRFValidationError) as exc:
+                detail = getattr(exc, 'detail', None) or getattr(exc, 'messages', None) or str(exc)
+                self.message_user(request, f'{wallet}: {detail}', level=messages.WARNING)
         if success_count:
             self.message_user(request, f'已完成 {success_count} 个钱包的钻石调整', level=messages.SUCCESS)
 
