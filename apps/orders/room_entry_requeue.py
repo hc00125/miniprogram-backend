@@ -126,7 +126,7 @@ def expire_room_entry_relation(relation_id, now=None):
     now = now or timezone.now()
     relation = (
         OrderPlayer.objects
-        .select_for_update()
+        .select_for_update(of=('self',))
         .select_related('order', 'player__user')
         .filter(pk=relation_id)
         .first()
