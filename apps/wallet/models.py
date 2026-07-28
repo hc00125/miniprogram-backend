@@ -5,8 +5,13 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
+from .diamonds import qyuan, yuan_to_diamonds
+
 
 ZERO = Decimal('0.00')
+ALLOWED_RECHARGE_AMOUNTS = tuple(
+    Decimal(value) for value in ('10.00', '30.00', '50.00', '100.00', '200.00', '500.00', '1000.00')
+)
 
 
 class ClientWallet(models.Model):
@@ -16,9 +21,10 @@ class ClientWallet(models.Model):
         related_name='wallet',
         verbose_name='老板',
     )
-    balance = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='余额(元)')
+    # 钱包仍以人民币 Decimal 作为唯一账务真值；客户端按固定 1:10 显示整数钻石。
+    balance = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='人民币等值余额(元)')
     recharged_total = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='累计充值(元)')
-    spent_total = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='累计余额消费(元)')
+    spent_total = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO, verbose_name='累计余额支付(元)')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -35,14 +41,18 @@ class ClientWallet(models.Model):
             ),
         ]
 
+    @property
+    def balance_diamonds(self):
+        return yuan_to_diamonds(self.balance)
+
     def __str__(self):
         return f'{self.profile}的钱包'
 
 
 class RechargeProduct(models.Model):
-    """把充值档位绑定到微信虚拟支付道具。"""
+    """把固定钻石充值档位绑定到微信虚拟支付道具。"""
 
-    amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='充值金额(元)')
+    amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='实际支付金额(元)')
     product_id = models.CharField(
         max_length=20,
         unique=True,
@@ -50,7 +60,7 @@ class RechargeProduct(models.Model):
         help_text='例如 recharge_30。必须与微信虚拟支付后台中的道具ID完全一致。',
     )
     goods_price_fen = models.PositiveIntegerField(
-        verbose_name='道具单价（分）',
+        verbose_name='微信道具单价（分）',
         help_text='例如30元填写3000。',
     )
     is_active = models.BooleanField(default=True, verbose_name='是否启用')
@@ -61,24 +71,35 @@ class RechargeProduct(models.Model):
 
     class Meta:
         db_table = 'wallet_recharge_products'
-        verbose_name = '充值档位'
-        verbose_name_plural = '充值档位'
+        verbose_name = '钻石充值档位'
+        verbose_name_plural = '钻石充值档位'
         ordering = ['sort_order', 'id']
+
+    @property
+    def diamond_amount(self):
+        return yuan_to_diamonds(self.amount)
 
     def clean(self):
         errors = {}
-        if self.amount is not None and self.goods_price_fen:
-            expected_fen = int(round(float(self.amount) * 100))
+        amount = qyuan(self.amount)
+        if amount not in ALLOWED_RECHARGE_AMOUNTS:
+            errors['amount'] = '充值档位仅允许10、30、50、100、200、500、1000元。'
+        try:
+            yuan_to_diamonds(amount)
+        except ValidationError as exc:
+            errors['amount'] = exc.message
+        if self.goods_price_fen:
+            expected_fen = int(amount * Decimal('100'))
             if self.goods_price_fen != expected_fen:
                 errors['goods_price_fen'] = (
-                    f'当前充值金额为¥{float(self.amount):.2f}，'
-                    f'道具单价应填写{expected_fen}分，而不是{self.goods_price_fen}分。'
+                    f'当前充值金额为¥{amount:.2f}，'
+                    f'微信道具单价应填写{expected_fen}分，而不是{self.goods_price_fen}分。'
                 )
         if errors:
             raise ValidationError(errors)
 
     def __str__(self):
-        return f'{self.product_id} → ¥{self.amount}'
+        return f'{self.product_id} → 💎{self.diamond_amount}（¥{qyuan(self.amount):.2f}）'
 
 
 class RechargeOrder(models.Model):
@@ -120,7 +141,7 @@ class RechargeOrder(models.Model):
         related_name='recharge_orders',
         verbose_name='充值档位',
     )
-    amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='充值金额(元)')
+    amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='实际支付金额(元)')
     channel = models.CharField(max_length=20, choices=CHANNEL_CHOICES, default=CHANNEL_WECHAT_VIRTUAL)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_CREATED, db_index=True)
     third_trade_no = models.CharField(max_length=80, blank=True, default='')
@@ -133,8 +154,8 @@ class RechargeOrder(models.Model):
 
     class Meta:
         db_table = 'wallet_recharge_orders'
-        verbose_name = '充值单'
-        verbose_name_plural = '充值单'
+        verbose_name = '钻石充值单'
+        verbose_name_plural = '钻石充值单'
         ordering = ['-created_at']
         constraints = [
             models.CheckConstraint(
@@ -143,8 +164,12 @@ class RechargeOrder(models.Model):
             ),
         ]
 
+    @property
+    def diamond_amount(self):
+        return yuan_to_diamonds(self.amount)
+
     def __str__(self):
-        return f'{self.recharge_no} - {self.profile} - ¥{self.amount}'
+        return f'{self.recharge_no} - {self.profile} - 💎{self.diamond_amount}'
 
 
 class ClientWalletLedger(models.Model):
@@ -162,8 +187,8 @@ class ClientWalletLedger(models.Model):
 
     wallet = models.ForeignKey(ClientWallet, on_delete=models.PROTECT, related_name='ledgers')
     entry_type = models.CharField(max_length=40, choices=ENTRY_TYPE_CHOICES, db_index=True)
-    amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='变动金额(元)')
-    balance_after = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='变动后余额(元)')
+    amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='人民币等值变动金额(元)')
+    balance_after = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='人民币等值变动后余额(元)')
     reference_type = models.CharField(max_length=40, blank=True, default='')
     reference_id = models.CharField(max_length=64, blank=True, default='', db_index=True)
     operator = models.ForeignKey(
@@ -196,6 +221,14 @@ class ClientWalletLedger(models.Model):
                 name='uniq_client_wallet_ledger_reference',
             ),
         ]
+
+    @property
+    def amount_diamonds(self):
+        return yuan_to_diamonds(self.amount)
+
+    @property
+    def balance_after_diamonds(self):
+        return yuan_to_diamonds(self.balance_after)
 
     def __str__(self):
         return f'{self.wallet.profile} {self.entry_type} {self.amount}'
