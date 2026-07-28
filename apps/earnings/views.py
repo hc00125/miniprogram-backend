@@ -77,7 +77,7 @@ def settlements(request):
     queryset = (
         PlayerEarning.objects
         .filter(player=player)
-        .select_related('order__package')
+        .select_related('order__package', 'order__boss_user__client_profile')
         .order_by('-created_at')[:100]
     )
     return Response({
