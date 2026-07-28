@@ -2,6 +2,7 @@ from django.urls import path
 
 from . import (
     batch_views,
+    boss_replacement_views,
     boss_views,
     catalog_navigation_views,
     designation_views,
@@ -23,6 +24,10 @@ urlpatterns = [
     path('order/<str:order_no>/renew', boss_views.create_renewal),
     path('order/<str:order_no>/designations', designation_views.designations),
     path('order/<str:order_no>/designation/<int:designation_id>/release', designation_views.release),
+    path('order/<str:order_no>/replacement', boss_replacement_views.detail),
+    path('order/<str:order_no>/replacement/public', boss_replacement_views.publish_public),
+    path('order/<str:order_no>/replacement/reassign', boss_replacement_views.reassign),
+    path('order/<str:order_no>/replacement/cancel-remaining', boss_replacement_views.cancel_remaining),
     path('orders/me', boss_views.my_orders),
     path('orders/batch', batch_views.create_cart_order_batch),
     path('orders/<str:boss_wechat>', boss_views.boss_orders),
