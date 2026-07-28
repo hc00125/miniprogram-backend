@@ -12,6 +12,11 @@ from .cancellation_models import OrderReplacementState, PlayerCancellationRecord
 from .discipline import ensure_player_can_accept
 
 
+def _sync_designated_snapshot(order):
+    from .designations import sync_designated_players_snapshot
+    sync_designated_players_snapshot(order)
+
+
 def replacement_payload(order):
     state = OrderReplacementState.objects.filter(order=order).first()
     if not state or state.status == OrderReplacementState.STATUS_RESOLVED:
@@ -28,6 +33,7 @@ def replacement_payload(order):
         'cancelled_player_name': state.cancelled_player_name,
         'required_player_type_id': state.required_player_type_id,
         'required_player_type_name': state.required_player_type_name,
+        'current_designation_id': state.current_designation_id,
         'can_reassign': state.mode == OrderReplacementState.MODE_TARGETED and state.status == OrderReplacementState.STATUS_OPEN,
         'can_publish_public': state.status == OrderReplacementState.STATUS_OPEN,
         'can_request_cancel': state.status == OrderReplacementState.STATUS_OPEN,
@@ -86,8 +92,9 @@ def finalize_replacement_if_full(order):
         order.save(update_fields=['status'])
     state.status = OrderReplacementState.STATUS_RESOLVED
     state.missing_slots = 0
+    state.current_designation = None
     state.resolved_at = timezone.now()
-    state.save(update_fields=['status', 'missing_slots', 'resolved_at', 'updated_at'])
+    state.save(update_fields=['status', 'missing_slots', 'current_designation', 'resolved_at', 'updated_at'])
     return order
 
 
@@ -104,7 +111,6 @@ def grab_order_with_replacement(original_grab, order_no, player, operator=None):
     ).first()
     if not state or order.status == Order.STATUS_WAITING:
         return finalize_replacement_if_full(original_grab(order_no, player, operator))
-
     if not can_player_take_replacement(order, player, state):
         raise ValidationError({'detail': '您不符合该补位名额要求，或名额已满'})
 
@@ -129,20 +135,22 @@ def publish_replacement_public(order, operator=None):
     if not state or state.status != OrderReplacementState.STATUS_OPEN:
         raise ValidationError({'detail': '当前没有待处理的补位'})
     now = timezone.now()
-    OrderDesignation.objects.filter(order=order, status=OrderDesignation.STATUS_PENDING).update(
-        status=OrderDesignation.STATUS_CANCELLED,
-        responded_at=now,
-    )
+    if state.current_designation_id:
+        OrderDesignation.objects.filter(
+            id=state.current_designation_id,
+            status=OrderDesignation.STATUS_PENDING,
+        ).update(status=OrderDesignation.STATUS_CANCELLED, responded_at=now)
     old_status = order.status
     order.fulfillment_mode = Order.FULFILLMENT_MODE_PUBLIC
     order.target_player = None
     order.target_player_name_snapshot = ''
-    order.designated_players = None
     if order.status != Order.STATUS_IN_PROGRESS:
         order.status = Order.STATUS_WAITING
-    order.save(update_fields=['fulfillment_mode', 'target_player', 'target_player_name_snapshot', 'designated_players', 'status'])
+    order.save(update_fields=['fulfillment_mode', 'target_player', 'target_player_name_snapshot', 'status'])
+    _sync_designated_snapshot(order)
     state.mode = OrderReplacementState.MODE_PUBLIC
-    state.save(update_fields=['mode', 'updated_at'])
+    state.current_designation = None
+    state.save(update_fields=['mode', 'current_designation', 'updated_at'])
     OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=operator, reason='老板已将退出名额转为公开补位')
     return state
 
@@ -168,10 +176,11 @@ def reassign_replacement(order, player_id, operator=None):
         raise ValidationError({'detail': '该陪玩师当前已有进行中的订单'})
 
     now = timezone.now()
-    OrderDesignation.objects.filter(order=order, status=OrderDesignation.STATUS_PENDING).update(
-        status=OrderDesignation.STATUS_CANCELLED,
-        responded_at=now,
-    )
+    if state.current_designation_id:
+        OrderDesignation.objects.filter(
+            id=state.current_designation_id,
+            status=OrderDesignation.STATUS_PENDING,
+        ).update(status=OrderDesignation.STATUS_CANCELLED, responded_at=now)
     designation = OrderDesignation.objects.filter(order=order, player=player).first()
     if designation:
         designation.status = OrderDesignation.STATUS_PENDING
@@ -188,13 +197,17 @@ def reassign_replacement(order, player_id, operator=None):
         )
 
     old_status = order.status
-    order.fulfillment_mode = Order.FULFILLMENT_MODE_TARGETED
-    order.target_player = player
-    order.target_player_name_snapshot = player.name
-    order.designated_players = [player.id]
+    is_single_targeted_product = order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
+    if is_single_targeted_product:
+        order.target_player = player
+        order.target_player_name_snapshot = player.name
     if order.status != Order.STATUS_IN_PROGRESS:
         order.status = Order.STATUS_WAITING
-    order.save(update_fields=['fulfillment_mode', 'target_player', 'target_player_name_snapshot', 'designated_players', 'status'])
+    order.save(update_fields=['target_player', 'target_player_name_snapshot', 'status'])
+    state.mode = OrderReplacementState.MODE_TARGETED
+    state.current_designation = designation
+    state.save(update_fields=['mode', 'current_designation', 'updated_at'])
+    _sync_designated_snapshot(order)
     OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=operator, reason=f'老板重新指定陪玩师 {player.name}，等待对方接受')
     return designation
 
@@ -214,7 +227,11 @@ def accept_replacement_designation(order_no, player, operator=None):
     ensure_player_can_accept(player)
     if not player.can_be_designated:
         raise ValidationError({'detail': '管理员已暂停您的被指定权限'})
-    designation = OrderDesignation.objects.select_for_update().filter(order=order, player=player).first()
+    designation = OrderDesignation.objects.select_for_update().filter(
+        id=state.current_designation_id,
+        order=order,
+        player=player,
+    ).first()
     if not designation or designation.status != OrderDesignation.STATUS_PENDING:
         raise ValidationError({'detail': '您没有有效的补位邀请'})
     now = timezone.now()
@@ -222,6 +239,9 @@ def accept_replacement_designation(order_no, player, operator=None):
         designation.status = OrderDesignation.STATUS_EXPIRED
         designation.responded_at = now
         designation.save(update_fields=['status', 'responded_at'])
+        state.current_designation = None
+        state.save(update_fields=['current_designation', 'updated_at'])
+        _sync_designated_snapshot(order)
         raise ValidationError({'detail': '补位邀请已超时，请让老板重新指定'})
     if not can_player_take_replacement(order, player, state):
         raise ValidationError({'detail': '您不符合该补位名额要求，或名额已满'})
@@ -234,6 +254,7 @@ def accept_replacement_designation(order_no, player, operator=None):
     designation.save(update_fields=['status', 'responded_at'])
     state.missing_slots = max(0, order.required_players - order.order_players.count())
     state.save(update_fields=['missing_slots', 'updated_at'])
+    _sync_designated_snapshot(order)
     OrderStatusLog.objects.create(order=order, from_status=order.status, to_status=order.status, operator=operator, reason=f'指定补位陪玩 {player.name} 已接受邀请')
     return finalize_replacement_if_full(order)
 
@@ -243,42 +264,53 @@ def decline_replacement_designation(order_no, player, operator=None):
     order = Order.objects.select_for_update().filter(order_no=order_no).first()
     if not order:
         raise Order.DoesNotExist
-    state = open_targeted_replacement(order)
+    state = OrderReplacementState.objects.select_for_update().filter(
+        order=order,
+        mode=OrderReplacementState.MODE_TARGETED,
+        status=OrderReplacementState.STATUS_OPEN,
+    ).first()
     if not state:
         raise ValidationError({'detail': '当前没有待处理的补位邀请'})
-    designation = OrderDesignation.objects.select_for_update().filter(order=order, player=player).first()
+    designation = OrderDesignation.objects.select_for_update().filter(
+        id=state.current_designation_id,
+        order=order,
+        player=player,
+    ).first()
     if not designation or designation.status != OrderDesignation.STATUS_PENDING:
         raise ValidationError({'detail': '您没有有效的补位邀请'})
     designation.status = OrderDesignation.STATUS_DECLINED
     designation.responded_at = timezone.now()
     designation.save(update_fields=['status', 'responded_at'])
-    order.designated_players = None
-    order.save(update_fields=['designated_players'])
+    state.current_designation = None
+    state.save(update_fields=['current_designation', 'updated_at'])
+    _sync_designated_snapshot(order)
     OrderStatusLog.objects.create(order=order, from_status=order.status, to_status=order.status, operator=operator, reason=f'指定补位陪玩 {player.name} 已拒绝，等待老板重新选择')
     return order
 
 
 def expire_due_replacement_designations(original_expire, order=None, now=None):
     now = now or timezone.now()
-    queryset = OrderDesignation.objects.filter(
-        status=OrderDesignation.STATUS_PENDING,
-        expires_at__lte=now,
-        order__replacement_state__status=OrderReplacementState.STATUS_OPEN,
-        order__replacement_state__mode=OrderReplacementState.MODE_TARGETED,
-    )
+    states = OrderReplacementState.objects.filter(
+        status=OrderReplacementState.STATUS_OPEN,
+        mode=OrderReplacementState.MODE_TARGETED,
+        current_designation__status=OrderDesignation.STATUS_PENDING,
+        current_designation__expires_at__lte=now,
+    ).select_related('order', 'current_designation__player')
     if order is not None:
-        queryset = queryset.filter(order=order)
-    rows = list(queryset.select_related('order', 'player'))
-    for designation in rows:
+        states = states.filter(order=order)
+    rows = list(states)
+    for state in rows:
+        designation = state.current_designation
         designation.status = OrderDesignation.STATUS_EXPIRED
         designation.responded_at = now
         designation.save(update_fields=['status', 'responded_at'])
-        designation.order.designated_players = None
-        designation.order.save(update_fields=['designated_players'])
+        state.current_designation = None
+        state.save(update_fields=['current_designation', 'updated_at'])
+        _sync_designated_snapshot(state.order)
         OrderStatusLog.objects.create(
-            order=designation.order,
-            from_status=designation.order.status,
-            to_status=designation.order.status,
+            order=state.order,
+            from_status=state.order.status,
+            to_status=state.order.status,
             reason=f'指定补位邀请已超时：{designation.player.name}，等待老板重新选择',
         )
     return len(rows) + original_expire(order=order, now=now)
@@ -289,7 +321,14 @@ def request_cancel_remaining(order, operator=None):
     state = OrderReplacementState.objects.select_for_update().filter(order=order).first()
     if not state or state.status != OrderReplacementState.STATUS_OPEN:
         raise ValidationError({'detail': '当前没有可申请取消的剩余服务'})
+    if state.current_designation_id:
+        OrderDesignation.objects.filter(
+            id=state.current_designation_id,
+            status=OrderDesignation.STATUS_PENDING,
+        ).update(status=OrderDesignation.STATUS_CANCELLED, responded_at=timezone.now())
     state.status = OrderReplacementState.STATUS_CANCEL_REQUESTED
-    state.save(update_fields=['status', 'updated_at'])
+    state.current_designation = None
+    state.save(update_fields=['status', 'current_designation', 'updated_at'])
+    _sync_designated_snapshot(order)
     OrderStatusLog.objects.create(order=order, from_status=order.status, to_status=order.status, operator=operator, reason='老板申请取消未履行的剩余服务，等待客服核算退款')
     return state
