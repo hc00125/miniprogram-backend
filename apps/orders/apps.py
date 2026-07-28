@@ -29,12 +29,13 @@ class OrdersConfig(AppConfig):
         # 已付款补位、主动取消处罚与普通抢单统一走同一套入口。
         from . import replacements, services
         from .discipline import can_player_grab_with_discipline
-        from apps.players import permission_views, views as player_views
+        from apps.players import designation_views, permission_views, views as player_views
 
         original_finalize = designations.finalize_lineup_if_full
         original_can_grab = services.can_player_grab_order
         original_grab = services.grab_order
         original_start_timer = services.start_timer
+        original_expire_designations = designations.expire_due_designations
 
         def finalize_lineup_if_full(order, operator=None, reason='接单人数已满，等待老板付款'):
             result = room_entry_requeue.finalize_lineup_with_paid_replacement(
@@ -46,6 +47,26 @@ class OrdersConfig(AppConfig):
             return replacements.finalize_replacement_if_full(result)
 
         def can_player_grab_order(order, player):
+            replacement_state = replacements.open_public_replacement(order)
+            if replacement_state:
+                room_allowed = room_entry_requeue.can_player_grab_after_room_timeout(
+                    lambda _order, _player: True,
+                    order,
+                    player,
+                )
+                if not room_allowed:
+                    return False
+                discipline_allowed = can_player_grab_with_discipline(
+                    lambda _order, _player: True,
+                    order,
+                    player,
+                )
+                return discipline_allowed and replacements.can_player_take_replacement(
+                    order,
+                    player,
+                    replacement_state,
+                )
+
             room_allowed = room_entry_requeue.can_player_grab_after_room_timeout(
                 original_can_grab,
                 order,
@@ -67,13 +88,22 @@ class OrdersConfig(AppConfig):
             replacements.ensure_order_can_start(order)
             return original_start_timer(order, player, operator)
 
+        def expire_due_designations(order=None, now=None):
+            return replacements.expire_due_replacement_designations(
+                original_expire_designations,
+                order=order,
+                now=now,
+            )
+
         designations.finalize_lineup_if_full = finalize_lineup_if_full
+        designations.expire_due_designations = expire_due_designations
         services.finalize_lineup_if_full = finalize_lineup_if_full
         services.can_player_grab_order = can_player_grab_order
         services.grab_order = grab_order
         services.start_timer = start_timer
         permission_views.can_player_grab_order = can_player_grab_order
         permission_views.grab_order_service = grab_order
+        designation_views.expire_due_designations = expire_due_designations
         player_views.start_timer = start_timer
 
         # 支付窗口单独作为只读运营审计页面展示。
