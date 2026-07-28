@@ -24,6 +24,16 @@ from .services import (
 )
 
 
+def boss_name_for_order(order):
+    profile = getattr(order.boss_user, 'client_profile', None)
+    nickname = (getattr(profile, 'nickname', '') or '').strip()
+    return nickname or '未设置昵称'
+
+
+def package_name_for_order(order):
+    return order.package_name_snapshot or getattr(order.package, 'name', '') or '陪玩服务'
+
+
 @admin.register(EarningsConfig)
 class EarningsConfigAdmin(admin.ModelAdmin):
     list_display = ['key', 'default_commission_rate', 'review_days', 'min_withdrawal_amount', 'updated_by', 'updated_at']
@@ -75,19 +85,37 @@ class PlayerWalletAdmin(admin.ModelAdmin):
 @admin.register(PlayerEarning)
 class PlayerEarningAdmin(admin.ModelAdmin):
     list_display = [
-        'id', 'order', 'player', 'gross_amount', 'commission_rate', 'commission_amount',
-        'net_amount', 'reversed_amount', 'debt_offset_amount', 'status', 'review_until',
+        'id', 'order', 'boss_name', 'player', 'package_name', 'order_total',
+        'gross_amount', 'commission_rate', 'commission_amount', 'net_amount',
+        'reversed_amount', 'debt_offset_amount', 'status', 'review_until',
         'available_amount', 'withdrawing_amount', 'withdrawn_amount',
     ]
     list_filter = ['status', 'commission_rate']
-    search_fields = ['order__order_no', 'player__name']
+    search_fields = [
+        'order__order_no', 'order__boss_user__client_profile__nickname',
+        'player__name', 'order__package_name_snapshot', 'order__package__name',
+    ]
+    list_select_related = ['order__boss_user__client_profile', 'order__package', 'player']
     readonly_fields = [
-        'order', 'player', 'gross_amount', 'commission_rate', 'commission_amount',
+        'order', 'boss_name', 'player', 'package_name', 'order_total',
+        'gross_amount', 'commission_rate', 'commission_amount',
         'net_amount', 'reversed_amount', 'debt_offset_amount', 'review_until',
         'available_at', 'available_amount', 'withdrawing_amount', 'withdrawn_amount',
         'created_at', 'updated_at',
     ]
     actions = ['freeze_selected', 'unfreeze_selected']
+
+    @admin.display(description='老板', ordering='order__boss_user__client_profile__nickname')
+    def boss_name(self, obj):
+        return boss_name_for_order(obj.order)
+
+    @admin.display(description='套餐', ordering='order__package_name_snapshot')
+    def package_name(self, obj):
+        return package_name_for_order(obj.order)
+
+    @admin.display(description='订单金额', ordering='order__total_amount')
+    def order_total(self, obj):
+        return obj.order.total_amount
 
     @admin.action(description='冻结选中的审核中工资')
     def freeze_selected(self, request, queryset):
@@ -181,7 +209,26 @@ class WithdrawalAllocationInline(admin.TabularInline):
     model = WithdrawalAllocation
     extra = 0
     can_delete = False
-    readonly_fields = ['earning', 'amount', 'created_at']
+    fields = ['earning', 'order_no', 'boss_name', 'package_name', 'amount', 'created_at']
+    readonly_fields = ['earning', 'order_no', 'boss_name', 'package_name', 'amount', 'created_at']
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            'earning__order__boss_user__client_profile',
+            'earning__order__package',
+        )
+
+    @admin.display(description='订单号')
+    def order_no(self, obj):
+        return obj.earning.order.order_no
+
+    @admin.display(description='老板')
+    def boss_name(self, obj):
+        return boss_name_for_order(obj.earning.order)
+
+    @admin.display(description='套餐')
+    def package_name(self, obj):
+        return package_name_for_order(obj.earning.order)
 
 
 @admin.register(Withdrawal)
@@ -191,7 +238,11 @@ class WithdrawalAdmin(admin.ModelAdmin):
         'account_name', 'transfer_no', 'created_at', 'paid_at',
     ]
     list_filter = ['status', 'payment_method', 'created_at']
-    search_fields = ['withdrawal_no', 'player__name', 'account_name', 'account_no', 'transfer_no']
+    search_fields = [
+        'withdrawal_no', 'player__name', 'account_name', 'account_no', 'transfer_no',
+        'allocations__earning__order__order_no',
+        'allocations__earning__order__boss_user__client_profile__nickname',
+    ]
     readonly_fields = [
         'withdrawal_no', 'player', 'wallet', 'amount', 'status', 'payment_method',
         'account_name', 'account_no', 'request_note', 'reviewed_by', 'reviewed_at',
