@@ -4,6 +4,7 @@ from rest_framework import serializers
 
 from apps.players.models import PlayerApplication
 from apps.players.serializers import PlayerApplicationSerializer, PlayerSerializer
+from apps.wallet.diamonds import DIAMONDS_PER_YUAN, yuan_to_diamonds
 
 from .models import ClientProfile
 from .vip import qmoney, vip_snapshot
@@ -14,20 +15,30 @@ class ClientProfileSerializer(serializers.ModelSerializer):
     player = serializers.SerializerMethodField()
     vip = serializers.SerializerMethodField()
     wallet = serializers.SerializerMethodField()
+    cumulative_consumption_diamonds = serializers.SerializerMethodField()
 
     class Meta:
         model = ClientProfile
         fields = [
             'id', 'openid', 'nickname', 'nickname_customized', 'avatar_url', 'role', 'player_status',
-            'cumulative_consumption', 'vip', 'wallet', 'created_at', 'application', 'player',
+            'cumulative_consumption', 'cumulative_consumption_diamonds', 'vip', 'wallet',
+            'created_at', 'application', 'player',
         ]
+
+    def get_cumulative_consumption_diamonds(self, obj):
+        return yuan_to_diamonds(obj.cumulative_consumption)
 
     def get_wallet(self, obj):
         from apps.wallet.models import ClientWallet
 
         wallet = ClientWallet.objects.filter(profile=obj).only('balance').first()
         balance = wallet.balance if wallet else Decimal('0.00')
-        return {'balance': str(qmoney(balance))}
+        return {
+            'balance': str(qmoney(balance)),
+            'balance_yuan': str(qmoney(balance)),
+            'balance_diamonds': yuan_to_diamonds(balance),
+            'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+        }
 
     def get_application(self, obj):
         application = PlayerApplication.objects.filter(user=obj.user).order_by('-submitted_at').first()
@@ -42,7 +53,17 @@ class ClientProfileSerializer(serializers.ModelSerializer):
         return PlayerSerializer(player).data
 
     def get_vip(self, obj):
-        return vip_snapshot(obj)
+        snapshot = vip_snapshot(obj)
+        snapshot.update({
+            'growth_diamonds': yuan_to_diamonds(snapshot.get('cumulative_consumption')),
+            'remaining_growth_diamonds': yuan_to_diamonds(snapshot.get('remaining_to_next')),
+            'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+        })
+        for key in ('current_tier', 'next_tier'):
+            tier = snapshot.get(key)
+            if tier:
+                tier['min_growth_diamonds'] = yuan_to_diamonds(tier.get('min_consumption'))
+        return snapshot
 
 
 class WechatLoginSerializer(serializers.Serializer):
