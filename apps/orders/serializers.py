@@ -406,6 +406,8 @@ class PlayerOrderListSerializer(RenewalFieldsMixin):
 
 
 class PlayerOrderDetailSerializer(BossOrderDetailSerializer):
+    boss_name = serializers.SerializerMethodField()
+
     class Meta(BossOrderDetailSerializer.Meta):
         fields = [
             'order_no', 'game_id', 'package_name', 'addon_name', 'required_players', 'boss_note', 'status',
@@ -414,8 +416,12 @@ class PlayerOrderDetailSerializer(BossOrderDetailSerializer):
             'kook_room_number', 'kook_room_updated_at',
             'spec_id', 'package_name_snapshot', 'spec_name_snapshot', 'spec_price_snapshot',
             'order_type', 'parent_order_no', 'renewal_index', 'renewal_count', 'renewal_booked_hours',
-            'renewal_paid_amount', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew', 'renewals',
+            'renewal_paid_amount', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew', 'renewals', 'boss_name',
         ]
+
+    def get_boss_name(self, obj):
+        profile = getattr(obj.boss_user, 'client_profile', None)
+        return profile.nickname if profile else None
 
 
 class OrderActionSerializer(serializers.Serializer):
