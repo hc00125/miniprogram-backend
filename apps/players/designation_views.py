@@ -4,6 +4,7 @@ from rest_framework.response import Response
 
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.orders.designations import accept_designation, decline_designation, expire_due_designations
+from apps.orders.discipline import discipline_block_reason
 from apps.orders.models import Order, OrderDesignation
 from apps.orders.serializers import AvailableOrderSerializer
 
@@ -38,11 +39,8 @@ def invitations(request):
         permission_reason = ''
         if not player.can_accept_orders or not player.can_be_designated:
             permission_reason = '管理员已暂停您的接单或被指定权限'
-        block_reason = permission_reason or escort_reason
-        data = AvailableOrderSerializer(
-            order,
-            context={'player': player},
-        ).data
+        block_reason = discipline_block_reason(player) or permission_reason or escort_reason
+        data = AvailableOrderSerializer(order, context={'player': player}).data
         data.update({
             'designation_id': designation.id,
             'designation_status': designation.status,
@@ -62,6 +60,9 @@ def invitations(request):
 @permission_classes([IsApprovedPlayer])
 def accept(request, order_no):
     player = current_player(request.user)
+    block_reason = discipline_block_reason(player)
+    if block_reason:
+        return Response({'detail': block_reason}, status=status.HTTP_403_FORBIDDEN)
     if not player.can_accept_orders:
         return Response({'detail': '管理员已暂停您的接单权限'}, status=status.HTTP_403_FORBIDDEN)
     if not player.can_be_designated:
@@ -73,11 +74,7 @@ def accept(request, order_no):
     escort_reason = escort_order_block_reason(order, player)
     if escort_reason:
         return Response({'detail': escort_reason}, status=status.HTTP_403_FORBIDDEN)
-    order = accept_designation(
-        order_no,
-        player,
-        django_operator(request.user),
-    )
+    order = accept_designation(order_no, player, django_operator(request.user))
     return Response({
         'message': '已接受指定邀请',
         'order_no': order.order_no,
