@@ -27,15 +27,25 @@ class OrdersConfig(AppConfig):
         from . import cancel_signals, payment_window_signals, room_entry_requeue, signals  # noqa: F401
 
         # 已付款补位、主动取消处罚与普通抢单统一走同一套入口。
+        from rest_framework.exceptions import ValidationError
+
         from . import replacements, services
         from .discipline import can_player_grab_with_discipline
+        from .models import Order
         from apps.players import designation_views, permission_views, views as player_views
 
         original_finalize = designations.finalize_lineup_if_full
         original_can_grab = services.can_player_grab_order
         original_grab = services.grab_order
         original_start_timer = services.start_timer
+        original_complete_order = services.complete_order
+        original_create_renewal = boss_views.create_renewal_order
         original_expire_designations = designations.expire_due_designations
+
+        def unresolved_replacement(order):
+            return cancellation_models.OrderReplacementState.objects.filter(
+                order=order,
+            ).exclude(status=cancellation_models.OrderReplacementState.STATUS_RESOLVED).first()
 
         def finalize_lineup_if_full(order, operator=None, reason='接单人数已满，等待老板付款'):
             result = room_entry_requeue.finalize_lineup_with_paid_replacement(
@@ -88,6 +98,17 @@ class OrdersConfig(AppConfig):
             replacements.ensure_order_can_start(order)
             return original_start_timer(order, player, operator)
 
+        def complete_order(order, player, operator=None):
+            if unresolved_replacement(order):
+                raise ValidationError({'detail': '当前仍有陪玩退出或剩余服务待客服处理，暂不能完成订单'})
+            return original_complete_order(order, player, operator)
+
+        def create_renewal_order(order_no, user, units):
+            order = Order.objects.filter(order_no=order_no).first()
+            if order and unresolved_replacement(order):
+                raise ValidationError({'detail': '陪玩退出事项处理完成前，暂不能续单'})
+            return original_create_renewal(order_no, user, units)
+
         def expire_due_designations(order=None, now=None):
             return replacements.expire_due_replacement_designations(
                 original_expire_designations,
@@ -101,10 +122,13 @@ class OrdersConfig(AppConfig):
         services.can_player_grab_order = can_player_grab_order
         services.grab_order = grab_order
         services.start_timer = start_timer
+        services.complete_order = complete_order
         permission_views.can_player_grab_order = can_player_grab_order
         permission_views.grab_order_service = grab_order
         designation_views.expire_due_designations = expire_due_designations
         player_views.start_timer = start_timer
+        player_views.complete_order = complete_order
+        boss_views.create_renewal_order = create_renewal_order
 
         # 支付窗口单独作为只读运营审计页面展示。
         from . import payment_window_admin  # noqa: F401
