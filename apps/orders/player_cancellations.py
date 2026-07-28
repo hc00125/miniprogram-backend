@@ -98,6 +98,10 @@ def cancel_player_order(order_no, player, reason, operator=None):
     if not relation:
         raise ValidationError({'detail': '您当前不在该订单阵容中'})
 
+    # 以陪玩师维度加锁，避免同一人并发取消多单时重复占用免罚机会。
+    PlayerDiscipline.objects.get_or_create(player=player)
+    discipline = PlayerDiscipline.objects.select_for_update().get(player=player)
+
     now = timezone.now()
     preview = cancellation_preview(order, relation, player, now)
     previous_status = order.status
@@ -133,7 +137,6 @@ def cancel_player_order(order_no, player, reason, operator=None):
         record.debt_fish = max(Decimal('0.00'), adjustment.debt_delta)
         record.save(update_fields=['wallet_adjustment', 'deducted_fish', 'debt_fish'])
 
-    discipline, _ = PlayerDiscipline.objects.select_for_update().get_or_create(player=player)
     if not discipline.suspended_until or discipline.suspended_until < preview['suspended_until']:
         discipline.suspended_until = preview['suspended_until']
         discipline.save(update_fields=['suspended_until', 'updated_at'])
