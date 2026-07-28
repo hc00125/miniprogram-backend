@@ -71,6 +71,7 @@ class Migration(migrations.Migration):
                 ('resolved_at', models.DateTimeField(blank=True, null=True)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
+                ('current_designation', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='replacement_states', to='orders.orderdesignation', verbose_name='当前补位邀请')),
                 ('latest_cancellation', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='replacement_states', to='orders.playercancellationrecord')),
             ],
             options={
