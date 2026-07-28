@@ -10,6 +10,7 @@ from apps.payments.virtualpay import VIRTUAL_CHANNEL, VirtualPaymentError, query
 from .boss_views import can_access_order, forbidden_response, get_order_or_response
 from .models import Order
 from .payment_deadlines import expire_due_unpaid_order, payment_deadline_payload
+from .replacements import replacement_payload
 from .serializers import BossOrderDetailSerializer
 
 
@@ -63,8 +64,6 @@ def order_detail(request, order_no):
     if not can_access_order(order, request.user):
         return forbidden_response()
 
-    # 页面刷新是定时任务之外的第二道兜底：支付期结束后先进入微信核验期，
-    # 核验仍未付款才取消并释放服务阵容。
     if order.status == Order.STATUS_PENDING_PAYMENT and not order.paid:
         if expire_due_unpaid_order(order):
             order, error_response = get_order_or_response(order_no)
@@ -78,6 +77,7 @@ def order_detail(request, order_no):
 
     data = BossOrderDetailSerializer(order).data
     data.update(payment_deadline_payload(order))
+    data['replacement'] = replacement_payload(order)
     data['cancel_reason'] = order.cancel_reason or ''
     data['canceled_at'] = order.canceled_at.isoformat() if order.canceled_at else None
     return Response(data)
