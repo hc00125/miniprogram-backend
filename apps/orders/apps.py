@@ -130,5 +130,5 @@ class OrdersConfig(AppConfig):
         player_views.complete_order = complete_order
         boss_views.create_renewal_order = create_renewal_order
 
-        # 支付窗口单独作为只读运营审计页面展示。
-        from . import payment_window_admin  # noqa: F401
+        # 独立后台模块只提供审计查看，不允许删除取消记录和补位记录。
+        from . import cancellation_admin, payment_window_admin  # noqa: F401
