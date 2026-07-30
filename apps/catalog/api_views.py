@@ -99,6 +99,7 @@ def shared_listing_products(player, request):
                 continue
             spec_payload['listing_id'] = listing.id
             spec_payload['listing_status'] = listing.status
+            spec_payload['listing_is_available'] = listing.is_available
             spec_payload['listing_description'] = listing.custom_description
             product_listing_ids.append(listing.id)
         product['listing_id'] = product_listing_ids[0] if len(product_listing_ids) == 1 else None
@@ -108,7 +109,14 @@ def shared_listing_products(player, request):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def player_service_products(request, player_id):
-    """Keep the boss-facing contract stable while listings replace copied products."""
+    """Return the player's currently sellable services.
+
+    Shared service listings are the source of truth once a player has entered
+    the listing system. Legacy personal products are returned only for players
+    that have never created a PlayerServiceListing record, preserving old
+    accounts without allowing offline shared listings to reappear through a
+    stale player-owned Package.
+    """
     player = Player.objects.filter(
         pk=player_id,
         status=Player.STATUS_APPROVED,
@@ -118,13 +126,17 @@ def player_service_products(request, player_id):
     if not player:
         return Response({'detail': '陪玩师不存在或暂不接受指定'}, status=status.HTTP_404_NOT_FOUND)
 
+    has_listing_records = PlayerServiceListing.objects.filter(player=player).exists()
     products = shared_listing_products(player, request)
-    legacy_products = PackageSerializer(
-        player_service_products_queryset(player.id),
-        many=True,
-        context={'request': request},
-    ).data
-    products.extend(legacy_products)
+
+    if not has_listing_records:
+        legacy_products = PackageSerializer(
+            player_service_products_queryset(player.id),
+            many=True,
+            context={'request': request},
+        ).data
+        products.extend(legacy_products)
+
     products.sort(key=lambda item: (int(item.get('sort_order') or 0), int(item.get('id') or 0)))
     return Response({
         'player_id': player.id,
