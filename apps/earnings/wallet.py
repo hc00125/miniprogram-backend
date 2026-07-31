@@ -18,7 +18,7 @@ def get_earnings_config():
         key='default',
         defaults={
             'default_commission_rate': Decimal('16.00'),
-            'review_days': 8,
+            'review_days': 3,
             'min_withdrawal_amount': Decimal('10.00'),
         },
     )
