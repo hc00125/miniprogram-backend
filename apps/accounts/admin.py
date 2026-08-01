@@ -145,7 +145,7 @@ class ClientProfileAdmin(admin.ModelAdmin):
     list_filter = ['vip_tier', 'player_status', 'created_at']
     list_select_related = ['vip_tier', 'user']
     readonly_fields = ['cumulative_consumption', 'vip_tier', 'vip_updated_at', 'created_at', 'updated_at']
-    actions = ['refresh_vip_display']
+    actions = ['refresh_vip_display', 'ensure_client_wallets']
 
     @admin.display(description='专属KOOK房间')
     def vip_kook_room_status(self, obj):
@@ -183,6 +183,25 @@ class ClientProfileAdmin(admin.ModelAdmin):
                 profile.save(update_fields=['vip_tier', 'vip_updated_at', 'updated_at'])
                 updated += 1
         self.message_user(request, f'已刷新 {queryset.count()} 位老板，变更 {updated} 位VIP等级')
+
+    @admin.action(description='为选中的老板创建/补建钱包', permissions=['change'])
+    def ensure_client_wallets(self, request, queryset):
+        from apps.wallet.models import ClientWallet
+
+        selected_count = queryset.count()
+        created_count = 0
+        for profile in queryset.iterator():
+            _wallet, created = ClientWallet.objects.get_or_create(profile=profile)
+            if created:
+                created_count += 1
+
+        existing_count = selected_count - created_count
+        self.message_user(
+            request,
+            f'已检查 {selected_count} 位老板，新建 {created_count} 个钱包，'
+            f'已有钱包 {existing_count} 个。',
+            level=messages.SUCCESS,
+        )
 
     def get_urls(self):
         urls = super().get_urls()
