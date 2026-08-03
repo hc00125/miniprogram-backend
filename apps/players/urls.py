@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import cancellation_views, designation_views, escort_views, order_summary_views, payment_order_views, permission_views, profile_views, room_views, service_listing_views, views
+from . import application_views, cancellation_views, designation_views, escort_views, order_summary_views, payment_order_views, permission_views, profile_views, room_views, service_listing_views, views
 
 urlpatterns = [
     path('list', profile_views.public_list),
@@ -15,7 +15,7 @@ urlpatterns = [
     path('service-listings', service_listing_views.service_listings),
     path('service-listings/<int:listing_id>', service_listing_views.service_listing_detail),
     path('escort-qualification', escort_views.escort_qualification),
-    path('apply', views.apply),
+    path('apply', application_views.apply),
     path('apply/audio', views.upload_application_audio),
     path('apply/status', views.apply_status),
     path('available-orders', permission_views.available_orders),
