@@ -51,6 +51,15 @@ class ClientProfile(models.Model):
         (PLAYER_STATUS_REJECTED, '已拒绝'),
     ]
 
+    ACCOUNT_STATUS_ACTIVE = 'active'
+    ACCOUNT_STATUS_SUSPENDED = 'suspended'
+    ACCOUNT_STATUS_BANNED = 'banned'
+    ACCOUNT_STATUS_CHOICES = [
+        (ACCOUNT_STATUS_ACTIVE, '正常'),
+        (ACCOUNT_STATUS_SUSPENDED, '暂停使用'),
+        (ACCOUNT_STATUS_BANNED, '永久封禁'),
+    ]
+
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='client_profile')
     openid = models.CharField(max_length=128, unique=True)
     unionid = models.CharField(max_length=128, blank=True, default='')
@@ -59,6 +68,34 @@ class ClientProfile(models.Model):
     avatar_url = models.URLField(blank=True, default='')
     role = models.CharField(max_length=20, default='client')
     player_status = models.CharField(max_length=20, choices=PLAYER_STATUS_CHOICES, default=PLAYER_STATUS_NONE)
+    account_status = models.CharField(
+        max_length=20,
+        choices=ACCOUNT_STATUS_CHOICES,
+        default=ACCOUNT_STATUS_ACTIVE,
+        db_index=True,
+        verbose_name='账户状态',
+    )
+    account_suspended_until = models.DateTimeField(
+        blank=True,
+        null=True,
+        verbose_name='暂停截止时间',
+        help_text='仅“暂停使用”状态需要填写，到期后系统自动恢复。',
+    )
+    account_restriction_reason = models.CharField(
+        max_length=500,
+        blank=True,
+        default='',
+        verbose_name='账户限制原因',
+    )
+    account_restricted_at = models.DateTimeField(blank=True, null=True, verbose_name='最近账户操作时间')
+    account_restricted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='restricted_client_profiles',
+        verbose_name='最近操作管理员',
+    )
     cumulative_consumption = models.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -90,6 +127,37 @@ class ClientProfile(models.Model):
 
     def __str__(self):
         return self.nickname or self.openid
+
+
+class AccountRestrictionLog(models.Model):
+    profile = models.ForeignKey(
+        ClientProfile,
+        on_delete=models.CASCADE,
+        related_name='account_restriction_logs',
+        verbose_name='账户',
+    )
+    from_status = models.CharField(max_length=20, choices=ClientProfile.ACCOUNT_STATUS_CHOICES, verbose_name='原状态')
+    to_status = models.CharField(max_length=20, choices=ClientProfile.ACCOUNT_STATUS_CHOICES, verbose_name='新状态')
+    suspended_until = models.DateTimeField(blank=True, null=True, verbose_name='暂停截止时间')
+    reason = models.CharField(max_length=500, blank=True, default='', verbose_name='操作原因')
+    operator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='account_restriction_logs',
+        verbose_name='操作管理员',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='操作时间')
+
+    class Meta:
+        db_table = 'account_restriction_logs'
+        verbose_name = '账户限制记录'
+        verbose_name_plural = '账户限制记录'
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f'{self.profile}：{self.get_from_status_display()} → {self.get_to_status_display()}'
 
 
 class ClientVipKookRoom(models.Model):
