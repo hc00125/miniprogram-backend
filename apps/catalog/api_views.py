@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
+from apps.accounts.access import account_restriction_payload
 from apps.players.models import Player, PlayerServiceListing
 
 from .models import Package, PackageImage, PackageSpec, PlayerOffer
@@ -122,8 +123,8 @@ def player_service_products(request, player_id):
         status=Player.STATUS_APPROVED,
         can_be_designated=True,
         is_publicly_visible=True,
-    ).select_related('player_type').first()
-    if not player:
+    ).select_related('player_type', 'user__client_profile').first()
+    if not player or (player.user and account_restriction_payload(player.user)):
         return Response({'detail': '陪玩师不存在或暂不接受指定'}, status=status.HTTP_404_NOT_FOUND)
 
     has_listing_records = PlayerServiceListing.objects.filter(player=player).exists()
@@ -152,8 +153,8 @@ def player_offers(request, player_id):
     player = Player.objects.filter(
         pk=player_id,
         status=Player.STATUS_APPROVED,
-    ).first()
-    if not player:
+    ).select_related('user__client_profile').first()
+    if not player or (player.user and account_restriction_payload(player.user)):
         return Response({'detail': '陪玩师不存在或未通过审核'}, status=status.HTTP_404_NOT_FOUND)
 
     offers = PlayerOffer.objects.available().filter(player_id=player.id)
