@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 
+from apps.accounts.access import account_restriction_payload
 from apps.common.money import money
 from apps.orders.models import Order, OrderItem, OrderStatusLog
 from apps.payments.models import VirtualProductBinding
@@ -18,7 +19,7 @@ def create_listing_order(validated_data, listing_id, user=None):
     listing = (
         PlayerServiceListing.objects
         .select_for_update()
-        .select_related('player__player_type', 'spec__package')
+        .select_related('player__player_type', 'player__user__client_profile', 'spec__package')
         .filter(pk=listing_id)
         .first()
     )
@@ -28,6 +29,8 @@ def create_listing_order(validated_data, listing_id, user=None):
         raise ValidationError({'detail': '陪玩师服务尚未审核通过或当前不可预约'})
 
     player = listing.player
+    if player.user and account_restriction_payload(player.user):
+        raise ValidationError({'detail': '该陪玩师账户当前不可预约，请重新选择'})
     if player.status != Player.STATUS_APPROVED or not player.can_be_designated:
         raise ValidationError({'detail': '该陪玩师当前暂不接受指定'})
     if not player.can_accept_orders:
