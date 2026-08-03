@@ -6,6 +6,7 @@ from apps.players.models import PlayerApplication
 from apps.players.serializers import PlayerApplicationSerializer, PlayerSerializer
 from apps.wallet.diamonds import DIAMONDS_PER_YUAN, yuan_to_diamonds
 
+from .access import refresh_expired_account_restriction
 from .models import ClientProfile
 from .vip import qmoney, vip_snapshot
 
@@ -16,14 +17,20 @@ class ClientProfileSerializer(serializers.ModelSerializer):
     vip = serializers.SerializerMethodField()
     wallet = serializers.SerializerMethodField()
     cumulative_consumption_diamonds = serializers.SerializerMethodField()
+    account_status_text = serializers.CharField(source='get_account_status_display', read_only=True)
 
     class Meta:
         model = ClientProfile
         fields = [
             'id', 'openid', 'nickname', 'nickname_customized', 'avatar_url', 'role', 'player_status',
+            'account_status', 'account_status_text', 'account_suspended_until', 'account_restriction_reason',
             'cumulative_consumption', 'cumulative_consumption_diamonds', 'vip', 'wallet',
             'created_at', 'application', 'player',
         ]
+
+    def to_representation(self, instance):
+        refresh_expired_account_restriction(instance)
+        return super().to_representation(instance)
 
     def get_cumulative_consumption_diamonds(self, obj):
         return yuan_to_diamonds(obj.cumulative_consumption)
