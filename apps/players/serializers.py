@@ -160,9 +160,16 @@ class PlayerApplicationCreateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_name(self, value):
-        # 提交阶段先占用昵称，避免同名申请进入审批队列；审批时还会再次校验。
+        # 提交阶段先占用昵称，但必须排除当前用户自己的正式陪玩与申请记录。
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        user_id = user.id if getattr(user, 'is_authenticated', False) else None
         try:
-            return validate_player_name_available(value, include_applications=True)
+            return validate_player_name_available(
+                value,
+                user_id=user_id,
+                include_applications=True,
+            )
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.messages[0]) from exc
 
