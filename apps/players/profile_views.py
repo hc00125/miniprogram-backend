@@ -1,10 +1,12 @@
 from django.conf import settings
 from django.db import transaction
 from django.db.models import Avg, Case, Count, Exists, ExpressionWrapper, F, FloatField, OuterRef, Q, Value, When
+from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
+from apps.accounts.models import ClientProfile
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.orders.models import Order
 
@@ -23,9 +25,19 @@ def public_list(request):
         order_players__player=OuterRef('pk'),
         status=Order.STATUS_IN_PROGRESS,
     )
+    now = timezone.now()
+    operational_account = (
+        Q(user__client_profile__isnull=True)
+        | Q(user__client_profile__account_status=ClientProfile.ACCOUNT_STATUS_ACTIVE)
+        | Q(
+            user__client_profile__account_status=ClientProfile.ACCOUNT_STATUS_SUSPENDED,
+            user__client_profile__account_suspended_until__lte=now,
+        )
+    )
     queryset = (
         Player.objects
         .filter(status=Player.STATUS_APPROVED, is_publicly_visible=True)
+        .filter(operational_account)
         .select_related(
             'player_type', 'minimum_designated_player_type',
             'user', 'user__client_profile',
