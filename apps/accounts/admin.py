@@ -9,8 +9,15 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from apps.orders.models import Order
+from apps.players.models import Player
 
-from .models import BossConsumptionLedger, ClientProfile, ClientVipKookRoom, VipTier
+from .models import (
+    AccountRestrictionLog,
+    BossConsumptionLedger,
+    ClientProfile,
+    ClientVipKookRoom,
+    VipTier,
+)
 from .vip import create_manual_consumption_adjustment
 
 
@@ -34,6 +41,34 @@ class BossConsumptionLedgerAdminForm(forms.ModelForm):
         if not reason:
             raise forms.ValidationError('人工调整必须填写原因')
         return reason
+
+
+class ClientProfileAdminForm(forms.ModelForm):
+    class Meta:
+        model = ClientProfile
+        fields = '__all__'
+
+    def clean(self):
+        cleaned = super().clean()
+        account_status = cleaned.get('account_status')
+        suspended_until = cleaned.get('account_suspended_until')
+        reason = (cleaned.get('account_restriction_reason') or '').strip()
+
+        if account_status == ClientProfile.ACCOUNT_STATUS_SUSPENDED:
+            if not suspended_until:
+                self.add_error('account_suspended_until', '暂停账户必须填写截止时间')
+            elif suspended_until <= timezone.now():
+                self.add_error('account_suspended_until', '暂停截止时间必须晚于当前时间')
+            if not reason:
+                self.add_error('account_restriction_reason', '暂停账户必须填写原因')
+        elif account_status == ClientProfile.ACCOUNT_STATUS_BANNED:
+            cleaned['account_suspended_until'] = None
+            if not reason:
+                self.add_error('account_restriction_reason', '永久封禁必须填写原因')
+        elif account_status == ClientProfile.ACCOUNT_STATUS_ACTIVE:
+            cleaned['account_suspended_until'] = None
+            cleaned['account_restriction_reason'] = ''
+        return cleaned
 
 
 @admin.register(VipTier)
@@ -134,17 +169,66 @@ class ClientVipKookRoomInline(admin.StackedInline):
         return False
 
 
+class AccountRestrictionLogInline(admin.TabularInline):
+    model = AccountRestrictionLog
+    extra = 0
+    can_delete = False
+    fields = ['from_status', 'to_status', 'suspended_until', 'reason', 'operator', 'created_at']
+    readonly_fields = fields
+    ordering = ['-created_at', '-id']
+    verbose_name = '账户限制记录'
+    verbose_name_plural = '账户限制历史（不可修改）'
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(AccountRestrictionLog)
+class AccountRestrictionLogAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'profile', 'from_status', 'to_status',
+        'suspended_until', 'reason', 'operator', 'created_at',
+    ]
+    list_filter = ['from_status', 'to_status', 'created_at']
+    search_fields = ['profile__nickname', 'profile__openid', 'reason', 'operator__username']
+    list_select_related = ['profile', 'operator']
+    ordering = ['-created_at', '-id']
+    date_hierarchy = 'created_at'
+    readonly_fields = [
+        'profile', 'from_status', 'to_status', 'suspended_until',
+        'reason', 'operator', 'created_at',
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(ClientProfile)
 class ClientProfileAdmin(admin.ModelAdmin):
-    inlines = [ClientVipKookRoomInline]
+    form = ClientProfileAdminForm
+    inlines = [ClientVipKookRoomInline, AccountRestrictionLogInline]
     list_display = [
-        'id', 'nickname', 'openid', 'vip_tier', 'cumulative_consumption',
-        'vip_kook_room_status', 'player_status', 'created_at',
+        'id', 'nickname', 'openid', 'account_status', 'account_suspended_until',
+        'vip_tier', 'cumulative_consumption', 'vip_kook_room_status',
+        'player_status', 'created_at',
     ]
     search_fields = ['nickname', 'openid', 'user__username', 'vip_kook_room__kook_room_number']
-    list_filter = ['vip_tier', 'player_status', 'created_at']
-    list_select_related = ['vip_tier', 'user']
-    readonly_fields = ['cumulative_consumption', 'vip_tier', 'vip_updated_at', 'created_at', 'updated_at']
+    list_filter = ['account_status', 'vip_tier', 'player_status', 'created_at']
+    list_select_related = ['vip_tier', 'user', 'account_restricted_by']
+    readonly_fields = [
+        'cumulative_consumption', 'vip_tier', 'vip_updated_at',
+        'account_restricted_at', 'account_restricted_by',
+        'created_at', 'updated_at',
+    ]
     actions = ['refresh_vip_display', 'ensure_client_wallets']
 
     @admin.display(description='专属KOOK房间')
@@ -168,6 +252,43 @@ class ClientProfileAdmin(admin.ModelAdmin):
             formset.save_m2m()
             return
         super().save_formset(request, form, formset, change)
+
+    def save_model(self, request, obj, form, change):
+        previous = None
+        if change and obj.pk:
+            previous = ClientProfile.objects.filter(pk=obj.pk).values(
+                'account_status', 'account_suspended_until', 'account_restriction_reason',
+            ).first()
+
+        account_changed = bool(previous) and any([
+            previous['account_status'] != obj.account_status,
+            previous['account_suspended_until'] != obj.account_suspended_until,
+            previous['account_restriction_reason'] != obj.account_restriction_reason,
+        ])
+        if account_changed:
+            obj.account_restricted_at = timezone.now()
+            obj.account_restricted_by = request.user
+
+        super().save_model(request, obj, form, change)
+
+        if account_changed:
+            AccountRestrictionLog.objects.create(
+                profile=obj,
+                from_status=previous['account_status'],
+                to_status=obj.account_status,
+                suspended_until=obj.account_suspended_until,
+                reason=obj.account_restriction_reason or (
+                    '管理员解除账户限制'
+                    if obj.account_status == ClientProfile.ACCOUNT_STATUS_ACTIVE
+                    else ''
+                ),
+                operator=request.user,
+            )
+            if obj.account_status != ClientProfile.ACCOUNT_STATUS_ACTIVE:
+                Player.objects.filter(user=obj.user, is_online=True).update(
+                    is_online=False,
+                    updated_at=timezone.now(),
+                )
 
     @admin.action(description='按当前累计消费重新计算VIP等级')
     def refresh_vip_display(self, request, queryset):
