@@ -107,6 +107,7 @@ def mark_withdrawals_paid_batch(
             raise ValidationError({'detail': '提现中余额不足，不能批量确认打款'})
 
     allocation_map = defaultdict(list)
+    earning_totals = defaultdict(lambda: Decimal('0.00'))
     allocations = list(
         WithdrawalAllocation.objects
         .select_related('earning')
@@ -119,10 +120,13 @@ def mark_withdrawals_paid_batch(
         for earning in PlayerEarning.objects.select_for_update().filter(id__in=earning_ids)
     }
     for allocation in allocations:
-        earning = earnings.get(allocation.earning_id)
-        if not earning or qmoney(earning.withdrawing_amount) < qmoney(allocation.amount):
-            raise ValidationError({'detail': '提现分配明细异常，不能批量确认打款'})
         allocation_map[allocation.withdrawal_id].append(allocation)
+        earning_totals[allocation.earning_id] += qmoney(allocation.amount)
+
+    for earning_id, total in earning_totals.items():
+        earning = earnings.get(earning_id)
+        if not earning or qmoney(earning.withdrawing_amount) < qmoney(total):
+            raise ValidationError({'detail': '提现分配明细异常，不能批量确认打款'})
 
     total_amount = qmoney(sum((qmoney(item.amount) for item in withdrawals), Decimal('0.00')))
     batch = WithdrawalPayoutBatch.objects.create(
