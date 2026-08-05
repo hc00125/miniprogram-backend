@@ -18,7 +18,7 @@ def create_listing_order(validated_data, listing_id, user=None):
     """Create a targeted order without making the shared package player-owned."""
     listing = (
         PlayerServiceListing.objects
-        .select_for_update()
+        .select_for_update(of=('self',))
         .select_related('player__player_type', 'player__user__client_profile', 'spec__package')
         .filter(pk=listing_id)
         .first()
