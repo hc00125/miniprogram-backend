@@ -1,0 +1,64 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  {{ media.css }}
+  <style>
+    .wallet-adjust-card { max-width: 760px; }
+    .wallet-adjust-help { margin: 0 0 20px; color: var(--body-quiet-color); line-height: 1.7; }
+    .wallet-adjust-card .form-row { padding: 14px 12px; }
+    .wallet-adjust-card .help { margin: 8px 0 0 170px; }
+    .wallet-adjust-card .errorlist { margin-left: 170px; }
+    .wallet-adjust-actions { margin-top: 18px; display: flex; gap: 12px; align-items: center; }
+  </style>
+{% endblock %}
+
+{% block extrahead %}
+  {{ block.super }}
+  {{ media.js }}
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">首页</a>
+  &rsaquo; <a href="{{ changelist_url }}">老板钱包</a>
+  &rsaquo; 手动调整用户钻石
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main" class="wallet-adjust-card">
+  <p class="wallet-adjust-help">
+    可搜索全部已注册老板，包括从未充值、消费且尚未创建钱包的用户。
+    首次调整时系统会自动创建钱包，并写入不可删除的钱包流水。
+  </p>
+
+  <form method="post" novalidate>
+    {% csrf_token %}
+    <fieldset class="module aligned">
+      {% if form.non_field_errors %}
+        {{ form.non_field_errors }}
+      {% endif %}
+
+      {% for field in form %}
+        <div class="form-row{% if field.errors %} errors{% endif %}">
+          {{ field.errors }}
+          <div>
+            {{ field.label_tag }}
+            {{ field }}
+            {% if field.help_text %}
+              <div class="help">{{ field.help_text }}</div>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </fieldset>
+
+    <div class="submit-row wallet-adjust-actions">
+      <input type="submit" value="确认调整" class="default">
+      <a href="{{ changelist_url }}">返回老板钱包</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
