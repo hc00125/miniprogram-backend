@@ -3,7 +3,6 @@
 
 {% block extrastyle %}
   {{ block.super }}
-  {{ media.css }}
   <style>
     .wallet-adjust-card { max-width: 760px; }
     .wallet-adjust-help { margin: 0 0 20px; color: var(--body-quiet-color); line-height: 1.7; }
@@ -16,7 +15,7 @@
 
 {% block extrahead %}
   {{ block.super }}
-  {{ media.js }}
+  {{ media }}
 {% endblock %}
 
 {% block breadcrumbs %}
