@@ -3,6 +3,7 @@ from django.contrib import admin, messages
 from django.contrib.admin.helpers import ActionForm
 from django.contrib.admin.widgets import AutocompleteSelect
 from django.core.exceptions import PermissionDenied, ValidationError as DjangoValidationError
+from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -137,7 +138,7 @@ class ClientWalletAdmin(admin.ModelAdmin):
                 )
             except (DjangoValidationError, DRFValidationError) as exc:
                 detail = getattr(exc, 'detail', None) or getattr(exc, 'messages', None) or str(exc)
-                form.add_error(None, detail)
+                form.add_error(None, str(detail))
             else:
                 after_diamonds = yuan_to_diamonds(entry.balance_after)
                 wallet_note = '，并已自动创建钱包' if existing_wallet is None else ''
@@ -147,8 +148,6 @@ class ClientWalletAdmin(admin.ModelAdmin):
                     f'余额：{before_diamonds} → {after_diamonds} 钻石。',
                     level=messages.SUCCESS,
                 )
-                from django.shortcuts import redirect
-
                 return redirect(reverse('admin:wallet_clientwallet_changelist'))
 
         context = {
