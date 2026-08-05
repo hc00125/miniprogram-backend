@@ -1,8 +1,13 @@
 from django import forms
 from django.contrib import admin, messages
 from django.contrib.admin.helpers import ActionForm
-from django.core.exceptions import ValidationError as DjangoValidationError
+from django.contrib.admin.widgets import AutocompleteSelect
+from django.core.exceptions import PermissionDenied, ValidationError as DjangoValidationError
+from django.template.response import TemplateResponse
+from django.urls import path, reverse
 from rest_framework.exceptions import ValidationError as DRFValidationError
+
+from apps.accounts.models import ClientProfile
 
 from .diamonds import diamonds_to_yuan, yuan_to_diamonds
 from .models import ClientWallet, ClientWalletLedger, RechargeOrder, RechargeProduct
@@ -17,9 +22,56 @@ class WalletAdjustActionForm(ActionForm):
     reason = forms.CharField(required=False, label='调整原因')
 
 
+class ManualWalletAdjustmentForm(forms.Form):
+    profile = forms.ModelChoiceField(
+        queryset=ClientProfile.objects.none(),
+        label='老板用户',
+        help_text='可搜索昵称、OpenID或后台用户名。没有钱包的用户会自动创建钱包。',
+    )
+    diamonds = forms.IntegerField(
+        label='调整钻石',
+        help_text='填写正整数增加余额，填写负整数扣减余额。',
+    )
+    reason = forms.CharField(
+        label='调整原因',
+        max_length=500,
+        widget=forms.Textarea(attrs={'rows': 4}),
+        help_text='必填，将写入老板钱包流水并记录操作管理员。',
+    )
+
+    def __init__(self, *args, admin_site=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['profile'].queryset = (
+            ClientProfile.objects.select_related('user').order_by('-created_at', '-id')
+        )
+        relation_field = ClientWallet._meta.get_field('profile')
+        self.fields['profile'].widget = AutocompleteSelect(
+            relation_field,
+            admin_site or admin.site,
+            attrs={'style': 'width: 36em;'},
+        )
+
+    def clean_diamonds(self):
+        value = self.cleaned_data['diamonds']
+        if value == 0:
+            raise forms.ValidationError('调整钻石不能为0')
+        try:
+            diamonds_to_yuan(abs(value))
+        except (DjangoValidationError, DRFValidationError) as exc:
+            raise forms.ValidationError('调整钻石必须是有效的非零整数') from exc
+        return value
+
+    def clean_reason(self):
+        value = (self.cleaned_data.get('reason') or '').strip()
+        if not value:
+            raise forms.ValidationError('必须填写调整原因')
+        return value
+
+
 @admin.register(ClientWallet)
 class ClientWalletAdmin(admin.ModelAdmin):
     action_form = WalletAdjustActionForm
+    change_list_template = 'admin/wallet/clientwallet/change_list.html'
     list_display = [
         'id', 'profile', 'available_diamonds', 'balance',
         'recharged_diamonds', 'spent_diamonds', 'updated_at',
@@ -40,9 +92,83 @@ class ClientWalletAdmin(admin.ModelAdmin):
     def spent_diamonds(self, obj):
         return yuan_to_diamonds(obj.spent_total)
 
-    # permissions=['change']：仅持有 change_clientwallet 权限的管理员可执行，
-    # 只读（view）权限的客服人员不能凭此动作增减余额。
-    @admin.action(description='手工调整可用钻石（需在上方填写整数钻石与原因）', permissions=['change'])
+    def changelist_view(self, request, extra_context=None):
+        extra_context = {
+            **(extra_context or {}),
+            'can_manual_adjust_wallet': self.has_change_permission(request),
+        }
+        return super().changelist_view(request, extra_context=extra_context)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                'manual-adjust/',
+                self.admin_site.admin_view(self.manual_adjust_view),
+                name='wallet_clientwallet_manual_adjust',
+            ),
+        ]
+        return custom_urls + urls
+
+    def manual_adjust_view(self, request):
+        if not self.has_change_permission(request):
+            raise PermissionDenied
+
+        form = ManualWalletAdjustmentForm(
+            request.POST or None,
+            admin_site=self.admin_site,
+        )
+        if request.method == 'POST' and form.is_valid():
+            profile = form.cleaned_data['profile']
+            diamond_value = form.cleaned_data['diamonds']
+            reason = form.cleaned_data['reason']
+            amount_yuan = diamonds_to_yuan(abs(diamond_value))
+            if diamond_value < 0:
+                amount_yuan = -amount_yuan
+
+            existing_wallet = ClientWallet.objects.filter(profile=profile).first()
+            before_diamonds = yuan_to_diamonds(existing_wallet.balance) if existing_wallet else 0
+            try:
+                entry = create_manual_wallet_adjustment(
+                    profile=profile,
+                    amount=amount_yuan,
+                    reason=f'{reason}（调整钻石 {diamond_value:+d}）',
+                    operator=request.user,
+                )
+            except (DjangoValidationError, DRFValidationError) as exc:
+                detail = getattr(exc, 'detail', None) or getattr(exc, 'messages', None) or str(exc)
+                form.add_error(None, detail)
+            else:
+                after_diamonds = yuan_to_diamonds(entry.balance_after)
+                wallet_note = '，并已自动创建钱包' if existing_wallet is None else ''
+                self.message_user(
+                    request,
+                    f'已为“{profile}”调整 {diamond_value:+d} 钻石{wallet_note}。'
+                    f'余额：{before_diamonds} → {after_diamonds} 钻石。',
+                    level=messages.SUCCESS,
+                )
+                from django.shortcuts import redirect
+
+                return redirect(reverse('admin:wallet_clientwallet_changelist'))
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': '手动调整用户钻石',
+            'opts': self.model._meta,
+            'form': form,
+            'media': self.media + form.media,
+            'changelist_url': reverse('admin:wallet_clientwallet_changelist'),
+        }
+        request.current_app = self.admin_site.name
+        return TemplateResponse(
+            request,
+            'admin/wallet/clientwallet/manual_adjust.html',
+            context,
+        )
+
+    # 现有钱包仍支持在列表中批量调整；未创建钱包的用户使用右上角
+    # “手动调整用户钻石”入口，系统会自动创建钱包。
+    @admin.action(description='批量调整已存在钱包（需在上方填写钻石与原因）', permissions=['change'])
     def manual_adjust(self, request, queryset):
         diamonds = (request.POST.get('diamonds') or '').strip()
         reason = (request.POST.get('reason') or '').strip()
