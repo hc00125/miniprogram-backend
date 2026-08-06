@@ -9,6 +9,7 @@ from . import (
     catalog_navigation_views,
     designation_views,
     listing_order_views,
+    matching_views,
     payment_views,
     rating_views,
 )
@@ -26,6 +27,7 @@ urlpatterns = [
     path('order/<str:order_no>/renew', require_operational(boss_views.create_renewal)),
     path('order/<str:order_no>/designations', require_operational(designation_views.designations)),
     path('order/<str:order_no>/designation/<int:designation_id>/release', designation_views.release),
+    path('order/<str:order_no>/matching/continue', matching_views.continue_matching),
     path('order/<str:order_no>/replacement', boss_replacement_views.detail),
     path('order/<str:order_no>/replacement/public', boss_replacement_views.publish_public),
     path('order/<str:order_no>/replacement/reassign', boss_replacement_views.reassign),
