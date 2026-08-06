@@ -8,7 +8,7 @@ class OrdersConfig(AppConfig):
 
     def ready(self):
         # 独立模型必须在应用启动时注册，供迁移、API 和运营后台共同使用。
-        from . import cancellation_models, payment_window_models  # noqa: F401
+        from . import cancellation_models, matching_models, payment_window_models  # noqa: F401
 
         # 兼容既有指定邀请流程：create_designations 会在运行时读取模块级校验函数。
         from . import designations
@@ -24,7 +24,7 @@ class OrdersConfig(AppConfig):
         batch_views.create_cart_orders = create_cart_orders
 
         # 订单信号分文件加载。
-        from . import cancel_signals, payment_window_signals, room_entry_requeue, signals  # noqa: F401
+        from . import cancel_signals, matching, payment_window_signals, room_entry_requeue, signals  # noqa: F401
 
         # 已付款补位、主动取消处罚与普通抢单统一走同一套入口。
         from rest_framework.exceptions import ValidationError
@@ -43,9 +43,15 @@ class OrdersConfig(AppConfig):
         original_expire_designations = designations.expire_due_designations
 
         def unresolved_replacement(order):
-            return cancellation_models.OrderReplacementState.objects.filter(
+            queryset = cancellation_models.OrderReplacementState.objects.filter(
                 order=order,
-            ).exclude(status=cancellation_models.OrderReplacementState.STATUS_RESOLVED).first()
+            ).exclude(status=cancellation_models.OrderReplacementState.STATUS_RESOLVED)
+            # 付款前的普通退出只是继续匹配，不属于“剩余服务待处理”。
+            queryset = queryset.exclude(
+                mode=cancellation_models.OrderReplacementState.MODE_PUBLIC,
+                order__paid=False,
+            )
+            return queryset.first()
 
         def finalize_lineup_if_full(order, operator=None, reason='接单人数已满，等待老板付款'):
             result = room_entry_requeue.finalize_lineup_with_paid_replacement(
