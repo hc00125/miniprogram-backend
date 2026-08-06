@@ -136,7 +136,7 @@ class AutomaticBalanceRefundTests(TestCase):
             ClientWalletLedger.objects.filter(reference_id=refund.refund_no).exists()
         )
 
-    def test_direct_pending_balance_refund_is_caught_by_fallback_signal(self):
+    def test_direct_pending_record_stays_pending_until_explicit_settlement(self):
         refund = Refund.objects.create(
             refund_no='DIRECT_BAL_REF_001',
             payment=self.payment,
@@ -146,6 +146,12 @@ class AutomaticBalanceRefundTests(TestCase):
             status=Refund.STATUS_PENDING,
         )
 
+        refund.refresh_from_db()
+        self.wallet.refresh_from_db()
+        self.assertEqual(refund.status, Refund.STATUS_PENDING)
+        self.assertEqual(self.wallet.balance, Decimal('70.00'))
+
+        settle_balance_refund(refund.pk)
         refund.refresh_from_db()
         self.wallet.refresh_from_db()
         self.assertEqual(refund.status, Refund.STATUS_SUCCEEDED)
