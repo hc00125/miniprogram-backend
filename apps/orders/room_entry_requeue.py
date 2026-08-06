@@ -8,6 +8,7 @@ from django.utils import timezone
 from apps.payments.models import Payment
 from apps.players.models import Player
 
+from .cancellation_models import OrderReplacementState
 from .models import Order, OrderPlayer, OrderStatusLog
 
 
@@ -92,22 +93,35 @@ def start_room_entry_after_payment(sender, instance, **kwargs):
 
 @receiver(post_save, sender=Order, dispatch_uid='keep_paid_replacement_order_ready')
 def keep_paid_replacement_order_ready(sender, instance, **kwargs):
-    if (
+    if not (
         instance.order_type == Order.ORDER_TYPE_NORMAL
         and instance.fulfillment_mode == Order.FULFILLMENT_MODE_PUBLIC
         and instance.paid
-        and instance.status == Order.STATUS_PENDING_PAYMENT
     ):
-        updated = Order.objects.filter(pk=instance.pk, paid=True, status=Order.STATUS_PENDING_PAYMENT).update(
-            status=Order.STATUS_READY_TO_START
+        return
+
+    should_restore = instance.status == Order.STATUS_PENDING_PAYMENT
+    if instance.status == Order.STATUS_WAITING:
+        should_restore = OrderReplacementState.objects.filter(
+            order_id=instance.pk,
+            mode=OrderReplacementState.MODE_PUBLIC,
+            status=OrderReplacementState.STATUS_OPEN,
+        ).exists()
+    if not should_restore:
+        return
+
+    updated = Order.objects.filter(
+        pk=instance.pk,
+        paid=True,
+        status=instance.status,
+    ).update(status=Order.STATUS_READY_TO_START)
+    if updated:
+        OrderStatusLog.objects.create(
+            order=instance,
+            from_status=instance.status,
+            to_status=Order.STATUS_READY_TO_START,
+            reason='已付款订单进入紧急补位，保留待开打状态且无需重复支付',
         )
-        if updated:
-            OrderStatusLog.objects.create(
-                order=instance,
-                from_status=Order.STATUS_PENDING_PAYMENT,
-                to_status=Order.STATUS_READY_TO_START,
-                reason='已付款补位单人数补齐，无需老板重复支付',
-            )
 
 
 def _is_requeueable(order):
@@ -120,6 +134,34 @@ def _is_requeueable(order):
     )
 
 
+def _open_room_timeout_replacement(order, relation, player_name, now):
+    remaining_count = order.order_players.exclude(pk=relation.pk).count()
+    missing_slots = max(1, int(order.required_players or 0) - remaining_count)
+    player_type = getattr(relation.player, 'player_type', None)
+    state, _ = OrderReplacementState.objects.select_for_update().get_or_create(
+        order=order,
+        defaults={
+            'mode': OrderReplacementState.MODE_PUBLIC,
+            'status': OrderReplacementState.STATUS_OPEN,
+            'missing_slots': missing_slots,
+            'resume_status': Order.STATUS_READY_TO_START,
+        },
+    )
+    state.mode = OrderReplacementState.MODE_PUBLIC
+    state.status = OrderReplacementState.STATUS_OPEN
+    state.missing_slots = missing_slots
+    state.resume_status = Order.STATUS_READY_TO_START
+    state.remaining_minutes = max(1, int(float(order.booked_hours or 1) * 60))
+    state.cancelled_player_name = player_name
+    state.required_player_type_id = getattr(player_type, 'id', None)
+    state.required_player_type_name = getattr(player_type, 'name', '') or ''
+    state.latest_cancellation = None
+    state.current_designation = None
+    state.resolved_at = None
+    state.save()
+    return state
+
+
 @transaction.atomic
 def expire_room_entry_relation(relation_id, now=None):
     """Treat a missed room-entry deadline as rejection and reopen one public slot."""
@@ -127,7 +169,7 @@ def expire_room_entry_relation(relation_id, now=None):
     relation = (
         OrderPlayer.objects
         .select_for_update(of=('self',))
-        .select_related('order', 'player__user')
+        .select_related('order', 'player__user', 'player__player_type')
         .filter(pk=relation_id)
         .first()
     )
@@ -146,18 +188,19 @@ def expire_room_entry_relation(relation_id, now=None):
     player_name = player.name
     operator = player.user if getattr(player, 'user_id', None) else None
 
+    _open_room_timeout_replacement(order, relation, player_name, now)
     relation.delete()
     player.total_orders = max(0, int(player.total_orders or 0) - 1)
     player.save(update_fields=['total_orders'])
 
-    order.status = Order.STATUS_WAITING
+    order.status = Order.STATUS_READY_TO_START
     order.save(update_fields=['status'])
     OrderStatusLog.objects.create(
         order=order,
         from_status=old_status,
-        to_status=Order.STATUS_WAITING,
+        to_status=Order.STATUS_READY_TO_START,
         operator=operator,
-        reason=f'{ROOM_ENTRY_TIMEOUT_REASON_PREFIX}：{player_name} 未在10分钟内确认进入，视为拒单，名额已转入公共抢单大厅',
+        reason=f'{ROOM_ENTRY_TIMEOUT_REASON_PREFIX}：{player_name} 未在10分钟内确认进入，视为拒单；已付款订单保持待开打并进入紧急补位',
     )
     return True
 
