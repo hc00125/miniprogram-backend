@@ -23,13 +23,11 @@ def request_client_platform(request):
     explicit = str(request.headers.get('X-Client-Platform') or '').strip().lower()
     if explicit in {'ios', 'iphone', 'ipad', 'ipod'}:
         return 'ios'
-    if explicit == 'android':
-        return 'android'
 
     user_agent = str(request.headers.get('User-Agent') or '').lower()
     if any(token in user_agent for token in ('iphone', 'ipad', 'ipod')):
         return 'ios'
-    if 'android' in user_agent:
+    if explicit == 'android' or 'android' in user_agent:
         return 'android'
     return explicit or 'other'
 
