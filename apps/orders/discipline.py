@@ -8,6 +8,7 @@ from apps.earnings.models import PlayerWallet
 from apps.orders.models import Order, OrderPlayer
 
 from .cancellation_models import PlayerCancellationRecord, PlayerDiscipline
+from .matching import relation_can_exit_without_penalty
 
 
 FISH_PER_RMB = Decimal('10.00')
@@ -44,30 +45,48 @@ def booked_hours(order):
 def cancellation_preview(order, relation, player, now=None):
     now = now or timezone.now()
     stage = cancellation_stage(order, relation)
+    no_fault = relation_can_exit_without_penalty(order, relation, now)
+
     records = PlayerCancellationRecord.objects.filter(
         player=player,
         stage=stage,
         created_at__gte=period_start(stage, now),
     )
-    use_free_chance = not records.filter(used_free_chance=True).exists()
-    charged_count = records.filter(used_free_chance=False, fine_rmb__gt=0).count()
-    fine_rmb = Decimal('0.00') if use_free_chance else FINE_LADDER_RMB[min(charged_count, 2)]
+    if no_fault:
+        use_free_chance = False
+        fine_rmb = Decimal('0.00')
+    else:
+        use_free_chance = not records.filter(used_free_chance=True).exists()
+        charged_count = records.filter(used_free_chance=False, fine_rmb__gt=0).count()
+        fine_rmb = Decimal('0.00') if use_free_chance else FINE_LADDER_RMB[min(charged_count, 2)]
+
     hours = booked_hours(order)
     replacement_mode = (
         PlayerCancellationRecord.REPLACEMENT_TARGETED
         if relation.is_designated or order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
         else PlayerCancellationRecord.REPLACEMENT_PUBLIC
     )
+    if no_fault:
+        replacement_text = '匹配等待已超过15分钟，本次无责退出，订单继续公开匹配'
+    else:
+        replacement_text = (
+            '重新进入抢单大厅'
+            if replacement_mode == PlayerCancellationRecord.REPLACEMENT_PUBLIC
+            else '等待老板重新指定或转公开补位'
+        )
+
     return {
         'stage': stage,
         'stage_text': '进队前取消' if stage == PlayerCancellationRecord.STAGE_BEFORE_JOIN else '进队后/服务中取消',
+        'no_fault': no_fault,
+        'no_fault_reason': '接单后等待组队超过15分钟' if no_fault else '',
         'used_free_chance': use_free_chance,
         'fine_rmb': fine_rmb,
         'fine_fish': fine_rmb * FISH_PER_RMB,
         'booked_hours': hours,
-        'suspended_until': now + timedelta(hours=float(hours)),
+        'suspended_until': now if no_fault else now + timedelta(hours=float(hours)),
         'replacement_mode': replacement_mode,
-        'replacement_text': '重新进入抢单大厅' if replacement_mode == PlayerCancellationRecord.REPLACEMENT_PUBLIC else '等待老板重新指定或转公开补位',
+        'replacement_text': replacement_text,
     }
 
 
