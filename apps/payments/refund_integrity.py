@@ -4,8 +4,6 @@ from functools import wraps
 
 from django.db import transaction
 from django.db.models import Sum
-from django.db.models.signals import post_save
-from django.dispatch import receiver
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -64,11 +62,11 @@ def _settle_balance_refund_side_effects(refund, operator=None):
 def settle_balance_refund(refund_or_id, operator=None):
     """Immediately return a balance-channel refund to the boss wallet.
 
-    The wallet ledger uses ``refund_no`` as a unique reference, so retries,
-    repeated signals and concurrent calls can never credit the same refund
-    twice.  Customer funds and the refund/payment statuses are committed in
-    one database transaction.  VIP and player-earning reversals are idempotent
-    follow-up work and cannot block the customer refund.
+    The wallet ledger uses ``refund_no`` as a unique reference, so retries and
+    concurrent calls can never credit the same refund twice. Customer funds and
+    the refund/payment statuses are committed in one database transaction.
+    VIP and player-earning reversals are idempotent follow-up work and cannot
+    block the customer refund.
     """
     refund_id = getattr(refund_or_id, 'pk', refund_or_id)
     with transaction.atomic():
@@ -93,9 +91,9 @@ def settle_balance_refund(refund_or_id, operator=None):
         if not profile:
             raise ValidationError({'detail': '余额退款找不到对应老板钱包账户'})
 
-        # Do not emit post_save recursively.  The explicit wallet write below
-        # is the source of truth; the old signal remains only as a compatibility
-        # fallback for manually-created succeeded records.
+        # Do not emit post_save recursively. The explicit wallet write below is
+        # the source of truth. 手工直接创建 pending Refund 仍保持待处理；只有统一
+        # 退款服务、后台动作和对账命令会调用本函数自动到账。
         if refund.status != Refund.STATUS_SUCCEEDED:
             payload = refund.notify_payload if isinstance(refund.notify_payload, dict) else {}
             payload = {
@@ -184,32 +182,10 @@ def create_refund(payment_no, amount, reason='', operator=None):
         )
 
         if payment.channel == BALANCE_CHANNEL:
-            # This is nested in the same outer transaction.  A wallet failure
-            # therefore rolls back the new refund record and prevents the order
-            # cancellation caller from reporting a false successful refund.
+            # Nested in the same outer transaction. A wallet failure rolls back
+            # the new refund record and prevents a false successful cancellation.
             refund = settle_balance_refund(refund.pk, operator=operator)
         return refund
-
-
-@receiver(post_save, sender=Refund, dispatch_uid='auto_settle_balance_refund')
-def auto_settle_balance_refund(sender, instance, raw=False, **kwargs):
-    """Fallback for admin/scripts that create Refund rows directly."""
-    if raw or instance.status not in SETTLEABLE_REFUND_STATUSES:
-        return
-    try:
-        payment = instance.payment
-    except Payment.DoesNotExist:
-        return
-    if payment.channel != BALANCE_CHANNEL:
-        return
-    try:
-        settle_balance_refund(instance.pk, operator=instance.created_by)
-    except Exception:
-        # Keep the row visible for reconciliation instead of hiding the problem.
-        logger.exception(
-            '[余额退款] 自动入账失败，退款保留待处理以便对账 refund_no=%s',
-            instance.refund_no,
-        )
 
 
 def install_refund_service_patch():
