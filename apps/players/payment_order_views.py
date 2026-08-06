@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.orders.models import Order, OrderPlayer, OrderStatusLog
 from apps.orders.payment_deadlines import expire_due_unpaid_order, payment_deadline_payload
+from apps.orders.replacements import replacement_payload
 from apps.orders.room_entry_requeue import (
     ROOM_ENTRY_TIMEOUT_REASON_PREFIX,
     expire_room_entry_relation,
@@ -22,7 +23,7 @@ ROOM_TIMEOUT_PAYLOAD = {
 @api_view(['GET'])
 @permission_classes([IsApprovedPlayer])
 def order_detail(request, order_no):
-    """Return player order detail with the boss payment reservation window."""
+    """Return player order detail with payment and urgent replacement state."""
     player = current_player(request.user)
     order = (
         Order.objects
@@ -66,6 +67,7 @@ def order_detail(request, order_no):
 
     data = PlayerOrderDetailSerializer(order).data
     data.update(payment_deadline_payload(order))
+    data['replacement'] = replacement_payload(order)
     data['cancel_reason'] = order.cancel_reason or ''
     data['canceled_at'] = order.canceled_at.isoformat() if order.canceled_at else None
     return Response(data)
