@@ -41,6 +41,78 @@ def ensure_matching_window(order, now=None):
     return window
 
 
+def matching_visibility(order):
+    """Explain whether a public order is actually visible to eligible online players."""
+    from apps.catalog.models import PlayerType
+    from apps.players.escort_qualification import (
+        escort_order_block_reason,
+        order_requires_escort_qualification,
+    )
+    from apps.players.models import Player
+
+    from .designations import pending_designation_count
+    from .discipline import discipline_block_reason
+    from .services import can_player_grab_order, remaining_type_slots
+
+    current_players = order.order_players.count()
+    pending_designations = pending_designation_count(order)
+    type_slots = remaining_type_slots(order)
+    required_types = []
+    for item in type_slots:
+        player_type = PlayerType.objects.filter(id=item.get('type_id')).first()
+        if not player_type:
+            continue
+        required_types.append({
+            'id': player_type.id,
+            'name': player_type.name,
+            'priority': int(player_type.priority or 0),
+            'count': int(item.get('count') or 0),
+        })
+    required_types.sort(key=lambda item: item['priority'])
+    type_slot_count = sum(item['count'] for item in required_types)
+    public_slots = max(
+        0,
+        int(order.required_players or 0) - current_players - pending_designations - type_slot_count,
+    )
+
+    online_players = list(
+        Player.objects.filter(
+            is_online=True,
+            status=Player.STATUS_APPROVED,
+        ).select_related('player_type')
+    )
+    eligible_count = 0
+    for player in online_players:
+        if not player.can_accept_orders or discipline_block_reason(player):
+            continue
+        if escort_order_block_reason(order, player):
+            continue
+        if can_player_grab_order(order, player):
+            eligible_count += 1
+
+    if eligible_count:
+        visibility_status = 'visible'
+        visibility_message = f'订单已发布，当前有 {eligible_count} 位在线陪玩符合条件并可看到'
+    elif not online_players:
+        visibility_status = 'no_online_players'
+        visibility_message = '订单已发布，但当前没有在线陪玩'
+    else:
+        visibility_status = 'no_eligible_players'
+        visibility_message = '订单已发布，但当前在线陪玩均不符合剩余名额要求或已在本单阵容中'
+
+    return {
+        'public_slots': public_slots,
+        'pending_designation_slots': pending_designations,
+        'typed_slots': type_slot_count,
+        'required_player_types': required_types,
+        'requires_escort_qualification': order_requires_escort_qualification(order),
+        'online_player_count': len(online_players),
+        'eligible_online_player_count': eligible_count,
+        'visibility_status': visibility_status,
+        'visibility_message': visibility_message,
+    }
+
+
 def matching_payload(order, now=None):
     if not is_public_unpaid_matching(order):
         return {'active': False}
@@ -62,6 +134,7 @@ def matching_payload(order, now=None):
         'current_players': current_players,
         'required_players': order.required_players,
         'missing_slots': max(0, int(order.required_players or 0) - current_players),
+        **matching_visibility(order),
     }
 
 
