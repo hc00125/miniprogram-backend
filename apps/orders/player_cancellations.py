@@ -56,6 +56,13 @@ def _set_replacement_state(order, record, relation, now):
     return state
 
 
+def _paid_public_replacement_status(order, previous_status):
+    """A paid public order must never fall back into the unpaid matching state."""
+    if previous_status == Order.STATUS_IN_PROGRESS or order.timer_started_at:
+        return Order.STATUS_IN_PROGRESS
+    return Order.STATUS_READY_TO_START
+
+
 def get_cancel_preview(order, player):
     relation = OrderPlayer.objects.filter(order=order, player=player).select_related('player__player_type').first()
     if not relation:
@@ -100,7 +107,6 @@ def cancel_player_order(order_no, player, reason, operator=None):
     if not relation:
         raise ValidationError({'detail': '您当前不在该订单阵容中'})
 
-    # 以陪玩师维度加锁，避免同一人并发取消多单时重复占用免罚机会。
     PlayerDiscipline.objects.get_or_create(player=player)
     discipline = PlayerDiscipline.objects.select_for_update().get(player=player)
 
@@ -151,7 +157,6 @@ def cancel_player_order(order_no, player, reason, operator=None):
         and order.fulfillment_mode == Order.FULFILLMENT_MODE_PUBLIC
         and previous_status in {Order.STATUS_WAITING, Order.STATUS_PENDING_PAYMENT}
     )
-    # 普通公开名额在付款前退出，只需恢复普通匹配；具体指定名额仍需老板重新选择。
     needs_replacement_state = not unpaid_public_matching or bool(relation.is_designated)
     state = _set_replacement_state(order, record, relation, now) if needs_replacement_state else None
     if not needs_replacement_state:
@@ -192,8 +197,12 @@ def cancel_player_order(order_no, player, reason, operator=None):
             from apps.payments.services import close_unpaid_payments_for_order
             close_unpaid_payments_for_order(order, reason='陪玩取消接单，订单恢复公开匹配')
     elif state.mode == OrderReplacementState.MODE_PUBLIC:
-        if previous_status != Order.STATUS_IN_PROGRESS:
-            order.status = Order.STATUS_WAITING
+        if order.paid:
+            next_status = _paid_public_replacement_status(order, previous_status)
+        else:
+            next_status = Order.STATUS_WAITING
+        if order.status != next_status:
+            order.status = next_status
             update_fields.append('status')
         if previous_status == Order.STATUS_PENDING_PAYMENT and not order.paid:
             from apps.payments.services import close_unpaid_payments_for_order
