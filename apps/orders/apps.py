@@ -29,10 +29,21 @@ class OrdersConfig(AppConfig):
         # 已付款补位、主动取消处罚与普通抢单统一走同一套入口。
         from rest_framework.exceptions import ValidationError
 
-        from . import replacements, services
+        from . import player_cancellations, replacements, services
         from .discipline import can_player_grab_with_discipline
         from .models import Order
+        from .replacement_fixes import (
+            can_player_take_replacement as fixed_can_player_take_replacement,
+            open_public_replacement as fixed_open_public_replacement,
+            replacement_payload as fixed_replacement_payload,
+        )
         from apps.players import designation_views, permission_views, views as player_views
+
+        # 修正旧实现：付款前不属于紧急补位；已付款补位按最低等级而不是类型ID硬相等。
+        replacements.open_public_replacement = fixed_open_public_replacement
+        replacements.can_player_take_replacement = fixed_can_player_take_replacement
+        replacements.replacement_payload = fixed_replacement_payload
+        player_cancellations.replacement_payload = fixed_replacement_payload
 
         original_finalize = designations.finalize_lineup_if_full
         original_can_grab = services.can_player_grab_order
