@@ -8,6 +8,7 @@ from apps.catalog.models import Package, PlayerType
 from apps.payments.models import Payment
 from apps.players.models import Player
 
+from .cancellation_models import OrderReplacementState
 from .models import Order, OrderPlayer, OrderStatusLog
 from .room_entry_requeue import expire_due_room_entries, start_room_entry_window
 from .services import can_player_grab_order, create_order, grab_order
@@ -86,7 +87,7 @@ class RoomEntryRequeueTests(TestCase):
         self.assertIsNotNone(relation.room_join_deadline)
         self.assertEqual(relation.room_join_deadline, paid_at + timedelta(minutes=10))
 
-    def test_timeout_releases_player_and_reopens_paid_order(self):
+    def test_timeout_releases_player_and_opens_paid_urgent_replacement(self):
         order = self.create_paid_ready_order()
         relation = order.order_players.get(player=self.first_player)
         OrderPlayer.objects.filter(pk=relation.pk).update(
@@ -98,8 +99,11 @@ class RoomEntryRequeueTests(TestCase):
         self.assertEqual(updated, 1)
         order.refresh_from_db()
         self.first_player.refresh_from_db()
+        replacement_state = OrderReplacementState.objects.get(order=order)
         self.assertTrue(order.paid)
-        self.assertEqual(order.status, Order.STATUS_WAITING)
+        self.assertEqual(order.status, Order.STATUS_READY_TO_START)
+        self.assertEqual(replacement_state.status, OrderReplacementState.STATUS_OPEN)
+        self.assertEqual(replacement_state.missing_slots, 1)
         self.assertFalse(order.order_players.filter(player=self.first_player).exists())
         self.assertEqual(self.first_player.total_orders, 0)
         self.assertFalse(can_player_grab_order(order, self.first_player))
@@ -122,7 +126,9 @@ class RoomEntryRequeueTests(TestCase):
 
         result.refresh_from_db()
         replacement_relation = result.order_players.get(player=self.replacement)
+        replacement_state = OrderReplacementState.objects.get(order=result)
         self.assertTrue(result.paid)
         self.assertEqual(result.status, Order.STATUS_READY_TO_START)
+        self.assertEqual(replacement_state.status, OrderReplacementState.STATUS_RESOLVED)
         self.assertIsNotNone(replacement_relation.room_join_deadline)
         self.assertEqual(replacement_relation.room_join_status, OrderPlayer.ROOM_ENTRY_PENDING)
