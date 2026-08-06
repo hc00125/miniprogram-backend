@@ -50,12 +50,13 @@ class PlayerCancellationFlowTests(TestCase):
         target_player=None,
         booked_hours=2,
         designated=False,
+        required_players=1,
     ):
         order = Order.objects.create(
             order_no=order_no,
             boss_wechat='boss-test',
             package=self.package,
-            required_players=1,
+            required_players=required_players,
             booked_hours=booked_hours,
             total_price_per_hour=25,
             total_amount=25 * booked_hours,
@@ -72,7 +73,7 @@ class PlayerCancellationFlowTests(TestCase):
         )
         return order
 
-    def test_first_pre_join_cancel_is_free_and_reopens_public_slot(self):
+    def test_first_pre_join_cancel_is_free_and_reopens_paid_public_slot(self):
         order = self.make_order('CANCELTEST000000001')
 
         result = cancel_player_order(order.order_no, self.player, '临时身体不适')
@@ -85,12 +86,40 @@ class PlayerCancellationFlowTests(TestCase):
 
         self.assertTrue(result['used_free_chance'])
         self.assertEqual(record.fine_rmb, Decimal('0.00'))
-        self.assertEqual(order.status, Order.STATUS_WAITING)
+        self.assertEqual(order.status, Order.STATUS_READY_TO_START)
         self.assertEqual(replacement.mode, OrderReplacementState.MODE_PUBLIC)
         self.assertEqual(replacement.missing_slots, 1)
         self.assertFalse(OrderPlayer.objects.filter(order=order, player=self.player).exists())
         self.assertFalse(self.player.is_online)
         self.assertGreater(discipline.suspended_until, timezone.now() + timedelta(hours=1, minutes=50))
+
+    def test_paid_two_player_order_keeps_remaining_player_and_ready_status(self):
+        order = self.make_order(
+            'CANCELTEST000000006',
+            required_players=2,
+            status=Order.STATUS_READY_TO_START,
+            paid=True,
+        )
+        leaving_player = Player.objects.create(
+            name='测试打手C',
+            player_type=self.player_type,
+            is_online=True,
+            status=Player.STATUS_APPROVED,
+        )
+        OrderPlayer.objects.create(order=order, player=leaving_player)
+
+        cancel_player_order(order.order_no, leaving_player, '付款后临时退出')
+
+        order.refresh_from_db()
+        replacement = OrderReplacementState.objects.get(order=order)
+        self.assertEqual(order.status, Order.STATUS_READY_TO_START)
+        self.assertTrue(order.paid)
+        self.assertEqual(order.order_players.count(), 1)
+        self.assertTrue(order.order_players.filter(player=self.player).exists())
+        self.assertFalse(order.order_players.filter(player=leaving_player).exists())
+        self.assertEqual(replacement.status, OrderReplacementState.STATUS_OPEN)
+        self.assertEqual(replacement.missing_slots, 1)
+        self.assertEqual(replacement.resume_status, Order.STATUS_READY_TO_START)
 
     def test_second_pre_join_cancel_same_day_creates_twenty_yuan_debt(self):
         first = self.make_order('CANCELTEST000000002')
