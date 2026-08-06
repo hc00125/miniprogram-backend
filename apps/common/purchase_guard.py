@@ -1,3 +1,5 @@
+import os
+
 from django.conf import settings
 from rest_framework.exceptions import APIException
 from rest_framework.permissions import BasePermission
@@ -32,8 +34,15 @@ def request_client_platform(request):
     return explicit or 'other'
 
 
+def ios_purchase_enabled():
+    configured = getattr(settings, 'IOS_PURCHASE_ENABLED', None)
+    if configured is not None:
+        return bool(configured)
+    return os.environ.get('IOS_PURCHASE_ENABLED', 'false').lower() in {'1', 'true', 'yes', 'on'}
+
+
 def ios_purchase_disabled(request):
-    return not settings.IOS_PURCHASE_ENABLED and request_client_platform(request) == 'ios'
+    return not ios_purchase_enabled() and request_client_platform(request) == 'ios'
 
 
 class IsPurchaseAvailable(BasePermission):
