@@ -47,6 +47,17 @@ class IOSPurchaseGuardTests(TestCase):
         self.assertEqual(response.status_code, 403, response.data)
         self.assertEqual(str(response.data.get('code')), 'IOS_PURCHASE_DISABLED')
 
+    def test_iphone_user_agent_overrides_android_header(self):
+        response = self.client.post(
+            '/api/pay/wechat/virtual/create',
+            {},
+            format='json',
+            HTTP_X_CLIENT_PLATFORM='android',
+            HTTP_USER_AGENT='Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) MicroMessenger',
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(str(response.data.get('code')), 'IOS_PURCHASE_DISABLED')
+
     def test_ios_can_still_read_existing_orders(self):
         response = self.client.get(
             '/api/boss/orders/me',
