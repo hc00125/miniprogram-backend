@@ -21,6 +21,7 @@ urlpatterns = [
     path('apply/audio', require_operational(views.upload_application_audio)),
     path('apply/status', views.apply_status),
     path('available-orders', permission_views.available_orders),
+    path('available-orders-summary', permission_views.available_orders_summary),
     path('designation-invitations', designation_views.invitations),
     path('order/<str:order_no>/designation/accept', require_operational(designation_views.accept)),
     path('order/<str:order_no>/designation/decline', designation_views.decline),
