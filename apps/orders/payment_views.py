@@ -8,9 +8,10 @@ from apps.payments.models import Payment
 from apps.payments.virtualpay import VIRTUAL_CHANNEL, VirtualPaymentError, query_virtual_payment
 
 from .boss_views import can_access_order, forbidden_response, get_order_or_response
+from .matching import matching_payload
 from .models import Order
 from .payment_deadlines import expire_due_unpaid_order, payment_deadline_payload
-from .replacements import replacement_payload
+from .replacement_fixes import replacement_payload
 from .serializers import BossOrderDetailSerializer
 
 
@@ -78,6 +79,7 @@ def order_detail(request, order_no):
     data = BossOrderDetailSerializer(order).data
     data.update(payment_deadline_payload(order))
     data['replacement'] = replacement_payload(order)
+    data['matching'] = matching_payload(order)
     data['cancel_reason'] = order.cancel_reason or ''
     data['canceled_at'] = order.canceled_at.isoformat() if order.canceled_at else None
     return Response(data)
