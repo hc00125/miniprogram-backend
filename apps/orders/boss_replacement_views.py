@@ -4,10 +4,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .boss_views import can_access_order, forbidden_response, get_order_or_response
+from .replacement_fixes import replacement_payload
 from .replacements import (
     publish_replacement_public,
     reassign_replacement,
-    replacement_payload,
     request_cancel_remaining,
 )
 
