@@ -67,6 +67,8 @@ def get_cancel_preview(order, player):
         'order_no': order.order_no,
         'stage': result['stage'],
         'stage_text': result['stage_text'],
+        'no_fault': result['no_fault'],
+        'no_fault_reason': result['no_fault_reason'],
         'used_free_chance': result['used_free_chance'],
         'fine_rmb': result['fine_rmb'],
         'fine_fish': result['fine_fish'],
@@ -137,11 +139,32 @@ def cancel_player_order(order_no, player, reason, operator=None):
         record.debt_fish = max(Decimal('0.00'), adjustment.debt_delta)
         record.save(update_fields=['wallet_adjustment', 'deducted_fish', 'debt_fish'])
 
-    if not discipline.suspended_until or discipline.suspended_until < preview['suspended_until']:
+    if (
+        not preview['no_fault']
+        and (not discipline.suspended_until or discipline.suspended_until < preview['suspended_until'])
+    ):
         discipline.suspended_until = preview['suspended_until']
         discipline.save(update_fields=['suspended_until', 'updated_at'])
 
-    state = _set_replacement_state(order, record, relation, now)
+    unpaid_public_matching = bool(
+        not order.paid
+        and order.fulfillment_mode == Order.FULFILLMENT_MODE_PUBLIC
+        and previous_status in {Order.STATUS_WAITING, Order.STATUS_PENDING_PAYMENT}
+    )
+    # 普通公开名额在付款前退出，只需恢复普通匹配；具体指定名额仍需老板重新选择。
+    needs_replacement_state = not unpaid_public_matching or bool(relation.is_designated)
+    state = _set_replacement_state(order, record, relation, now) if needs_replacement_state else None
+    if not needs_replacement_state:
+        OrderReplacementState.objects.filter(
+            order=order,
+            mode=OrderReplacementState.MODE_PUBLIC,
+            status=OrderReplacementState.STATUS_OPEN,
+        ).update(
+            status=OrderReplacementState.STATUS_RESOLVED,
+            missing_slots=0,
+            resolved_at=now,
+        )
+
     OrderDesignation.objects.filter(
         order=order,
         player=player,
@@ -150,8 +173,11 @@ def cancel_player_order(order_no, player, reason, operator=None):
 
     relation.delete()
     player.total_orders = max(0, int(player.total_orders or 0) - 1)
-    player.is_online = False
-    player.save(update_fields=['total_orders', 'is_online'])
+    update_player_fields = ['total_orders']
+    if not preview['no_fault']:
+        player.is_online = False
+        update_player_fields.append('is_online')
+    player.save(update_fields=update_player_fields)
 
     update_fields = []
     if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED and order.target_player_id == player.id:
@@ -159,7 +185,13 @@ def cancel_player_order(order_no, player, reason, operator=None):
         order.target_player_name_snapshot = ''
         update_fields.extend(['target_player', 'target_player_name_snapshot'])
 
-    if state.mode == OrderReplacementState.MODE_PUBLIC:
+    if not needs_replacement_state:
+        order.status = Order.STATUS_WAITING
+        update_fields.append('status')
+        if previous_status == Order.STATUS_PENDING_PAYMENT:
+            from apps.payments.services import close_unpaid_payments_for_order
+            close_unpaid_payments_for_order(order, reason='陪玩取消接单，订单恢复公开匹配')
+    elif state.mode == OrderReplacementState.MODE_PUBLIC:
         if previous_status != Order.STATUS_IN_PROGRESS:
             order.status = Order.STATUS_WAITING
             update_fields.append('status')
@@ -176,22 +208,33 @@ def cancel_player_order(order_no, player, reason, operator=None):
     from .designations import sync_designated_players_snapshot
     sync_designated_players_snapshot(order)
 
-    fine_text = '使用免罚机会' if preview['used_free_chance'] else f'罚款¥{preview["fine_rmb"]}（{preview["fine_fish"]}鱼干）'
-    until_text = timezone.localtime(preview['suspended_until']).strftime('%Y-%m-%d %H:%M')
+    if preview['no_fault']:
+        discipline_text = '匹配等待超过15分钟，无责退出；不暂停接单、不罚款、不占用免罚机会'
+    else:
+        fine_text = '使用免罚机会' if preview['used_free_chance'] else f'罚款¥{preview["fine_rmb"]}（{preview["fine_fish"]}鱼干）'
+        until_text = timezone.localtime(preview['suspended_until']).strftime('%Y-%m-%d %H:%M')
+        discipline_text = f'按拒单处理；暂停接单至 {until_text}；{fine_text}'
+    flow_text = (
+        '付款前普通匹配继续，未创建紧急补位状态'
+        if not needs_replacement_state
+        else preview['replacement_text']
+    )
     OrderStatusLog.objects.create(
         order=order,
         from_status=previous_status,
         to_status=order.status,
         operator=operator,
-        reason=f'{player.name}{preview["stage_text"]}，按拒单处理；暂停接单至 {until_text}；{fine_text}；{preview["replacement_text"]}',
+        reason=f'{player.name}{preview["stage_text"]}；{discipline_text}；{flow_text}',
     )
 
     return {
-        'message': '已取消接单',
+        'message': '已无责退出接单' if preview['no_fault'] else '已取消接单',
         'order_no': order.order_no,
         'record_id': record.id,
         'stage': record.stage,
         'stage_text': record.get_stage_display(),
+        'no_fault': preview['no_fault'],
+        'no_fault_reason': preview['no_fault_reason'],
         'used_free_chance': record.used_free_chance,
         'fine_rmb': record.fine_rmb,
         'fine_fish': record.fine_fish,
