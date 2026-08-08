@@ -233,6 +233,29 @@ def cancel_order(request, order_no):
             status=status.HTTP_400_BAD_REQUEST,
         )
     reason = request.data.get('reason')
+
+    if order.paid:
+        from apps.orders.targeted_refund_fixes import cancel_targeted_order as targeted_cancel
+        from apps.payments.refund_integrity import ensure_payment_refund
+
+        if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+            targeted_cancel(order, reason or '订单取消', request.user)
+        else:
+            payment = order.payments.filter(status='paid').order_by('-paid_at').first()
+            if payment:
+                ensure_payment_refund(payment.payment_no, payment.amount,
+                                      reason=reason or '订单取消', operator=request.user)
+            order.status = Order.STATUS_CANCELLED
+            order.canceled_at = timezone.now()
+            order.cancel_reason = reason
+            order.save(update_fields=['status', 'canceled_at', 'cancel_reason'])
+            OrderStatusLog.objects.create(
+                order=order, from_status=order.STATUS_WAITING,
+                to_status=order.status, operator=request.user,
+                reason=reason or '订单取消',
+            )
+        return Response({'message': '订单已取消，已退款到钱包', 'order_no': order_no})
+
     close_unpaid_payments_for_order(order, reason=reason or '订单取消')
     cancel_order_service(order, reason, request.user)
     return Response({'message': '订单已取消', 'order_no': order_no})
