@@ -13,8 +13,11 @@ class OrdersConfig(AppConfig):
         # 兼容既有指定邀请流程：create_designations 会在运行时读取模块级校验函数。
         from . import designations
         from .designated_pricing import validate_designated_player_spec
+        from .targeted_refund_fixes import cancel_targeted_order as fixed_cancel_targeted_order
 
         designations.validate_designated_player_spec = validate_designated_player_spec
+        # 指定订单取消必须与退款保持原子性：余额退款成功后才允许提交取消。
+        designations.cancel_targeted_order = fixed_cancel_targeted_order
 
         # 商品数量在小时制服务中表示预订时长。
         from . import batch_views, boss_views
