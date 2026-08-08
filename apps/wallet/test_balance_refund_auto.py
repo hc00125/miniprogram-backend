@@ -4,12 +4,14 @@ from io import StringIO
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase
+from rest_framework.exceptions import ValidationError
 
 from apps.accounts.models import ClientProfile
 from apps.catalog.models import Package
 from apps.orders.models import Order
+from apps.orders.targeted_refund_fixes import cancel_targeted_order
 from apps.payments.models import Payment, Refund
-from apps.payments.refund_integrity import settle_balance_refund
+from apps.payments.refund_integrity import ensure_payment_refund, settle_balance_refund
 from apps.payments.services import create_refund
 
 from .models import ClientWallet, ClientWalletLedger
@@ -103,6 +105,73 @@ class AutomaticBalanceRefundTests(TestCase):
             ).count(),
             1,
         )
+
+    def test_existing_pending_balance_refund_is_settled_and_reused(self):
+        pending = Refund.objects.create(
+            refund_no='PENDING_BAL_REF_001',
+            payment=self.payment,
+            order=self.order,
+            amount=Decimal('30.00'),
+            reason='旧版本遗留待处理退款',
+            status=Refund.STATUS_PENDING,
+        )
+
+        refund = ensure_payment_refund(
+            self.payment.payment_no,
+            Decimal('30.00'),
+            reason='指定订单取消退款',
+            operator=self.user,
+        )
+
+        pending.refresh_from_db()
+        self.wallet.refresh_from_db()
+        self.payment.refresh_from_db()
+        self.assertEqual(refund.pk, pending.pk)
+        self.assertEqual(pending.status, Refund.STATUS_SUCCEEDED)
+        self.assertEqual(self.wallet.balance, Decimal('100.00'))
+        self.assertEqual(self.payment.status, 'refunded')
+        self.assertEqual(Refund.objects.filter(payment=self.payment).count(), 1)
+        self.assertEqual(
+            ClientWalletLedger.objects.filter(
+                entry_type=ClientWalletLedger.TYPE_REFUND_IN,
+                reference_id=pending.refund_no,
+            ).count(),
+            1,
+        )
+
+    def test_targeted_cancel_refunds_wallet_before_committing_cancel(self):
+        Order.objects.filter(pk=self.order.pk).update(
+            fulfillment_mode=Order.FULFILLMENT_MODE_TARGETED,
+        )
+        self.order.refresh_from_db()
+
+        refund = cancel_targeted_order(self.order, '指定陪玩师邀请超时', operator=self.user)
+
+        self.order.refresh_from_db()
+        self.wallet.refresh_from_db()
+        self.payment.refresh_from_db()
+        self.assertEqual(self.order.status, Order.STATUS_CANCELLED)
+        self.assertIsNotNone(refund)
+        self.assertEqual(refund.status, Refund.STATUS_SUCCEEDED)
+        self.assertEqual(self.wallet.balance, Decimal('100.00'))
+        self.assertEqual(self.payment.status, 'refunded')
+
+    def test_targeted_cancel_rolls_back_when_paid_payment_is_missing(self):
+        Order.objects.filter(pk=self.order.pk).update(
+            fulfillment_mode=Order.FULFILLMENT_MODE_TARGETED,
+        )
+        self.payment.delete()
+        self.order.refresh_from_db()
+        before_status = self.order.status
+
+        with self.assertRaises(ValidationError):
+            cancel_targeted_order(self.order, '指定陪玩师邀请超时', operator=self.user)
+
+        self.order.refresh_from_db()
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.order.status, before_status)
+        self.assertNotEqual(self.order.status, Order.STATUS_CANCELLED)
+        self.assertEqual(self.wallet.balance, Decimal('70.00'))
 
     def test_wechat_refund_remains_pending_and_does_not_touch_wallet(self):
         wechat_order = Order.objects.create(
