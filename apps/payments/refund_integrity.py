@@ -62,21 +62,25 @@ def _settle_balance_refund_side_effects(refund, operator=None):
 def settle_balance_refund(refund_or_id, operator=None):
     """Immediately return a balance-channel refund to the boss wallet.
 
-    The wallet ledger uses ``refund_no`` as a unique reference, so retries and
-    concurrent calls can never credit the same refund twice. Customer funds and
-    the refund/payment statuses are committed in one database transaction.
-    VIP and player-earning reversals are idempotent follow-up work and cannot
-    block the customer refund.
+    PostgreSQL must only lock concrete rows owned by the refund/payment tables.
+    In particular, ``Order.boss_user`` is nullable, so joining it into a
+    ``SELECT ... FOR UPDATE`` query creates a LEFT OUTER JOIN that PostgreSQL
+    refuses to lock.  Related rows needed for display/account lookup are loaded
+    without broadening the lock target.
     """
     refund_id = getattr(refund_or_id, 'pk', refund_or_id)
     with transaction.atomic():
         refund = (
             Refund.objects
-            .select_for_update()
-            .select_related('payment', 'order__boss_user')
+            .select_for_update(of=('self',))
+            .select_related('payment', 'order')
             .get(pk=refund_id)
         )
-        payment = Payment.objects.select_for_update().get(pk=refund.payment_id)
+        payment = (
+            Payment.objects
+            .select_for_update(of=('self',))
+            .get(pk=refund.payment_id)
+        )
         refund.payment = payment
 
         if payment.channel != BALANCE_CHANNEL:
@@ -87,13 +91,15 @@ def settle_balance_refund(refund_or_id, operator=None):
         amount = _qmoney(refund.amount)
         if amount <= 0:
             raise ValidationError({'detail': '退款金额必须大于0'})
-        profile = getattr(getattr(refund.order, 'boss_user', None), 'client_profile', None)
+
+        order = refund.order
+        boss_user = order.boss_user if order and order.boss_user_id else None
+        profile = getattr(boss_user, 'client_profile', None) if boss_user else None
         if not profile:
             raise ValidationError({'detail': '余额退款找不到对应老板钱包账户'})
 
-        # Do not emit post_save recursively. The explicit wallet write below is
-        # the source of truth. 手工直接创建 pending Refund 仍保持待处理；只有统一
-        # 退款服务、后台动作和对账命令会调用本函数自动到账。
+        # The wallet ledger is the money source of truth.  The same refund_no
+        # can only be credited once, so retries are safe.
         if refund.status != Refund.STATUS_SUCCEEDED:
             payload = refund.notify_payload if isinstance(refund.notify_payload, dict) else {}
             payload = {
@@ -147,7 +153,7 @@ def create_refund(payment_no, amount, reason='', operator=None):
     with transaction.atomic():
         payment = (
             Payment.objects
-            .select_for_update()
+            .select_for_update(of=('self',))
             .select_related('order')
             .filter(payment_no=payment_no)
             .first()
@@ -163,7 +169,7 @@ def create_refund(payment_no, amount, reason='', operator=None):
 
         existing_refunds = list(
             Refund.objects
-            .select_for_update()
+            .select_for_update(of=('self',))
             .filter(payment=payment, status__in=ACTIVE_REFUND_STATUSES)
         )
         refunded_amount = sum((_qmoney(item.amount) for item in existing_refunds), Decimal('0.00'))
@@ -182,10 +188,68 @@ def create_refund(payment_no, amount, reason='', operator=None):
         )
 
         if payment.channel == BALANCE_CHANNEL:
-            # Nested in the same outer transaction. A wallet failure rolls back
-            # the new refund record and prevents a false successful cancellation.
             refund = settle_balance_refund(refund.pk, operator=operator)
         return refund
+
+
+def ensure_payment_refund(payment_no, target_amount, reason='', operator=None):
+    """Ensure a cumulative refund amount exists without duplicating old refunds.
+
+    This is the cancellation-path API.  Historical balance refunds stuck in
+    pending/processing are settled first, then only the remaining amount is
+    created.  For external payment channels an existing pending refund counts
+    toward the requested target and is reused instead of duplicated.
+    """
+    with transaction.atomic():
+        payment = (
+            Payment.objects
+            .select_for_update(of=('self',))
+            .filter(payment_no=payment_no)
+            .first()
+        )
+        if not payment:
+            raise ValidationError({'detail': '支付单不存在'})
+
+        target = _qmoney(target_amount)
+        if target <= 0:
+            raise ValidationError({'detail': '退款金额必须大于 0'})
+        if target > _qmoney(payment.amount):
+            raise ValidationError({'detail': '退款金额不能超过支付金额'})
+
+        active = list(
+            Refund.objects
+            .select_for_update(of=('self',))
+            .filter(payment=payment, status__in=ACTIVE_REFUND_STATUSES)
+            .order_by('created_at', 'id')
+        )
+
+        if payment.channel == BALANCE_CHANNEL:
+            for item in active:
+                if item.status in {Refund.STATUS_PENDING, Refund.STATUS_PROCESSING}:
+                    settle_balance_refund(item.pk, operator=operator)
+            active = list(
+                Refund.objects
+                .select_for_update(of=('self',))
+                .filter(payment=payment, status=Refund.STATUS_SUCCEEDED)
+                .order_by('created_at', 'id')
+            )
+            settled = sum((_qmoney(item.amount) for item in active), Decimal('0.00'))
+            if settled > target:
+                raise ValidationError({'detail': '历史退款金额已超过本次应退金额，请人工核对'})
+            remaining = target - settled
+            if remaining <= 0:
+                return active[-1] if active else None
+            if payment.status == 'refunded':
+                raise ValidationError({'detail': '支付记录已标记全额退款，但退款金额不完整，请人工核对'})
+            return create_refund(payment.payment_no, remaining, reason=reason, operator=operator)
+
+        active_total = sum((_qmoney(item.amount) for item in active), Decimal('0.00'))
+        if active_total > target:
+            raise ValidationError({'detail': '已有退款金额超过本次应退金额，请人工核对'})
+        if active_total == target and active:
+            return active[-1]
+        remaining = target - active_total
+        return create_refund(payment.payment_no, remaining, reason=reason, operator=operator)
 
 
 def install_refund_service_patch():
