@@ -60,7 +60,7 @@ def _settle_balance_refund_side_effects(refund, operator=None):
 
 
 def settle_balance_refund(refund_or_id, operator=None):
-    """Immediately return a balance-channel refund to the boss wallet.
+    """Immediately return any refund to the boss wallet.
 
     PostgreSQL must only lock concrete rows owned by the refund/payment tables.
     In particular, ``Order.boss_user`` is nullable, so joining it into a
@@ -83,8 +83,6 @@ def settle_balance_refund(refund_or_id, operator=None):
         )
         refund.payment = payment
 
-        if payment.channel != BALANCE_CHANNEL:
-            return refund
         if refund.status not in SETTLEABLE_REFUND_STATUSES:
             raise ValidationError({'detail': '当前退款状态不能自动退回钱包'})
 
@@ -187,18 +185,17 @@ def create_refund(payment_no, amount, reason='', operator=None):
             created_by=_operator_or_none(operator),
         )
 
-        if payment.channel == BALANCE_CHANNEL:
-            refund = settle_balance_refund(refund.pk, operator=operator)
+        refund = settle_balance_refund(refund.pk, operator=operator)
         return refund
 
 
 def ensure_payment_refund(payment_no, target_amount, reason='', operator=None):
     """Ensure a cumulative refund amount exists without duplicating old refunds.
 
-    This is the cancellation-path API.  Historical balance refunds stuck in
-    pending/processing are settled first, then only the remaining amount is
-    created.  For external payment channels an existing pending refund counts
-    toward the requested target and is reused instead of duplicated.
+    This is the cancellation-path API.  Any pending/processing refunds are
+    settled first, then only the remaining amount is created.  All payment
+    channels (balance, wechat_virtual, etc.) are auto-settled to the boss
+    wallet immediately.
     """
     with transaction.atomic():
         payment = (
@@ -223,32 +220,23 @@ def ensure_payment_refund(payment_no, target_amount, reason='', operator=None):
             .order_by('created_at', 'id')
         )
 
-        if payment.channel == BALANCE_CHANNEL:
-            for item in active:
-                if item.status in {Refund.STATUS_PENDING, Refund.STATUS_PROCESSING}:
-                    settle_balance_refund(item.pk, operator=operator)
-            active = list(
-                Refund.objects
-                .select_for_update(of=('self',))
-                .filter(payment=payment, status=Refund.STATUS_SUCCEEDED)
-                .order_by('created_at', 'id')
-            )
-            settled = sum((_qmoney(item.amount) for item in active), Decimal('0.00'))
-            if settled > target:
-                raise ValidationError({'detail': '历史退款金额已超过本次应退金额，请人工核对'})
-            remaining = target - settled
-            if remaining <= 0:
-                return active[-1] if active else None
-            if payment.status == 'refunded':
-                raise ValidationError({'detail': '支付记录已标记全额退款，但退款金额不完整，请人工核对'})
-            return create_refund(payment.payment_no, remaining, reason=reason, operator=operator)
-
-        active_total = sum((_qmoney(item.amount) for item in active), Decimal('0.00'))
-        if active_total > target:
-            raise ValidationError({'detail': '已有退款金额超过本次应退金额，请人工核对'})
-        if active_total == target and active:
-            return active[-1]
-        remaining = target - active_total
+        for item in active:
+            if item.status in {Refund.STATUS_PENDING, Refund.STATUS_PROCESSING}:
+                settle_balance_refund(item.pk, operator=operator)
+        active = list(
+            Refund.objects
+            .select_for_update(of=('self',))
+            .filter(payment=payment, status=Refund.STATUS_SUCCEEDED)
+            .order_by('created_at', 'id')
+        )
+        settled = sum((_qmoney(item.amount) for item in active), Decimal('0.00'))
+        if settled > target:
+            raise ValidationError({'detail': '历史退款金额已超过本次应退金额，请人工核对'})
+        remaining = target - settled
+        if remaining <= 0:
+            return active[-1] if active else None
+        if payment.status == 'refunded':
+            raise ValidationError({'detail': '支付记录已标记全额退款，但退款金额不完整，请人工核对'})
         return create_refund(payment.payment_no, remaining, reason=reason, operator=operator)
 
 

@@ -679,11 +679,11 @@ def pay_order_with_balance(order_no, user):
 
 
 def refund_balance_payment(refund):
-    """余额支付订单退款成功后，把退款金额退回老板钱包余额（恰好一次）。"""
+    """退款成功后，把退款金额退回老板钱包余额（恰好一次）。"""
     if refund.status != Refund.STATUS_SUCCEEDED:
         return None
     payment = refund.payment
-    if not payment or payment.channel != BALANCE_CHANNEL:
+    if not payment:
         return None
 
     order = refund.order

@@ -173,7 +173,7 @@ class AutomaticBalanceRefundTests(TestCase):
         self.assertNotEqual(self.order.status, Order.STATUS_CANCELLED)
         self.assertEqual(self.wallet.balance, Decimal('70.00'))
 
-    def test_wechat_refund_remains_pending_and_does_not_touch_wallet(self):
+    def test_wechat_refund_auto_settles_to_wallet(self):
         wechat_order = Order.objects.create(
             order_no='AUTO_WX_REF_001',
             boss_user=self.user,
@@ -199,9 +199,9 @@ class AutomaticBalanceRefundTests(TestCase):
 
         refund.refresh_from_db()
         self.wallet.refresh_from_db()
-        self.assertEqual(refund.status, Refund.STATUS_PENDING)
-        self.assertEqual(self.wallet.balance, Decimal('70.00'))
-        self.assertFalse(
+        self.assertEqual(refund.status, Refund.STATUS_SUCCEEDED)
+        self.assertEqual(self.wallet.balance, Decimal('100.00'))
+        self.assertTrue(
             ClientWalletLedger.objects.filter(reference_id=refund.refund_no).exists()
         )
 

@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from apps.catalog.models import Package, PackageSpec
 from apps.common.permissions import IsApprovedPlayer, current_player
 
+from .escort_qualification import player_has_approved_escort_qualification
 from .models import PlayerServiceListing
 
 
@@ -83,10 +84,28 @@ def shared_specs_queryset():
     )
 
 
-def should_auto_approve(listing):
+ESCORT_REVIEW_ERROR = '护航类服务需要管理员人工审核资格'
+
+
+def auto_review(listing):
+    """Decide the target status for a newly submitted/resubmitted listing.
+
+    Returns (status, message, rejection_reason).
+    - approved: all auto-approval checks pass
+    - rejected: a hard requirement fails (1-4), or escort product without escort qualification
+    - pending:  escort product whose player holds approved escort qualification (manual review)
+    """
     if not getattr(settings, 'PLAYER_SERVICE_LISTING_AUTO_APPROVE', False):
-        return False
-    return not listing.automatic_approval_error()
+        return PlayerServiceListing.STATUS_PENDING, '上架申请已提交，等待管理员审核', ''
+    error = listing.automatic_approval_error()
+    if not error:
+        return PlayerServiceListing.STATUS_APPROVED, '服务已自动上架', ''
+    if error == ESCORT_REVIEW_ERROR:
+        if player_has_approved_escort_qualification(listing.player):
+            return PlayerServiceListing.STATUS_PENDING, '护航类商品需管理员人工审核', ''
+        reason = '无护航资格，无法上架护航类商品'
+        return PlayerServiceListing.STATUS_REJECTED, reason, reason
+    return PlayerServiceListing.STATUS_REJECTED, error, error
 
 
 @api_view(['GET', 'POST'])
@@ -138,16 +157,18 @@ def service_listings(request):
             listing.reviewed_by = None
             listing.reviewed_at = None
 
-        if should_auto_approve(listing):
-            listing.status = PlayerServiceListing.STATUS_APPROVED
+        target_status, message, reject_reason = auto_review(listing)
+        listing.status = target_status
+        if target_status == PlayerServiceListing.STATUS_APPROVED:
             listing.reviewed_at = timezone.now()
+        elif target_status == PlayerServiceListing.STATUS_REJECTED:
+            listing.is_available = False
+            listing.reviewed_at = timezone.now()
+            listing.rejection_reason = reject_reason
         listing.save()
 
     return Response(
-        {
-            'message': '服务已自动上架' if listing.status == PlayerServiceListing.STATUS_APPROVED else '上架申请已提交，等待管理员审核',
-            'listing': serialize_listing(listing),
-        },
+        {'message': message, 'listing': serialize_listing(listing)},
         status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
     )
 
@@ -177,9 +198,14 @@ def service_listing_detail(request, listing_id):
         listing.rejection_reason = ''
         listing.reviewed_by = None
         listing.reviewed_at = None
-        if should_auto_approve(listing):
-            listing.status = PlayerServiceListing.STATUS_APPROVED
+        target_status, _, reject_reason = auto_review(listing)
+        listing.status = target_status
+        if target_status == PlayerServiceListing.STATUS_APPROVED:
             listing.reviewed_at = timezone.now()
+        elif target_status == PlayerServiceListing.STATUS_REJECTED:
+            listing.is_available = False
+            listing.reviewed_at = timezone.now()
+            listing.rejection_reason = reject_reason
     elif action:
         return Response({'detail': '不支持的服务操作'}, status=status.HTTP_400_BAD_REQUEST)
 

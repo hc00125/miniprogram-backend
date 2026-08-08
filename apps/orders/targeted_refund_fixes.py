@@ -53,8 +53,8 @@ def cancel_targeted_order(order, reason, operator=None):
             reason=reason,
             operator=operator,
         )
-        if payment.channel == 'balance' and (not refund or refund.status != 'succeeded'):
-            raise ValidationError({'detail': '余额退款未成功入账，已阻止订单取消'})
+        if not refund or refund.status != 'succeeded':
+            raise ValidationError({'detail': '退款未成功入账，已阻止订单取消'})
 
     locked.status = Order.STATUS_CANCELLED
     locked.canceled_at = timezone.now()
