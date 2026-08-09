@@ -27,13 +27,9 @@ def create_wallet_for_new_client(sender, instance, created, using, **kwargs):
 
 @receiver(post_save, sender=Refund)
 def sync_balance_refund(sender, instance, **kwargs):
-    """普通退款成功后返还钻石；直接微信原路退款成功时不增加钱包。"""
+    """余额支付退款的兜底入账；其他渠道由各自退款服务显式处理。"""
     if instance.status != Refund.STATUS_SUCCEEDED:
         return
-
-    payload = instance.notify_payload if isinstance(instance.notify_payload, dict) else {}
-    cash_meta = payload.get('wechat_original_refund') or {}
-    if isinstance(cash_meta, dict) and cash_meta.get('mode') == 'direct_wechat_refund':
+    if not instance.payment_id or instance.payment.channel != 'balance':
         return
-
     refund_balance_payment(instance)
