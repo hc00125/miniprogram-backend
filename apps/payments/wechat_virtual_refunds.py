@@ -122,15 +122,15 @@ def _save_cash_meta(refund_id, meta, *, third_refund_no=None, refund_status=None
         return refund
 
 
-def _wallet_conversion_reference(refund):
-    return f'{refund.refund_no}:wechat-original'
+def _wallet_conversion_reference(refund, attempt=1):
+    base = f'{refund.refund_no}:wechat-original'
+    return base if attempt <= 1 else f'{base}:{attempt}'
 
 
-def _deduct_wallet_refund_for_conversion(refund, *, operator=None):
+def _deduct_wallet_refund_for_conversion(refund, reference, *, operator=None):
     """仅用于“已经退过钻石，后来改成微信原路退款”的兼容场景。"""
     profile = _profile_for_refund(refund)
     amount = qmoney(refund.amount)
-    reference = _wallet_conversion_reference(refund)
 
     with transaction.atomic():
         wallet = get_or_lock_wallet(profile)
@@ -159,10 +159,12 @@ def _deduct_wallet_refund_for_conversion(refund, *, operator=None):
         )
 
 
-def _restore_wallet_conversion(refund, *, operator=None):
+def _restore_wallet_conversion(refund, meta, *, operator=None):
     profile = _profile_for_refund(refund)
     amount = qmoney(refund.amount)
-    reference = _wallet_conversion_reference(refund)
+    reference = meta.get('wallet_conversion_reference') or ''
+    if not reference:
+        return False
     restore_reference = f'{reference}:restore'
 
     with transaction.atomic():
@@ -222,7 +224,7 @@ def _mark_submit_failure(refund, meta, exc, *, operator=None):
         return _save_cash_meta(refund.pk, meta)
 
     if mode == CASH_MODE_CONVERTED:
-        restored = _restore_wallet_conversion(refund, operator=operator)
+        restored = _restore_wallet_conversion(refund, meta, operator=operator)
         if restored:
             meta['wallet_restored'] = True
             meta['wallet_restored_at'] = timezone.now().isoformat()
@@ -327,25 +329,35 @@ def convert_refund_to_wechat_original(refund_or_id, *, operator=None):
     if _qmoney(refund.amount) != _qmoney(payment.amount):
         raise ValidationError({'detail': '第一版仅支持整单钻石退款转换为微信原路退款'})
 
-    existing_status = cash_refund_status(refund)
+    existing_meta = _cash_meta(refund)
+    existing_status = existing_meta.get('status')
     if existing_status == CASH_STATUS_SUCCEEDED:
         return refund
     if existing_status in {CASH_STATUS_PREPARING, CASH_STATUS_PROCESSING, CASH_STATUS_UNKNOWN}:
         raise ValidationError({'detail': '该退款已经提交微信，请先同步状态'})
 
+    attempt = int(existing_meta.get('attempts') or 0) + 1
+    conversion_reference = _wallet_conversion_reference(refund, attempt)
     profile = _profile_for_refund(refund)
     left_fee = _preflight_wechat_refund(payment, profile, amount_to_cents(refund.amount))
-    _entry, _created = _deduct_wallet_refund_for_conversion(refund, operator=operator)
+    _entry, _created = _deduct_wallet_refund_for_conversion(
+        refund,
+        conversion_reference,
+        operator=operator,
+    )
 
     meta = {
-        **_cash_meta(refund),
+        **existing_meta,
         'status': CASH_STATUS_PREPARING,
         'mode': CASH_MODE_CONVERTED,
+        'attempts': attempt,
         'diamond_refund_created': True,
-        'wallet_conversion_reference': _wallet_conversion_reference(refund),
+        'wallet_conversion_reference': conversion_reference,
         'left_fee_at_prepare': left_fee,
         'prepared_at': timezone.now().isoformat(),
     }
+    meta.pop('wallet_restored', None)
+    meta.pop('wallet_restored_at', None)
     refund = _save_cash_meta(refund.pk, meta)
     return _submit_wechat_refund(refund, operator=operator)
 
@@ -498,7 +510,7 @@ def sync_wechat_original_refund(refund_or_id, *, operator=None):
         meta['status'] = CASH_STATUS_FAILED
         meta['failed_at'] = timezone.now().isoformat()
         if mode == CASH_MODE_CONVERTED:
-            restored = _restore_wallet_conversion(refund, operator=operator)
+            restored = _restore_wallet_conversion(refund, meta, operator=operator)
             if restored:
                 meta['wallet_restored'] = True
                 meta['wallet_restored_at'] = timezone.now().isoformat()
