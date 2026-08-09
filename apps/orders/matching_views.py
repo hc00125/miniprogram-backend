@@ -17,6 +17,6 @@ def continue_matching(request, order_no):
     extend_matching(order, request.user)
     order.refresh_from_db()
     return Response({
-        'message': '已继续等待匹配30分钟',
+        'message': '已继续等待匹配；公开抢单最晚在首次发布2小时后自动取消',
         'matching': matching_payload(order),
     })
