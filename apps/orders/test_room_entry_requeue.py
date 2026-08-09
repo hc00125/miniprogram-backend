@@ -8,18 +8,17 @@ from apps.catalog.models import Package, PlayerType
 from apps.payments.models import Payment
 from apps.players.models import Player
 
-from .cancellation_models import OrderReplacementState
-from .models import Order, OrderPlayer, OrderStatusLog
+from .models import Order, OrderPlayer
 from .room_entry_requeue import expire_due_room_entries, start_room_entry_window
-from .services import can_player_grab_order, create_order, grab_order
+from .services import create_order, grab_order
 
 
 class RoomEntryRequeueTests(TestCase):
     def setUp(self):
         self.boss = User.objects.create_user(username='room-entry-boss')
-        self.type = PlayerType.objects.create(name='补位测试陪玩', priority=991)
+        self.type = PlayerType.objects.create(name='进入房间测试陪玩', priority=991)
         self.package = Package.objects.create(
-            name='进入房间超时补位测试',
+            name='进入房间确认测试',
             base_price=20,
             player_count=1,
             is_active=True,
@@ -27,16 +26,7 @@ class RoomEntryRequeueTests(TestCase):
         self.first_user = User.objects.create_user(username='room-entry-first')
         self.first_player = Player.objects.create(
             user=self.first_user,
-            name='超时陪玩',
-            player_type=self.type,
-            status=Player.STATUS_APPROVED,
-            is_online=True,
-            total_orders=0,
-        )
-        self.replacement_user = User.objects.create_user(username='room-entry-replacement')
-        self.replacement = Player.objects.create(
-            user=self.replacement_user,
-            name='补位陪玩',
+            name='房间确认陪玩',
             player_type=self.type,
             status=Player.STATUS_APPROVED,
             is_online=True,
@@ -67,7 +57,7 @@ class RoomEntryRequeueTests(TestCase):
         start_room_entry_window(order, paid_at)
         return order
 
-    def test_verified_payment_signal_starts_timer_before_order_row_updates(self):
+    def test_verified_payment_signal_opens_confirmation_without_deadline(self):
         order = self.create_pending_order()
         paid_at = timezone.now()
         payment = Payment.objects.create(
@@ -84,51 +74,40 @@ class RoomEntryRequeueTests(TestCase):
         payment.save(update_fields=['status', 'paid_at'])
 
         relation = order.order_players.get(player=self.first_player)
-        self.assertIsNotNone(relation.room_join_deadline)
-        self.assertEqual(relation.room_join_deadline, paid_at + timedelta(minutes=10))
+        self.assertIsNone(relation.room_join_deadline)
+        self.assertEqual(relation.room_join_status, OrderPlayer.ROOM_ENTRY_PENDING)
 
-    def test_timeout_releases_player_and_opens_paid_urgent_replacement(self):
+    def test_expiration_task_never_releases_player(self):
         order = self.create_paid_ready_order()
         relation = order.order_players.get(player=self.first_player)
+
+        # 模拟旧版本遗留的已过期截止时间；新规则必须忽略它。
         OrderPlayer.objects.filter(pk=relation.pk).update(
-            room_join_deadline=timezone.now() - timedelta(seconds=1)
+            room_join_deadline=timezone.now() - timedelta(minutes=30),
+            room_join_status=OrderPlayer.ROOM_ENTRY_OVERDUE,
         )
 
         updated = expire_due_room_entries()
 
-        self.assertEqual(updated, 1)
-        order.refresh_from_db()
+        self.assertEqual(updated, 0)
+        self.assertTrue(order.order_players.filter(player=self.first_player).exists())
         self.first_player.refresh_from_db()
-        replacement_state = OrderReplacementState.objects.get(order=order)
-        self.assertTrue(order.paid)
-        self.assertEqual(order.status, Order.STATUS_READY_TO_START)
-        self.assertEqual(replacement_state.status, OrderReplacementState.STATUS_OPEN)
-        self.assertEqual(replacement_state.missing_slots, 1)
-        self.assertFalse(order.order_players.filter(player=self.first_player).exists())
-        self.assertEqual(self.first_player.total_orders, 0)
-        self.assertFalse(can_player_grab_order(order, self.first_player))
-        self.assertTrue(can_player_grab_order(order, self.replacement))
-        self.assertTrue(OrderStatusLog.objects.filter(
-            order=order,
-            operator=self.first_user,
-            reason__contains='视为拒单',
-        ).exists())
+        self.assertEqual(self.first_player.total_orders, 1)
 
-    def test_replacement_does_not_trigger_second_payment(self):
-        order = self.create_paid_ready_order()
+    def test_paid_order_player_created_later_also_has_no_deadline(self):
+        order = self.create_pending_order()
+        order.paid = True
+        order.status = Order.STATUS_READY_TO_START
+        order.save(update_fields=['paid', 'status'])
+
         relation = order.order_players.get(player=self.first_player)
-        OrderPlayer.objects.filter(pk=relation.pk).update(
-            room_join_deadline=timezone.now() - timedelta(seconds=1)
+        OrderPlayer.objects.filter(pk=relation.pk).delete()
+        replacement = OrderPlayer.objects.create(
+            order=order,
+            player=self.first_player,
+            status='已接单',
         )
-        expire_due_room_entries()
+        replacement.refresh_from_db()
 
-        result = grab_order(order.order_no, self.replacement, self.replacement_user)
-
-        result.refresh_from_db()
-        replacement_relation = result.order_players.get(player=self.replacement)
-        replacement_state = OrderReplacementState.objects.get(order=result)
-        self.assertTrue(result.paid)
-        self.assertEqual(result.status, Order.STATUS_READY_TO_START)
-        self.assertEqual(replacement_state.status, OrderReplacementState.STATUS_RESOLVED)
-        self.assertIsNotNone(replacement_relation.room_join_deadline)
-        self.assertEqual(replacement_relation.room_join_status, OrderPlayer.ROOM_ENTRY_PENDING)
+        self.assertIsNone(replacement.room_join_deadline)
+        self.assertEqual(replacement.room_join_status, OrderPlayer.ROOM_ENTRY_PENDING)
