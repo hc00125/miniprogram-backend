@@ -10,19 +10,52 @@ from apps.earnings.services import reverse_refund_earnings
 from . import services as payment_services
 from .models import Payment, PaymentCallbackLog, Refund, VirtualProductBinding
 from .refund_integrity import settle_balance_refund
+from .virtualpay import VIRTUAL_CHANNEL, VirtualPaymentAPIError
+from .wechat_virtual_refunds import (
+    cash_refund_status,
+    refund_payment_to_wechat_original,
+    sync_payment_wechat_original_refunds,
+    sync_wechat_original_refund,
+)
 
 
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
-    list_display = ['id', 'payment_no', 'order', 'channel', 'scene', 'amount', 'status', 'created_at']
+    list_display = [
+        'id', 'payment_no', 'boss_user_id', 'order', 'channel', 'scene',
+        'amount', 'status', 'wechat_original_refund_state', 'created_at',
+    ]
     list_filter = ['channel', 'scene', 'status']
-    search_fields = ['payment_no', 'order__order_no', 'third_trade_no']
-    actions = ['create_full_refunds']
+    search_fields = [
+        'payment_no', 'order__order_no', 'third_trade_no',
+        '=order__boss_user__id', '=order__boss_user__client_profile__id',
+        'order__boss_user__client_profile__nickname',
+        'order__boss_user__client_profile__openid',
+    ]
+    list_select_related = ['order', 'order__boss_user']
+    actions = [
+        'create_full_refunds',
+        'refund_wechat_virtual_original',
+        'sync_wechat_virtual_original_refunds',
+    ]
 
-    @admin.action(description='为选中的已支付记录创建剩余金额退款')
+    @admin.display(description='用户ID')
+    def boss_user_id(self, obj):
+        return obj.order.boss_user_id or '-'
+
+    @admin.display(description='微信原路退款')
+    def wechat_original_refund_state(self, obj):
+        statuses = []
+        for refund in obj.refunds.all():
+            state = cash_refund_status(refund)
+            if state:
+                statuses.append(state)
+        return ' / '.join(statuses) or '-'
+
+    @admin.action(description='为选中的已支付记录创建剩余金额退款到老板钱包')
     def create_full_refunds(self, request, queryset):
-        balance_succeeded = 0
-        external_pending = 0
+        wallet_succeeded = 0
+        pending = 0
         for payment in queryset.select_related('order'):
             if payment.status != 'paid':
                 self.message_user(request, f'{payment.payment_no} 不是已支付状态，已跳过', level=messages.WARNING)
@@ -41,34 +74,85 @@ class PaymentAdmin(admin.ModelAdmin):
                     reason='管理员后台发起退款',
                     operator=request.user,
                 )
-                if refund.status == Refund.STATUS_SUCCEEDED and payment.channel == 'balance':
-                    balance_succeeded += 1
+                if refund.status == Refund.STATUS_SUCCEEDED:
+                    wallet_succeeded += 1
                 else:
-                    external_pending += 1
+                    pending += 1
             except ValidationError as exc:
                 self.message_user(request, f'{payment.payment_no}: {exc.detail}', level=messages.WARNING)
-        if balance_succeeded:
+        if wallet_succeeded:
             self.message_user(
                 request,
-                f'{balance_succeeded} 笔余额退款已立即退回老板钱包',
+                f'{wallet_succeeded} 笔退款已退回老板钱包（前端显示为钻石）',
                 level=messages.SUCCESS,
             )
-        if external_pending:
+        if pending:
+            self.message_user(request, f'{pending} 笔退款仍待处理', level=messages.WARNING)
+
+    @admin.action(description='微信虚拟支付：整单原路退款（自动扣回对应钻石）')
+    def refund_wechat_virtual_original(self, request, queryset):
+        success_count = 0
+        for payment in queryset.select_related('order', 'order__boss_user'):
+            if payment.channel != VIRTUAL_CHANNEL:
+                self.message_user(
+                    request,
+                    f'{payment.payment_no} 不是微信虚拟支付，已跳过',
+                    level=messages.WARNING,
+                )
+                continue
+            try:
+                refund = refund_payment_to_wechat_original(
+                    payment,
+                    operator=request.user,
+                    reason='管理员后台微信原路退款',
+                )
+            except (ValidationError, VirtualPaymentAPIError) as exc:
+                detail = getattr(exc, 'detail', str(exc))
+                self.message_user(request, f'{payment.payment_no}: {detail}', level=messages.WARNING)
+                continue
+            success_count += 1
             self.message_user(
                 request,
-                f'已创建 {external_pending} 笔第三方支付待处理退款',
+                f'{payment.payment_no} 已提交微信原路退款，退款单 {refund.refund_no}，请稍后同步状态',
                 level=messages.SUCCESS,
             )
+        if success_count:
+            self.message_user(
+                request,
+                f'共提交 {success_count} 笔微信原路退款；对应钻石已从老板钱包扣回。',
+                level=messages.SUCCESS,
+            )
+
+    @admin.action(description='微信虚拟支付：同步原路退款状态')
+    def sync_wechat_virtual_original_refunds(self, request, queryset):
+        synced_count = 0
+        for payment in queryset.select_related('order', 'order__boss_user'):
+            try:
+                refunds = sync_payment_wechat_original_refunds(payment, operator=request.user)
+            except (ValidationError, VirtualPaymentAPIError) as exc:
+                detail = getattr(exc, 'detail', str(exc))
+                self.message_user(request, f'{payment.payment_no}: {detail}', level=messages.WARNING)
+                continue
+            synced_count += len(refunds)
+            states = ', '.join(f'{refund.refund_no}:{cash_refund_status(refund)}' for refund in refunds)
+            self.message_user(request, f'{payment.payment_no} → {states}', level=messages.INFO)
+        if synced_count:
+            self.message_user(request, f'已同步 {synced_count} 笔微信原路退款状态', level=messages.SUCCESS)
 
 
 @admin.register(Refund)
 class RefundAdmin(admin.ModelAdmin):
     list_display = [
         'refund_no', 'payment', 'order', 'amount', 'status',
-        'third_refund_no', 'created_by', 'created_at',
+        'wechat_original_refund_state', 'third_refund_no', 'created_by', 'created_at',
     ]
     list_filter = ['status', 'payment__channel', 'created_at']
-    search_fields = ['refund_no', 'payment__payment_no', 'order__order_no', 'third_refund_no', 'reason']
+    search_fields = [
+        'refund_no', 'payment__payment_no', 'order__order_no', 'third_refund_no', 'reason',
+        '=order__boss_user__id', '=order__boss_user__client_profile__id',
+        'order__boss_user__client_profile__nickname',
+        'order__boss_user__client_profile__openid',
+    ]
     readonly_fields = [
         'refund_no', 'payment', 'order', 'amount', 'reason', 'status',
         'third_refund_no', 'notify_payload', 'created_by', 'created_at', 'updated_at',
@@ -78,7 +162,32 @@ class RefundAdmin(admin.ModelAdmin):
         'third_refund_no', 'failed_reason', 'notify_payload',
         'created_by', 'created_at', 'updated_at',
     ]
-    actions = ['confirm_refund_succeeded', 'mark_refund_failed']
+    actions = ['confirm_refund_succeeded', 'mark_refund_failed', 'sync_selected_wechat_original_refunds']
+
+    @admin.display(description='微信原路退款')
+    def wechat_original_refund_state(self, obj):
+        return cash_refund_status(obj) or '-'
+
+    @admin.action(description='同步选中记录的微信原路退款状态')
+    def sync_selected_wechat_original_refunds(self, request, queryset):
+        synced_count = 0
+        for refund in queryset.select_related('payment', 'order', 'order__boss_user'):
+            if not cash_refund_status(refund):
+                continue
+            try:
+                synced = sync_wechat_original_refund(refund, operator=request.user)
+            except (ValidationError, VirtualPaymentAPIError) as exc:
+                detail = getattr(exc, 'detail', str(exc))
+                self.message_user(request, f'{refund.refund_no}: {detail}', level=messages.WARNING)
+                continue
+            synced_count += 1
+            self.message_user(
+                request,
+                f'{refund.refund_no}: {cash_refund_status(synced)}',
+                level=messages.INFO,
+            )
+        if synced_count:
+            self.message_user(request, f'已同步 {synced_count} 笔退款', level=messages.SUCCESS)
 
     @admin.action(description='确认退款成功并自动冲销陪玩工资')
     def confirm_refund_succeeded(self, request, queryset):
