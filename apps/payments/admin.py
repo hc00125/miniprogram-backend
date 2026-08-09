@@ -28,7 +28,7 @@ class PaymentAdmin(admin.ModelAdmin):
     list_filter = ['channel', 'scene', 'status']
     search_fields = [
         'payment_no', 'order__order_no', 'third_trade_no',
-        '=order__boss_user__id', '=order__boss_user__client_profile__id',
+        'order__boss_user__id__exact', 'order__boss_user__client_profile__id__exact',
         'order__boss_user__client_profile__nickname',
         'order__boss_user__client_profile__openid',
     ]
@@ -149,7 +149,7 @@ class RefundAdmin(admin.ModelAdmin):
     list_filter = ['status', 'payment__channel', 'created_at']
     search_fields = [
         'refund_no', 'payment__payment_no', 'order__order_no', 'third_refund_no', 'reason',
-        '=order__boss_user__id', '=order__boss_user__client_profile__id',
+        'order__boss_user__id__exact', 'order__boss_user__client_profile__id__exact',
         'order__boss_user__client_profile__nickname',
         'order__boss_user__client_profile__openid',
     ]
