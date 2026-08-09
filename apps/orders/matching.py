@@ -14,6 +14,8 @@ MATCHING_REMINDER_MINUTES = 10
 MATCHING_NO_FAULT_EXIT_MINUTES = 15
 MATCHING_DECISION_MINUTES = 30
 MATCHING_EXTENSION_MINUTES = 30
+MATCHING_HARD_TIMEOUT_MINUTES = 120
+PUBLIC_MATCHING_TIMEOUT_REASON = '公开匹配超过120分钟仍未凑齐，系统自动取消'
 
 
 def is_public_unpaid_matching(order):
@@ -39,6 +41,14 @@ def ensure_matching_window(order, now=None):
         },
     )
     return window
+
+
+def matching_hard_deadline(window):
+    return window.started_at + timedelta(minutes=MATCHING_HARD_TIMEOUT_MINUTES)
+
+
+def lineup_is_full(order):
+    return order.order_players.count() >= int(order.required_players or 0)
 
 
 def matching_visibility(order):
@@ -120,7 +130,10 @@ def matching_payload(order, now=None):
     window = ensure_matching_window(order, now)
     elapsed_seconds = max(0, int((now - window.started_at).total_seconds()))
     remaining_seconds = max(0, int((window.deadline_at - now).total_seconds()))
+    hard_deadline_at = matching_hard_deadline(window)
+    hard_remaining_seconds = max(0, int((hard_deadline_at - now).total_seconds()))
     current_players = order.order_players.count()
+    missing_slots = max(0, int(order.required_players or 0) - current_players)
     return {
         'active': True,
         'started_at': window.started_at,
@@ -133,7 +146,11 @@ def matching_payload(order, now=None):
         'extension_count': window.extension_count,
         'current_players': current_players,
         'required_players': order.required_players,
-        'missing_slots': max(0, int(order.required_players or 0) - current_players),
+        'missing_slots': missing_slots,
+        'hard_timeout_minutes': MATCHING_HARD_TIMEOUT_MINUTES,
+        'hard_deadline_at': hard_deadline_at,
+        'hard_remaining_seconds': hard_remaining_seconds,
+        'auto_cancel_due': missing_slots > 0 and hard_remaining_seconds <= 0,
         **matching_visibility(order),
     }
 
@@ -141,12 +158,17 @@ def matching_payload(order, now=None):
 @transaction.atomic
 def extend_matching(order, operator=None, now=None):
     now = now or timezone.now()
-    order = Order.objects.select_for_update().get(pk=order.pk)
+    order = Order.objects.select_for_update(of=('self',)).get(pk=order.pk)
     if not is_public_unpaid_matching(order):
         raise ValidationError({'detail': '当前订单不在公开匹配阶段，不能继续等待'})
     window = ensure_matching_window(order, now)
-    window = OrderMatchingWindow.objects.select_for_update().get(pk=window.pk)
-    window.deadline_at = max(window.deadline_at, now) + timedelta(minutes=MATCHING_EXTENSION_MINUTES)
+    window = OrderMatchingWindow.objects.select_for_update(of=('self',)).get(pk=window.pk)
+    hard_deadline_at = matching_hard_deadline(window)
+    if now >= hard_deadline_at:
+        raise ValidationError({'detail': '公开匹配已达到2小时上限，不能继续等待'})
+
+    requested_deadline = max(window.deadline_at, now) + timedelta(minutes=MATCHING_EXTENSION_MINUTES)
+    window.deadline_at = min(requested_deadline, hard_deadline_at)
     window.extension_count += 1
     window.last_extended_at = now
     window.save(update_fields=['deadline_at', 'extension_count', 'last_extended_at', 'updated_at'])
@@ -155,9 +177,79 @@ def extend_matching(order, operator=None, now=None):
         from_status=order.status,
         to_status=order.status,
         operator=operator,
-        reason=f'老板选择继续等待匹配，延长 {MATCHING_EXTENSION_MINUTES} 分钟',
+        reason='老板选择继续等待匹配；公开匹配总时长最多2小时',
     )
     return window
+
+
+@transaction.atomic
+def expire_public_matching_order(order_or_id, now=None):
+    """Cancel one unpaid public order after its two-hour hard matching limit.
+
+    Only incomplete public orders still in ``待接单`` are eligible.  Targeted
+    orders and full lineups waiting for payment are deliberately excluded.
+    Existing unpaid-order cancellation signals release joined players without
+    penalties while preserving the relations for audit.
+    """
+    now = now or timezone.now()
+    order_id = getattr(order_or_id, 'pk', order_or_id)
+    order = (
+        Order.objects
+        .select_for_update(of=('self',))
+        .filter(pk=order_id)
+        .first()
+    )
+    if not order:
+        return False
+    if (
+        order.order_type != Order.ORDER_TYPE_NORMAL
+        or order.fulfillment_mode != Order.FULFILLMENT_MODE_PUBLIC
+        or order.paid
+        or order.status != Order.STATUS_WAITING
+    ):
+        return False
+
+    window = ensure_matching_window(order, now)
+    if not window:
+        return False
+    window = OrderMatchingWindow.objects.select_for_update(of=('self',)).get(pk=window.pk)
+    if now < matching_hard_deadline(window):
+        return False
+    if lineup_is_full(order):
+        return False
+
+    from .services import cancel_order
+
+    cancel_order(order, reason=PUBLIC_MATCHING_TIMEOUT_REASON, operator=None)
+    return True
+
+
+def expire_public_matching_orders(now=None, limit=500):
+    """Expire due public matching orders in bounded batches.
+
+    This is intentionally separate from designated-invitation expiry.  Run it
+    from a server-side scheduler (for example once per minute) so cancellation
+    does not depend on either the boss or a player keeping a page open.
+    """
+    now = now or timezone.now()
+    cutoff = now - timedelta(minutes=MATCHING_HARD_TIMEOUT_MINUTES)
+    candidate_ids = list(
+        OrderMatchingWindow.objects
+        .filter(
+            started_at__lte=cutoff,
+            order__order_type=Order.ORDER_TYPE_NORMAL,
+            order__fulfillment_mode=Order.FULFILLMENT_MODE_PUBLIC,
+            order__paid=False,
+            order__status=Order.STATUS_WAITING,
+        )
+        .order_by('started_at')
+        .values_list('order_id', flat=True)[:max(1, int(limit or 500))]
+    )
+    expired = 0
+    for order_id in candidate_ids:
+        if expire_public_matching_order(order_id, now=now):
+            expired += 1
+    return expired
 
 
 def relation_can_exit_without_penalty(order, relation, now=None):
