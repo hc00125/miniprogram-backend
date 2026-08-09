@@ -1,10 +1,13 @@
 from decimal import Decimal
 
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.db.models import Sum
+from rest_framework.exceptions import ValidationError
 
 from apps.payments import admin as payments_admin
 from apps.payments.models import Refund
+from apps.payments.virtualpay import VIRTUAL_CHANNEL, VirtualPaymentAPIError
+from apps.payments.wechat_virtual_refunds import convert_refund_to_wechat_original
 
 from .models import RefundPayment, RefundRecord
 
@@ -61,9 +64,63 @@ class RefundPaymentAdmin(payments_admin.PaymentAdmin):
     def refund_to_diamonds(self, request, queryset):
         return payments_admin.PaymentAdmin.create_full_refunds(self, request, queryset)
 
-    @admin.action(description='② 微信虚拟支付：发起微信原路退款')
+    @admin.action(description='② 微信虚拟支付：将已退钻石转换为微信原路退款')
     def submit_wechat_original_refund(self, request, queryset):
-        return payments_admin.PaymentAdmin.refund_wechat_virtual_original(self, request, queryset)
+        success_count = 0
+        for payment in queryset.select_related('order', 'order__boss_user'):
+            if payment.channel != VIRTUAL_CHANNEL:
+                self.message_user(
+                    request,
+                    f'{payment.payment_no} 不是微信虚拟支付，不能微信原路退款',
+                    level=messages.WARNING,
+                )
+                continue
+
+            succeeded = list(
+                payment.refunds
+                .filter(status=Refund.STATUS_SUCCEEDED)
+                .order_by('created_at', 'id')
+            )
+            if not succeeded:
+                self.message_user(
+                    request,
+                    f'{payment.payment_no} 尚未完成钻石退款，请先执行“① 普通退款：退回用户钻石钱包”',
+                    level=messages.WARNING,
+                )
+                continue
+
+            total = sum((Decimal(str(item.amount)) for item in succeeded), Decimal('0.00'))
+            if len(succeeded) != 1 or total != Decimal(str(payment.amount)):
+                self.message_user(
+                    request,
+                    f'{payment.payment_no} 存在部分退款或多笔钻石退款，当前仅支持整单单笔转换，请人工核对',
+                    level=messages.WARNING,
+                )
+                continue
+
+            try:
+                refund = convert_refund_to_wechat_original(
+                    succeeded[0],
+                    operator=request.user,
+                )
+            except (ValidationError, VirtualPaymentAPIError) as exc:
+                detail = getattr(exc, 'detail', str(exc))
+                self.message_user(request, f'{payment.payment_no}: {detail}', level=messages.WARNING)
+                continue
+
+            success_count += 1
+            self.message_user(
+                request,
+                f'{payment.payment_no} 已提交微信原路退款，退款单 {refund.refund_no}，请执行“③ 同步原路退款状态”确认结果',
+                level=messages.SUCCESS,
+            )
+
+        if success_count:
+            self.message_user(
+                request,
+                f'共提交 {success_count} 笔微信原路退款；对应钻石已按原退款记录扣回。',
+                level=messages.SUCCESS,
+            )
 
     @admin.action(description='③ 微信虚拟支付：同步原路退款状态')
     def sync_wechat_original_refund_status(self, request, queryset):
