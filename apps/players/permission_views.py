@@ -9,6 +9,7 @@ from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.orders.cancellation_models import OrderReplacementState, PlayerCancellationRecord
 from apps.orders.designations import pending_designation, pending_designation_count
 from apps.orders.discipline import discipline_block_reason
+from apps.orders.matching import expire_public_matching_order, expire_public_matching_orders
 from apps.orders.models import Order, OrderStatusLog
 from apps.orders.replacement_fixes import open_public_replacement
 from apps.orders.serializers import AvailableOrderSerializer, OrderActionSerializer
@@ -19,6 +20,9 @@ from .views import django_operator
 
 
 def candidate_public_orders():
+    # 定时任务是2小时硬超时的主执行器；大厅查询再做一次轻量兜底，避免
+    # scheduler 偶尔延迟时已到期订单仍短暂展示给陪玩。
+    expire_public_matching_orders(limit=100)
     replacement_order_ids = OrderReplacementState.objects.filter(
         mode=OrderReplacementState.MODE_PUBLIC,
         status=OrderReplacementState.STATUS_OPEN,
@@ -185,9 +189,13 @@ def grab(request):
         return Response({'detail': block_reason or '管理员已暂停您的接单权限'}, status=status.HTTP_403_FORBIDDEN)
     serializer = OrderActionSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    order_no = serializer.validated_data['order_no']
+    candidate = Order.objects.filter(order_no=order_no).first()
+    if candidate and expire_public_matching_order(candidate):
+        return Response({'detail': '该订单公开匹配已超过2小时并自动取消'}, status=status.HTTP_409_CONFLICT)
     try:
         order = grab_order_service(
-            serializer.validated_data['order_no'],
+            order_no,
             player,
             django_operator(request.user),
         )
