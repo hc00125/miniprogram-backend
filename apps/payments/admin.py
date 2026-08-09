@@ -89,7 +89,7 @@ class PaymentAdmin(admin.ModelAdmin):
         if pending:
             self.message_user(request, f'{pending} 笔退款仍待处理', level=messages.WARNING)
 
-    @admin.action(description='微信虚拟支付：整单原路退款（自动扣回对应钻石）')
+    @admin.action(description='微信虚拟支付：整单原路退款（统一钻石模型）')
     def refund_wechat_virtual_original(self, request, queryset):
         success_count = 0
         for payment in queryset.select_related('order', 'order__boss_user'):
@@ -119,7 +119,10 @@ class PaymentAdmin(admin.ModelAdmin):
         if success_count:
             self.message_user(
                 request,
-                f'共提交 {success_count} 笔微信原路退款；对应钻石已从老板钱包扣回。',
+                (
+                    f'共提交 {success_count} 笔微信原路退款。未发生过钻石退款的订单不会变动钱包；'
+                    '已退过钻石的订单会自动扣回对应钻石后再转微信原路退款。'
+                ),
                 level=messages.SUCCESS,
             )
 
@@ -194,6 +197,15 @@ class RefundAdmin(admin.ModelAdmin):
         success_count = 0
         for refund in queryset:
             try:
+                cash_state = cash_refund_status(refund)
+                if cash_state:
+                    if cash_state == 'succeeded':
+                        success_count += 1
+                        continue
+                    raise ValidationError({
+                        'detail': '微信原路退款不能人工确认成功，必须通过“同步微信原路退款状态”由微信结果确认'
+                    })
+
                 if refund.payment.channel == 'balance':
                     settled = settle_balance_refund(refund.pk, operator=request.user)
                     if settled.status == Refund.STATUS_SUCCEEDED:
@@ -226,15 +238,26 @@ class RefundAdmin(admin.ModelAdmin):
 
     @admin.action(description='标记退款失败')
     def mark_refund_failed(self, request, queryset):
-        updated = queryset.filter(
-            status__in=[Refund.STATUS_PENDING, Refund.STATUS_PROCESSING],
-        ).exclude(payment__channel='balance').update(
-            status=Refund.STATUS_FAILED,
-            failed_reason='管理员标记退款失败',
-        )
+        updated = 0
+        for refund in queryset.select_related('payment'):
+            if cash_refund_status(refund):
+                self.message_user(
+                    request,
+                    f'{refund.refund_no}: 微信原路退款不能人工标记失败，请同步微信状态',
+                    level=messages.WARNING,
+                )
+                continue
+            if refund.payment.channel == 'balance':
+                continue
+            if refund.status in {Refund.STATUS_PENDING, Refund.STATUS_PROCESSING}:
+                Refund.objects.filter(pk=refund.pk).update(
+                    status=Refund.STATUS_FAILED,
+                    failed_reason='管理员标记退款失败',
+                )
+                updated += 1
         self.message_user(
             request,
-            f'已标记 {updated} 笔第三方退款失败；余额退款请使用对账命令重试，不能手动标记失败。',
+            f'已标记 {updated} 笔第三方退款失败；余额退款和微信原路退款不能手动标记失败。',
         )
 
     def has_add_permission(self, request):
