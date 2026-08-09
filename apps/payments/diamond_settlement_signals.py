@@ -10,11 +10,11 @@ from apps.wallet.models import ClientWalletLedger
 from apps.wallet.services import get_or_lock_wallet, qmoney, write_wallet_ledger
 
 from .models import Payment
-from .virtualpay import VIRTUAL_CHANNEL
 
 
 logger = logging.getLogger(__name__)
 DIAMOND_SETTLEMENT_KEY = 'diamond_settlement'
+VIRTUAL_CHANNEL = 'wechat_virtual'
 
 
 def settle_virtual_payment_diamonds(payment_or_id):
