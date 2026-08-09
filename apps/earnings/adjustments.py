@@ -139,7 +139,7 @@ def reverse_refund_earnings(refund, operator=None):
 
     refund = (
         Refund.objects
-        .select_for_update()
+        .select_for_update(of=('self',))
         .select_related('order__parent_order')
         .get(pk=refund.pk)
     )

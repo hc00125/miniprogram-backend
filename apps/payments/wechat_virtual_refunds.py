@@ -88,6 +88,16 @@ def _query_xpay_order(*, openid, order_id):
     return response, dict(response.get('order') or {})
 
 
+def _query_xpay_refund_order(*, openid, refund_order_id):
+    """通过 xpay/query_refund_order 查询退款单状态（端点与 query_order 不同，pay_sig 算法一致）。"""
+    response = xpay_post('/xpay/query_refund_order', {
+        'openid': openid,
+        'env': virtual_env(),
+        'refund_order_id': refund_order_id,
+    })
+    return response, dict(response.get('order') or {})
+
+
 def _preflight_wechat_refund(payment, profile, refund_fee):
     _response, order_data = _query_xpay_order(
         openid=profile.openid,
@@ -476,9 +486,10 @@ def sync_wechat_original_refund(refund_or_id, *, operator=None):
         return refund
 
     profile = _profile_for_refund(refund)
-    _response, order_data = _query_xpay_order(
+    refund_order_id = meta.get('refund_order_id') or refund.refund_no
+    _response, order_data = _query_xpay_refund_order(
         openid=profile.openid,
-        order_id=meta.get('refund_order_id') or refund.refund_no,
+        refund_order_id=refund_order_id,
     )
     order_type = int(order_data.get('order_type') or 0)
     remote_status = int(order_data.get('status') or 0)
