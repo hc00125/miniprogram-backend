@@ -75,11 +75,11 @@ class PaymentAdminSearchTests(TestCase):
         self.assertContains(response, self.payment.payment_no)
 
     def test_refund_admin_text_search_does_not_treat_text_as_integer_id(self):
-        response = self.client.get('/admin/payments/refund/', {'q': 'chen'})
+        response = self.client.get('/admin/refunds/refundrecord/', {'q': 'chen'})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self.refund.refund_no)
 
     def test_refund_admin_numeric_search_matches_user_id(self):
-        response = self.client.get('/admin/payments/refund/', {'q': str(self.user.id)})
+        response = self.client.get('/admin/refunds/refundrecord/', {'q': str(self.user.id)})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self.refund.refund_no)
