@@ -178,11 +178,30 @@ class ClientWalletLedger(models.Model):
     TYPE_REFUND_IN = 'refund_in'
     TYPE_ADMIN_ADJUST = 'admin_adjust'
 
+    # 微信直接购买订单在账务上也统一为“人民币购钻石 → 钻石支付订单”。
+    # 这两类是内部桥接流水，金额一正一负、用户余额净变化为0，客户端交易页默认隐藏。
+    TYPE_VIRTUAL_PURCHASE_CREDIT = 'virtual_purchase_credit'
+    TYPE_VIRTUAL_ORDER_PAYMENT = 'virtual_order_payment'
+
+    # 已经退到钱包的钻石退款若再转换为微信原路退款，使用独立流水扣回/恢复，
+    # 便于审计且不会与人工调整混淆。
+    TYPE_WECHAT_REFUND_CONVERSION = 'wechat_refund_conversion'
+    TYPE_WECHAT_REFUND_RESTORE = 'wechat_refund_restore'
+
+    INTERNAL_ENTRY_TYPES = (
+        TYPE_VIRTUAL_PURCHASE_CREDIT,
+        TYPE_VIRTUAL_ORDER_PAYMENT,
+    )
+
     ENTRY_TYPE_CHOICES = [
         (TYPE_RECHARGE, '充值'),
         (TYPE_ORDER_PAYMENT, '订单支付'),
         (TYPE_REFUND_IN, '退款入账'),
         (TYPE_ADMIN_ADJUST, '人工调整'),
+        (TYPE_VIRTUAL_PURCHASE_CREDIT, '微信直付购入钻石（内部）'),
+        (TYPE_VIRTUAL_ORDER_PAYMENT, '微信直付订单钻石消费（内部）'),
+        (TYPE_WECHAT_REFUND_CONVERSION, '钱包退款转微信原路退款'),
+        (TYPE_WECHAT_REFUND_RESTORE, '微信原路退款失败返还钻石'),
     ]
 
     wallet = models.ForeignKey(ClientWallet, on_delete=models.PROTECT, related_name='ledgers')
