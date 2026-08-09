@@ -17,12 +17,32 @@ DIAMOND_SETTLEMENT_KEY = 'diamond_settlement'
 VIRTUAL_CHANNEL = 'wechat_virtual'
 
 
+def _record_settlement_skip(payment, reason):
+    payload = payment.notify_payload if isinstance(payment.notify_payload, dict) else {}
+    current = payload.get(DIAMOND_SETTLEMENT_KEY) or {}
+    skipped = {
+        **(current if isinstance(current, dict) else {}),
+        'status': 'skipped',
+        'reason': reason,
+        'updated_at': timezone.now().isoformat(),
+    }
+    Payment.objects.filter(pk=payment.pk).update(
+        notify_payload={**payload, DIAMOND_SETTLEMENT_KEY: skipped},
+        updated_at=timezone.now(),
+    )
+    payment.notify_payload = {**payload, DIAMOND_SETTLEMENT_KEY: skipped}
+    return payment
+
+
 def settle_virtual_payment_diamonds(payment_or_id):
     """把微信直接支付统一记成“人民币购钻石 → 钻石支付订单”。
 
     两条内部钱包流水在同一事务内一正一负，因此老板可用余额净变化始终为0。
     普通退款只需要恢复订单消费，即自然得到钻石；微信原路退款则撤销人民币
     资金侧，不需要先人为制造一笔钱包退款。
+
+    极少数历史/测试支付若缺少老板 ClientProfile，不阻断已经确认的真实支付；
+    记录 skipped 供后台核对。正常小程序用户都有 ClientProfile，会正常结算。
     """
     payment_id = getattr(payment_or_id, 'pk', payment_or_id)
 
@@ -42,11 +62,21 @@ def settle_virtual_payment_diamonds(payment_or_id):
         boss_user = order.boss_user if order and order.boss_user_id else None
         profile = getattr(boss_user, 'client_profile', None) if boss_user else None
         if not profile:
-            raise RuntimeError(f'微信虚拟支付 {payment.payment_no} 找不到老板钱包账户')
+            logger.error(
+                '[统一钻石结算] 微信虚拟支付缺少老板 ClientProfile，跳过桥接 payment_no=%s order_no=%s',
+                payment.payment_no,
+                payment.order_id,
+            )
+            return _record_settlement_skip(payment, 'missing_client_profile')
 
         amount = qmoney(payment.amount)
         if amount <= 0:
-            raise RuntimeError(f'微信虚拟支付 {payment.payment_no} 金额不正确')
+            logger.error(
+                '[统一钻石结算] 微信虚拟支付金额不正确，跳过桥接 payment_no=%s amount=%s',
+                payment.payment_no,
+                payment.amount,
+            )
+            return _record_settlement_skip(payment, 'invalid_payment_amount')
 
         wallet = get_or_lock_wallet(profile)
 
@@ -93,6 +123,4 @@ def settle_virtual_payment_diamonds(payment_or_id):
 def settle_paid_wechat_virtual_payment(sender, instance, **kwargs):
     if instance.channel != VIRTUAL_CHANNEL or instance.status != 'paid':
         return
-    # 支付确认与钻石桥接必须一起成功；失败时抛出异常让外层支付事务回滚，
-    # 后续主动查单会安全重试，且流水 reference_id 保证幂等。
     settle_virtual_payment_diamonds(instance.pk)
