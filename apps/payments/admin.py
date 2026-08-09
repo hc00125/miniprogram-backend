@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.contrib import admin, messages
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from rest_framework.exceptions import ValidationError
 
 from apps.earnings.services import reverse_refund_earnings
@@ -19,8 +19,36 @@ from .wechat_virtual_refunds import (
 )
 
 
+class BossUserIdSearchMixin:
+    """Allow one admin search box to safely support both text and numeric user IDs.
+
+    Django applies every ``search_fields`` lookup to the same search term. Putting
+    an integer ``id__exact`` lookup directly in ``search_fields`` therefore makes
+    a text query such as ``chen`` raise ``ValueError: Field 'id' expected a
+    number``. Keep ``search_fields`` text-only, then OR in exact numeric ID
+    matches only when the entire term is an integer.
+    """
+
+    def get_search_results(self, request, queryset, search_term):
+        results, may_have_duplicates = super().get_search_results(
+            request,
+            queryset,
+            search_term,
+        )
+        normalized = str(search_term or '').strip()
+        if not normalized.isdigit():
+            return results, may_have_duplicates
+
+        user_id = int(normalized)
+        id_matches = queryset.filter(
+            Q(order__boss_user_id=user_id)
+            | Q(order__boss_user__client_profile__id=user_id)
+        )
+        return results | id_matches, may_have_duplicates
+
+
 @admin.register(Payment)
-class PaymentAdmin(admin.ModelAdmin):
+class PaymentAdmin(BossUserIdSearchMixin, admin.ModelAdmin):
     list_display = [
         'id', 'payment_no', 'boss_user_id', 'order', 'channel', 'scene',
         'amount', 'status', 'wechat_original_refund_state', 'created_at',
@@ -28,10 +56,10 @@ class PaymentAdmin(admin.ModelAdmin):
     list_filter = ['channel', 'scene', 'status']
     search_fields = [
         'payment_no', 'order__order_no', 'third_trade_no',
-        'order__boss_user__id__exact', 'order__boss_user__client_profile__id__exact',
         'order__boss_user__client_profile__nickname',
         'order__boss_user__client_profile__openid',
     ]
+    search_help_text = '可搜索：用户ID、客户资料ID、昵称、OpenID、订单号、支付单号、微信交易号'
     list_select_related = ['order', 'order__boss_user']
     actions = [
         'create_full_refunds',
@@ -144,7 +172,7 @@ class PaymentAdmin(admin.ModelAdmin):
 
 
 @admin.register(Refund)
-class RefundAdmin(admin.ModelAdmin):
+class RefundAdmin(BossUserIdSearchMixin, admin.ModelAdmin):
     list_display = [
         'refund_no', 'payment', 'order', 'amount', 'status',
         'wechat_original_refund_state', 'third_refund_no', 'created_by', 'created_at',
@@ -152,10 +180,10 @@ class RefundAdmin(admin.ModelAdmin):
     list_filter = ['status', 'payment__channel', 'created_at']
     search_fields = [
         'refund_no', 'payment__payment_no', 'order__order_no', 'third_refund_no', 'reason',
-        'order__boss_user__id__exact', 'order__boss_user__client_profile__id__exact',
         'order__boss_user__client_profile__nickname',
         'order__boss_user__client_profile__openid',
     ]
+    search_help_text = '可搜索：用户ID、客户资料ID、昵称、OpenID、订单号、支付单号、退款单号'
     readonly_fields = [
         'refund_no', 'payment', 'order', 'amount', 'reason', 'status',
         'third_refund_no', 'notify_payload', 'created_by', 'created_at', 'updated_at',
