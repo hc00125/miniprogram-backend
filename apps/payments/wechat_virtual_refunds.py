@@ -2,7 +2,6 @@ import logging
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
-from django.db.models import Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -74,6 +73,17 @@ def _profile_for_refund(refund):
     profile = getattr(boss_user, 'client_profile', None) if boss_user else None
     if not profile:
         raise ValidationError({'detail': '找不到该订单对应的老板钱包账户'})
+    if not profile.openid:
+        raise ValidationError({'detail': '该老板账号缺少微信 openid，不能发起微信原路退款'})
+    return profile
+
+
+def _profile_for_payment(payment):
+    order = payment.order
+    boss_user = order.boss_user if order and order.boss_user_id else None
+    profile = getattr(boss_user, 'client_profile', None) if boss_user else None
+    if not profile:
+        raise ValidationError({'detail': '找不到该支付记录对应的老板钱包账户'})
     if not profile.openid:
         raise ValidationError({'detail': '该老板账号缺少微信 openid，不能发起微信原路退款'})
     return profile
@@ -330,8 +340,9 @@ def sync_wechat_original_refund(refund_or_id, *, operator=None):
 def refund_payment_to_wechat_original(payment_or_id, *, operator=None, reason='管理员微信原路退款'):
     """后台整单微信原路退款入口。
 
-    先复用现有退款体系确保“整单金额已经退成钻石”，再把这笔钻石退款转换成微信现金退款。
-    对用户而言钱包净变化为0；如果之前已经拿到并保留了钻石退款，则会直接扣回对应钻石。
+    先核对微信侧剩余可退金额，再复用现有退款体系确保“整单金额已经退成钻石”，
+    最后把这笔钻石退款转换成微信现金退款。对用户而言钱包净变化为0；如果之前
+    已经拿到并保留了钻石退款，则会直接扣回对应钻石。
     """
     payment_id = getattr(payment_or_id, 'pk', payment_or_id)
     payment = (
@@ -343,6 +354,36 @@ def refund_payment_to_wechat_original(payment_or_id, *, operator=None, reason='�
         raise ValidationError({'detail': '只有微信虚拟支付记录可以执行微信原路退款'})
     if payment.status not in {'paid', 'refunded'}:
         raise ValidationError({'detail': '该支付记录当前状态不能退款'})
+
+    # 幂等保护：已经成功/处理中/未知的微信退款，不再次创建钱包退款或重复扣钻石。
+    existing_refunds = list(
+        Refund.objects
+        .filter(payment=payment, status=Refund.STATUS_SUCCEEDED)
+        .order_by('created_at', 'id')
+    )
+    for existing in existing_refunds:
+        state = cash_refund_status(existing)
+        if state == CASH_STATUS_SUCCEEDED:
+            return existing
+        if state in {CASH_STATUS_PREPARING, CASH_STATUS_PROCESSING, CASH_STATUS_UNKNOWN}:
+            raise ValidationError({'detail': '该支付单已有微信原路退款任务，请先同步状态'})
+
+    # 先查询微信资金事实，再触碰本地钱包。这样即使微信侧已被其它售后流程退款，
+    # 也不会先给用户钱包增加一份钻石退款。
+    profile = _profile_for_payment(payment)
+    _preflight_response, payment_order = _query_xpay_order(
+        openid=profile.openid,
+        order_id=payment.payment_no,
+    )
+    full_fee = amount_to_cents(payment.amount)
+    left_fee = int(payment_order.get('left_fee') or 0)
+    if left_fee < full_fee:
+        raise ValidationError({
+            'detail': (
+                f'微信侧当前仅剩{left_fee}分可退，整单需要{full_fee}分。'
+                '可能已存在外部/部分退款，请先人工核对。'
+            )
+        })
 
     ensure_payment_refund(
         payment.payment_no,
