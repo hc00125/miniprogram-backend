@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     'apps.players',
     'apps.orders',
     'apps.payments',
+    'apps.refunds.apps.RefundsConfig',
     'apps.earnings.apps.EarningsConfig',
     'apps.wallet.apps.WalletConfig',
     'apps.support.apps.SupportConfig',
