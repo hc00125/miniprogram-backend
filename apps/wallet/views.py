@@ -194,6 +194,9 @@ def transactions(request):
     queryset = (
         ClientWalletLedger.objects
         .filter(wallet__profile=profile)
+        # 微信直付会在后台写“购钻石 + 订单消费”两条内部桥接流水，
+        # 它们只用于统一财务模型和审计，不应让用户账单出现无意义的+/-两条记录。
+        .exclude(entry_type__in=ClientWalletLedger.INTERNAL_ENTRY_TYPES)
         .order_by('-created_at', '-id')
     )
     count = queryset.count()
@@ -205,6 +208,7 @@ def transactions(request):
             {
                 'id': entry.id,
                 'entry_type': entry.entry_type,
+                'entry_type_display': entry.get_entry_type_display(),
                 'amount': str(qmoney(entry.amount)),
                 'balance_after': str(qmoney(entry.balance_after)),
                 'amount_diamonds': yuan_to_diamonds(entry.amount),
