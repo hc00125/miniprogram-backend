@@ -52,7 +52,7 @@ def open_public_replacement(order):
     ).first()
 
 
-def can_player_take_replacement(order, player, state=None):
+def can_player_take_replacement(order, player, state=None, check_cancellation_record=True):
     state = state or open_public_replacement(order)
     if not state:
         return False
@@ -60,7 +60,8 @@ def can_player_take_replacement(order, player, state=None):
         return False
     if order.order_players.filter(player=player).exists():
         return False
-    if PlayerCancellationRecord.objects.filter(order=order, player=player).exists():
+    # 老板重新指定的人豁免取消案底检查：是老板点名要的，不是陪玩自己抢回
+    if check_cancellation_record and PlayerCancellationRecord.objects.filter(order=order, player=player).exists():
         return False
     if state.required_player_type_id:
         required_type = PlayerType.objects.filter(id=state.required_player_type_id).first()

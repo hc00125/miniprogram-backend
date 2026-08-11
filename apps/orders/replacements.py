@@ -58,7 +58,7 @@ def open_targeted_replacement(order):
     ).first()
 
 
-def can_player_take_replacement(order, player, state=None):
+def can_player_take_replacement(order, player, state=None, check_cancellation_record=True):
     state = state or open_public_replacement(order)
     if not state:
         return False
@@ -66,7 +66,8 @@ def can_player_take_replacement(order, player, state=None):
         return False
     if order.order_players.filter(player=player).exists():
         return False
-    if PlayerCancellationRecord.objects.filter(order=order, player=player).exists():
+    # 老板重新指定的人豁免取消案底检查：是老板点名要的，不是陪玩自己抢回
+    if check_cancellation_record and PlayerCancellationRecord.objects.filter(order=order, player=player).exists():
         return False
     if state.required_player_type_id and player.player_type_id != state.required_player_type_id:
         return False
@@ -243,7 +244,8 @@ def accept_replacement_designation(order_no, player, operator=None):
         state.save(update_fields=['current_designation', 'updated_at'])
         _sync_designated_snapshot(order)
         raise ValidationError({'detail': '补位邀请已超时，请让老板重新指定'})
-    if not can_player_take_replacement(order, player, state):
+    # 老板重新指定的人豁免取消案底检查：是老板点名要的，不是陪玩自己抢回
+    if not can_player_take_replacement(order, player, state, check_cancellation_record=False):
         raise ValidationError({'detail': '您不符合该补位名额要求，或名额已满'})
 
     OrderPlayer.objects.create(order=order, player=player, is_designated=True, designated_type_id=None)
