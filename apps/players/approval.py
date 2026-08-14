@@ -4,6 +4,7 @@ from django.utils import timezone
 
 from apps.accounts.models import ClientProfile
 from apps.catalog.models import PlayerType
+from apps.common.media_security import ensure_media_publishable
 
 from .models import Player, PlayerApplication
 
@@ -79,6 +80,12 @@ def approve_player_application(
     )
     if not application.user_id:
         raise ValidationError('申请未绑定用户，无法通过审核')
+
+    # 音频属于异步内容安全检测：只有微信最终返回 pass 才允许进入公开陪玩资料。
+    ensure_media_publishable(
+        user=application.user,
+        media_url=application.audio_intro_url,
+    )
 
     # 审批时再次检查正式陪玩和其他待审/已通过申请，兼容修复前遗留的同名数据。
     name = validate_player_name_available(
