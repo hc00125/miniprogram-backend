@@ -2,7 +2,7 @@ from django.urls import path
 
 from apps.common.account_guard import require_operational
 
-from . import application_views, cancellation_views, designation_views, escort_views, order_summary_views, payment_order_views, permission_views, profile_views, room_views, service_listing_views, views
+from . import application_views, cancellation_views, designation_views, escort_views, order_summary_views, payment_order_views, permission_views, profile_views, public_input_views, room_views, service_listing_views, views
 
 urlpatterns = [
     path('list', profile_views.public_list),
@@ -18,7 +18,7 @@ urlpatterns = [
     path('service-listings/<int:listing_id>', require_operational(service_listing_views.service_listing_detail)),
     path('escort-qualification', require_operational(escort_views.escort_qualification)),
     path('apply', require_operational(application_views.apply)),
-    path('apply/audio', require_operational(views.upload_application_audio)),
+    path('apply/audio', require_operational(public_input_views.upload_application_audio)),
     path('apply/status', views.apply_status),
     path('available-orders', permission_views.available_orders),
     path('available-orders-summary', permission_views.available_orders_summary),
@@ -28,7 +28,7 @@ urlpatterns = [
     path('grab', require_operational(permission_views.grab)),
     path('my-orders', order_summary_views.my_orders),
     path('order/<str:order_no>', payment_order_views.order_detail),
-    path('order/<str:order_no>/kook-room', views.set_kook_room),
+    path('order/<str:order_no>/kook-room', public_input_views.set_kook_room),
     path('order/<str:order_no>/room-entry/confirm', room_views.confirm_room_entry),
     path('order/<str:order_no>/cancel-preview', cancellation_views.cancel_preview),
     path('order/<str:order_no>/cancel', cancellation_views.cancel_order),
