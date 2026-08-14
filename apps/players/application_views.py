@@ -4,6 +4,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.accounts.models import ClientProfile
+from apps.common.content_security import SCENE_PROFILE, ensure_texts_safe, user_openid
 
 from .models import Player, PlayerApplication
 from .serializers import PlayerApplicationCreateSerializer, PlayerApplicationSerializer
@@ -48,6 +49,20 @@ def apply(request):
         context={'request': request},
     )
     serializer.is_valid(raise_exception=True)
+
+    # 只检测会成为公开资料的 UGC。真实姓名和联系方式属于私密审核资料，
+    # 不发送到内容安全接口。
+    public_name = profile.nickname if profile else serializer.validated_data.get('name')
+    ensure_texts_safe(
+        [
+            public_name,
+            serializer.validated_data.get('bio'),
+            serializer.validated_data.get('audio_intro_title'),
+        ],
+        openid=user_openid(request.user),
+        scene=SCENE_PROFILE,
+    )
+
     application = serializer.save(
         user=request.user,
         status=PlayerApplication.STATUS_PENDING,
