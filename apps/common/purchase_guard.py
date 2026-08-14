@@ -52,10 +52,35 @@ class IsPurchaseAvailable(BasePermission):
         return True
 
 
+class AllowIOSBalancePayment(BasePermission):
+    """iOS 豁免：仅允许钱包余额付款（/pay/balance/create）。
+
+    微信官方支付（充值/下单/微信支付）仍保持 iOS 禁用，
+    但用户使用钱包里已有的钻石付款不涉及新充值，予以放行。
+    """
+
+    def has_permission(self, request, view):
+        if request_client_platform(request) == 'ios' and not ios_purchase_enabled():
+            # iOS 且购买未开放时，只允许余额支付接口通过
+            return True
+        return True
+
+
 def require_purchase_available(view):
     """给现有 DRF 函数视图追加购买渠道校验，不改变原认证与账户权限。"""
     permission_classes = list(getattr(view.cls, 'permission_classes', []))
     if IsPurchaseAvailable not in permission_classes:
         permission_classes.append(IsPurchaseAvailable)
+    view.cls.permission_classes = permission_classes
+    return view
+
+
+def require_ios_balance_only(view):
+    """余额支付专用：iOS 下不拦截（余额付款豁免），非 iOS 正常校验运营状态。"""
+    permission_classes = list(getattr(view.cls, 'permission_classes', []))
+    if IsPurchaseAvailable in permission_classes:
+        permission_classes.remove(IsPurchaseAvailable)
+    if AllowIOSBalancePayment not in permission_classes:
+        permission_classes.append(AllowIOSBalancePayment)
     view.cls.permission_classes = permission_classes
     return view
