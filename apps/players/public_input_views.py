@@ -66,8 +66,8 @@ def upload_application_audio(request):
     if not extension:
         return Response({'detail': '只支持 MP3/M4A/AAC/WAV 音频'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if file_obj.size > 20 * 1024 * 1024:
-        return Response({'detail': '音频文件不能超过 20MB'}, status=status.HTTP_400_BAD_REQUEST)
+    if file_obj.size > 10 * 1024 * 1024:
+        return Response({'detail': '音频文件不能超过 10MB'}, status=status.HTTP_400_BAD_REQUEST)
 
     title = str(request.data.get('title') or getattr(file_obj, 'name', '') or '音频自我介绍').strip()
     ensure_text_safe(title, openid=user_openid(request.user), scene=SCENE_PROFILE)
