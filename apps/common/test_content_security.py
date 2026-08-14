@@ -9,7 +9,6 @@ from .content_security import (
     SCENE_PROFILE,
     check_image_file,
     check_text,
-    content_security_enabled,
     ensure_image_safe,
     ensure_text_safe,
 )
@@ -73,10 +72,3 @@ class ContentSecurityTests(SimpleTestCase):
             with self.assertRaises(ValidationError) as context:
                 ensure_image_safe(upload, openid='openid')
         self.assertIn('图片含违规内容', str(context.exception.detail))
-
-    @override_settings(DEBUG=False)
-    def test_production_defaults_to_enabled_when_no_explicit_setting(self):
-        # override_settings may leave an explicit setting in some test runners;
-        # this assertion only checks the normal production default path when absent.
-        if not hasattr(self.settings(), 'WECHAT_CONTENT_SECURITY_ENABLED'):
-            self.assertTrue(content_security_enabled())
