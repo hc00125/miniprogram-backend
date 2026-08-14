@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from apps.accounts.models import ClientProfile
 from apps.common.content_security import SCENE_PROFILE, ensure_texts_safe, user_openid
+from apps.common.media_security import ensure_tracked_media_reference
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.orders.models import Order
 
@@ -164,6 +165,10 @@ def profile_settings(request):
         openid=user_openid(request.user),
         scene=SCENE_PROFILE,
     )
+
+    requested_audio_url = str(data.get('audio_intro_url') or '').strip()
+    if requested_audio_url and requested_audio_url != (player.audio_intro_url or ''):
+        ensure_tracked_media_reference(user=request.user, media_url=requested_audio_url)
 
     with transaction.atomic():
         locked_player = Player.objects.select_for_update().get(pk=player.pk)
