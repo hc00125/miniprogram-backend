@@ -5,6 +5,7 @@ from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Package
+from apps.common.content_security import SCENE_SOCIAL, ensure_texts_safe, user_openid
 from apps.common.money import money
 
 from .models import CartItem
@@ -103,9 +104,23 @@ def _finalize_hourly_order(order, hours):
     return order
 
 
+def _moderate_order_text(validated_data, user=None):
+    # boss_wechat 在当前小程序下单契约里保存老板 OpenID；若历史调用未传，
+    # 再从已登录账号资料取 OpenID。只检测自由填写字段，不检测商品/数量等结构化数据。
+    openid = str(validated_data.get('boss_wechat') or '') or user_openid(user)
+    ensure_texts_safe(
+        [validated_data.get('game_id'), validated_data.get('boss_note')],
+        openid=openid,
+        scene=SCENE_SOCIAL,
+    )
+
+
 @transaction.atomic
-def create_order(validated_data, user=None, allow_existing_active=False):
+def create_order(validated_data, user=None, allow_existing_active=False, skip_content_security=False):
     """创建一张业务订单；小时制商品的 quantity 表示 booked_hours。"""
+    if not skip_content_security:
+        _moderate_order_text(validated_data, user)
+
     package, item = _resolve_package(validated_data)
     requested_quantity = normalize_service_hours(item.get('quantity') or 1)
     booked_hours_raw = validated_data.get('booked_hours')
@@ -133,6 +148,8 @@ def create_order(validated_data, user=None, allow_existing_active=False):
 @transaction.atomic
 def create_cart_orders(cart_item_ids, validated_data, user):
     """每个购物车条目创建一张订单；条目 quantity 作为该单服务时长。"""
+    _moderate_order_text(validated_data, user)
+
     ordered_ids = []
     seen_ids = set()
     for raw_id in cart_item_ids or []:
@@ -173,7 +190,12 @@ def create_cart_orders(cart_item_ids, validated_data, user):
             'boss_note': validated_data.get('boss_note'),
             'booked_hours': hours if is_hourly_service(cart_item.package) else 1,
         }
-        orders.append(create_order(order_payload, user, allow_existing_active=True))
+        orders.append(create_order(
+            order_payload,
+            user,
+            allow_existing_active=True,
+            skip_content_security=True,
+        ))
 
     CartItem.objects.filter(id__in=ordered_ids, user=user).delete()
     return orders
