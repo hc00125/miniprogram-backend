@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import struct
 import xml.etree.ElementTree as ET
 
@@ -23,11 +24,16 @@ def _sha1_signature(*parts):
 
 
 def _message_token():
-    return str(getattr(settings, 'WECHAT_MESSAGE_TOKEN', '') or '').strip()
+    configured = getattr(settings, 'WECHAT_MESSAGE_TOKEN', '') or os.environ.get('WECHAT_MESSAGE_TOKEN', '')
+    return str(configured or '').strip()
 
 
 def _encoding_aes_key():
-    return str(getattr(settings, 'WECHAT_MESSAGE_ENCODING_AES_KEY', '') or '').strip()
+    configured = (
+        getattr(settings, 'WECHAT_MESSAGE_ENCODING_AES_KEY', '')
+        or os.environ.get('WECHAT_MESSAGE_ENCODING_AES_KEY', '')
+    )
+    return str(configured or '').strip()
 
 
 def _verify_plain_signature(request):
