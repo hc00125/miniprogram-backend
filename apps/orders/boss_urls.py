@@ -1,7 +1,6 @@
 from django.urls import path
 
 from apps.common.account_guard import require_operational
-from apps.common.purchase_guard import require_purchase_available
 
 from . import (
     batch_views,
@@ -22,10 +21,10 @@ urlpatterns = [
     path('addons', boss_views.addons),
     path('player-types', boss_views.player_types),
     path('online-players', boss_views.online_players),
-    path('order', require_purchase_available(require_operational(boss_views.create_order))),
-    path('listing-order', require_purchase_available(require_operational(listing_order_views.create_order))),
+    path('order', require_operational(boss_views.create_order)),
+    path('listing-order', require_operational(listing_order_views.create_order)),
     path('order/<str:order_no>', payment_views.order_detail),
-    path('order/<str:order_no>/renew', require_purchase_available(require_operational(boss_views.create_renewal))),
+    path('order/<str:order_no>/renew', require_operational(boss_views.create_renewal)),
     path('order/<str:order_no>/designations', require_operational(designation_views.designations)),
     path('order/<str:order_no>/designation/<int:designation_id>/release', designation_views.release),
     path('order/<str:order_no>/matching/continue', matching_views.continue_matching),
@@ -35,7 +34,7 @@ urlpatterns = [
     path('order/<str:order_no>/replacement/cancel-remaining', boss_replacement_views.cancel_remaining),
     path('order/<str:order_no>/replacement/revoke-cancel', boss_replacement_views.revoke_cancel_remaining),
     path('orders/me', boss_views.my_orders),
-    path('orders/batch', require_purchase_available(require_operational(batch_views.create_cart_order_batch))),
+    path('orders/batch', require_operational(batch_views.create_cart_order_batch)),
     path('orders/<str:boss_wechat>', boss_views.boss_orders),
     path('order/<str:order_no>/cancel', boss_views.cancel_order),
     path('order/<str:order_no>/pause', boss_views.pause),
