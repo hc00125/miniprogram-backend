@@ -7,6 +7,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
 from apps.catalog.models import Package, PackageSpec
+from apps.common.content_security import SCENE_PROFILE, ensure_text_safe, user_openid
 from apps.common.permissions import IsApprovedPlayer, current_player
 
 from .escort_qualification import player_has_approved_escort_qualification
@@ -138,6 +139,8 @@ def service_listings(request):
         return Response({'detail': '共享服务规格不存在、未绑定虚拟道具或已下架'}, status=status.HTTP_400_BAD_REQUEST)
 
     custom_description = str(request.data.get('custom_description') or '').strip()[:300]
+    ensure_text_safe(custom_description, openid=user_openid(request.user), scene=SCENE_PROFILE)
+
     with transaction.atomic():
         listing, created = PlayerServiceListing.objects.select_for_update().get_or_create(
             player=player,
@@ -212,7 +215,9 @@ def service_listing_detail(request, listing_id):
     if 'is_available' in request.data and listing.status == PlayerServiceListing.STATUS_APPROVED:
         listing.is_available = request.data.get('is_available') is True
     if 'custom_description' in request.data:
-        listing.custom_description = str(request.data.get('custom_description') or '').strip()[:300]
+        custom_description = str(request.data.get('custom_description') or '').strip()[:300]
+        ensure_text_safe(custom_description, openid=user_openid(request.user), scene=SCENE_PROFILE)
+        listing.custom_description = custom_description
     if 'sort_order' in request.data:
         try:
             listing.sort_order = int(request.data.get('sort_order') or 0)
