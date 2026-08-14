@@ -5,6 +5,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.common.content_security import SCENE_SOCIAL, ensure_texts_safe, user_openid
+
 from .designated_drafts import (
     create_draft,
     quote_draft,
@@ -19,7 +21,13 @@ from .serializers import DesignatedDraftSerializer
 def _input(request, *, partial=False):
     serializer = DesignatedDraftSerializer(data=request.data, partial=partial)
     serializer.is_valid(raise_exception=True)
-    return serializer.validated_data
+    data = serializer.validated_data
+    ensure_texts_safe(
+        [data.get('game_id'), data.get('boss_note')],
+        openid=str(data.get('boss_wechat') or '') or user_openid(request.user),
+        scene=SCENE_SOCIAL,
+    )
+    return data
 
 
 def _draft_response(draft, quote=None):
