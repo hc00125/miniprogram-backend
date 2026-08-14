@@ -21,7 +21,7 @@ class IOSPurchaseGuardTests(TestCase):
         self.assertEqual(str(response.data.get('code')), 'IOS_PURCHASE_DISABLED')
         self.assertEqual(str(response.data.get('detail')), 'iOS端当前暂不提供在线购买')
 
-    def test_ios_cannot_create_orders_recharges_or_payments(self):
+    def test_ios_cannot_create_orders_recharges_or_external_payments(self):
         paths = [
             '/api/boss/order',
             '/api/boss/listing-order',
@@ -29,13 +29,24 @@ class IOSPurchaseGuardTests(TestCase):
             '/api/boss/order/TEST-ORDER/renew',
             '/api/client/wallet/recharge/create',
             '/api/pay/create',
-            '/api/pay/balance/create',
             '/api/pay/wechat/miniprogram/create',
             '/api/pay/wechat/virtual/create',
         ]
         for path in paths:
             with self.subTest(path=path):
                 self.assert_ios_blocked(path)
+
+    def test_ios_existing_diamond_balance_payment_is_not_blocked_by_purchase_guard(self):
+        response = self.client.post(
+            '/api/pay/balance/create',
+            {},
+            format='json',
+            HTTP_X_CLIENT_PLATFORM='ios',
+        )
+        # The endpoint may reject the empty request for business reasons, but it must
+        # not be rejected by the iOS external-purchase guard.
+        self.assertNotEqual(response.status_code, 403, response.data)
+        self.assertNotEqual(str(response.data.get('code')), 'IOS_PURCHASE_DISABLED')
 
     def test_iphone_user_agent_is_blocked_for_older_clients(self):
         response = self.client.post(
