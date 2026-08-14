@@ -5,6 +5,7 @@ from rest_framework.response import Response
 
 from apps.accounts.models import ClientProfile
 from apps.common.content_security import SCENE_PROFILE, ensure_texts_safe, user_openid
+from apps.common.media_security import ensure_tracked_media_reference
 
 from .models import Player, PlayerApplication
 from .serializers import PlayerApplicationCreateSerializer, PlayerApplicationSerializer
@@ -61,6 +62,13 @@ def apply(request):
         ],
         openid=user_openid(request.user),
         scene=SCENE_PROFILE,
+    )
+
+    # 音频 URL 只能来自平台上传接口。异步检测仍在 pending 时可以先提交人工申请，
+    # 但真正审批公开时会再次强制要求微信结果为 pass。
+    ensure_tracked_media_reference(
+        user=request.user,
+        media_url=serializer.validated_data.get('audio_intro_url'),
     )
 
     application = serializer.save(
