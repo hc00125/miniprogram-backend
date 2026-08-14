@@ -37,12 +37,9 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-produ
 DEBUG = env_bool('DJANGO_DEBUG', 'true')
 ALLOWED_HOSTS = [host.strip() for host in os.environ.get('DJANGO_ALLOWED_HOSTS', '*').split(',') if host.strip()]
 
-# 微信 UGC 内容安全：生产默认开启；本地开发/CI 可显式设为 false。
-WECHAT_CONTENT_SECURITY_ENABLED = env_bool(
-    'WECHAT_CONTENT_SECURITY_ENABLED',
-    'false' if DEBUG else 'true',
-)
-WECHAT_CONTENT_SECURITY_HTTP_TIMEOUT = env_int('WECHAT_CONTENT_SECURITY_HTTP_TIMEOUT', 8)
+# 微信 UGC 内容安全：生产默认开启；本地开发/CI 可显式关闭。
+WECHAT_CONTENT_SECURITY_ENABLED = env_bool('WECHAT_CONTENT_SECURITY_ENABLED', 'false' if DEBUG else 'true')
+WECHAT_CONTENT_SECURITY_HTTP_TIMEOUT = env_int('WECHAT_CONTENT_SECURITY_HTTP_TIMEOUT', '8')
 
 # 维护模式 — 开启后所有 API 返回 503（除健康检查外）
 MAINTENANCE_MODE = env_bool('MAINTENANCE_MODE', 'false')
@@ -100,14 +97,14 @@ MIDDLEWARE = [
 ]
 
 if 'corsheaders' in INSTALLED_APPS:
-    MIDDLEWARE.insert(2, 'corsheaders.middleware.CorsMiddleware')
+    MIDDLEWARE.insert(0, 'corsheaders.middleware.CorsMiddleware')
 
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [BASE_DIR / 'templates'],
+        'DIRS': [os.path.join(BASE_DIR, 'templates')],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -116,95 +113,164 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
             ],
         },
-    },
+    }
 ]
 
 WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
 
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
+
 if DATABASE_URL:
-    try:
-        import dj_database_url
-    except ImportError as exc:
-        raise RuntimeError('DATABASE_URL is set but dj-database-url is not installed') from exc
-    DATABASES = {'default': dj_database_url.parse(DATABASE_URL, conn_max_age=60)}
+    from urllib.parse import unquote, urlparse
+
+    u = urlparse(DATABASE_URL)
+    engine_map = {
+        'postgres': 'django.db.backends.postgresql',
+        'postgresql': 'django.db.backends.postgresql',
+        'mysql': 'django.db.backends.mysql',
+        'sqlite': 'django.db.backends.sqlite3',
+    }
+    DATABASES = {
+        'default': {
+            'ENGINE': engine_map.get(u.scheme, 'django.db.backends.sqlite3'),
+            'NAME': u.path.lstrip('/'),
+            'USER': unquote(u.username) if u.username else '',
+            'PASSWORD': unquote(u.password) if u.password else '',
+            'HOST': u.hostname or '',
+            'PORT': str(u.port) if u.port else '',
+        }
+    }
 else:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
+            'NAME': os.environ.get('SQLITE_DB_PATH', str(BASE_DIR / 'db.sqlite3')),
         }
     }
 
-AUTH_PASSWORD_VALIDATORS = []
+AUTH_PASSWORD_VALIDATORS = [
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+]
 
 LANGUAGE_CODE = 'zh-hans'
 TIME_ZONE = 'Asia/Shanghai'
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = '/static/'
+STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_DIRS = []
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+APPEND_SLASH = False
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+
+SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', 'false' if DEBUG else 'true')
+CSRF_COOKIE_SECURE = env_bool('CSRF_COOKIE_SECURE', 'false' if DEBUG else 'true')
+SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', 'false')
+SECURE_HSTS_SECONDS = env_int('SECURE_HSTS_SECONDS', '0' if DEBUG else '31536000')
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'false' if DEBUG else 'true')
+SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', 'false')
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if env_bool('SECURE_PROXY_SSL_HEADER', 'true') else None
 
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'apps.accounts.authentication.ClientJWTAuthentication',
-        'apps.accounts.authentication.PlayerTokenAuthentication',
-    ],
-    'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.AllowAny'],
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'apps.accounts.authentication.LegacyPlayerTokenAuthentication',
+        'apps.accounts.authentication.LenientJWTAuthentication',
+    ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.AllowAny',
+    ),
+    'DEFAULT_PAGINATION_CLASS': 'apps.common.pagination.OptionalPageNumberPagination',
+    'PAGE_SIZE': env_int('DRF_PAGE_SIZE', '20'),
+    # 'DEFAULT_THROTTLE_CLASSES': (
+    #     'rest_framework.throttling.AnonRateThrottle',
+    #     'rest_framework.throttling.UserRateThrottle',
+    # ),
+    # 'DEFAULT_THROTTLE_RATES': {
+    #     'anon': os.environ.get('DRF_THROTTLE_ANON', '300/min'),
+    #     'user': os.environ.get('DRF_THROTTLE_USER', '600/min'),
+    # },
+    'COERCE_DECIMAL_TO_STRING': False,
+    'EXCEPTION_HANDLER': 'apps.common.exceptions.compat_exception_handler',
 }
 
 if 'drf_spectacular' in INSTALLED_APPS:
     REST_FRAMEWORK['DEFAULT_SCHEMA_CLASS'] = 'drf_spectacular.openapi.AutoSchema'
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=7),
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=int(os.environ.get('JWT_ACCESS_DAYS', '30'))),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=int(os.environ.get('JWT_REFRESH_DAYS', '90'))),
+    'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
-CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', 'true')
+SPECTACULAR_SETTINGS = {
+    'TITLE': '俱乐部点单 Django API',
+    'DESCRIPTION': '兼容微信小程序现有接口契约的 Django/DRF 后端',
+    'VERSION': '1.0.0',
+}
 
 WECHAT_APP_ID = os.environ.get('WECHAT_APP_ID', '')
 WECHAT_APP_SECRET = os.environ.get('WECHAT_APP_SECRET', '')
 ENABLE_DEV_OPENID_LOGIN = env_bool('ENABLE_DEV_OPENID_LOGIN', 'false')
-ENABLE_MOCK_PAYMENT = env_bool('ENABLE_MOCK_PAYMENT', 'false')
 
-# 微信支付（API v3）
+# Local development can keep mock payment enabled. Production must explicitly set it to false.
+ENABLE_MOCK_PAYMENT = env_bool('ENABLE_MOCK_PAYMENT', 'true')
+
+# WeChat Pay API v3 (ordinary merchant + Mini Program/JSAPI payment).
 WECHATPAY_MCH_ID = os.environ.get('WECHATPAY_MCH_ID', '')
 WECHATPAY_MERCHANT_SERIAL_NO = os.environ.get('WECHATPAY_MERCHANT_SERIAL_NO', '')
-WECHATPAY_MERCHANT_PRIVATE_KEY = os.environ.get('WECHATPAY_MERCHANT_PRIVATE_KEY', '')
 WECHATPAY_MERCHANT_PRIVATE_KEY_PATH = os.environ.get('WECHATPAY_MERCHANT_PRIVATE_KEY_PATH', '')
 WECHATPAY_API_V3_KEY = os.environ.get('WECHATPAY_API_V3_KEY', '')
 WECHATPAY_PUBLIC_KEY_ID = os.environ.get('WECHATPAY_PUBLIC_KEY_ID', '')
-WECHATPAY_PUBLIC_KEY = os.environ.get('WECHATPAY_PUBLIC_KEY', '')
 WECHATPAY_PUBLIC_KEY_PATH = os.environ.get('WECHATPAY_PUBLIC_KEY_PATH', '')
 WECHATPAY_NOTIFY_URL = os.environ.get('WECHATPAY_NOTIFY_URL', '')
 WECHATPAY_DESCRIPTION_PREFIX = os.environ.get('WECHATPAY_DESCRIPTION_PREFIX', '偷吃俱乐部-')
-WECHATPAY_HTTP_TIMEOUT = env_int('WECHATPAY_HTTP_TIMEOUT', 10)
-WECHATPAY_TIMESTAMP_TOLERANCE_SECONDS = env_int('WECHATPAY_TIMESTAMP_TOLERANCE_SECONDS', 300)
+WECHATPAY_HTTP_TIMEOUT = float(os.environ.get('WECHATPAY_HTTP_TIMEOUT', '10'))
+WECHATPAY_TIMESTAMP_TOLERANCE_SECONDS = int(os.environ.get('WECHATPAY_TIMESTAMP_TOLERANCE_SECONDS', '300'))
 
-# 微信虚拟支付
+# WeChat Mini Program Virtual Payment / XPay.
+# env: 1=sandbox, 0=production. AppKey must only exist on the backend.
 WECHAT_VIRTUALPAY_ENABLED = env_bool('WECHAT_VIRTUALPAY_ENABLED', 'false')
-WECHAT_VIRTUALPAY_APP_KEY = os.environ.get('WECHAT_VIRTUALPAY_APP_KEY', '')
+WECHAT_VIRTUALPAY_ENV = env_int('WECHAT_VIRTUALPAY_ENV', '1')
 WECHAT_VIRTUALPAY_OFFER_ID = os.environ.get('WECHAT_VIRTUALPAY_OFFER_ID', '')
-WECHAT_VIRTUALPAY_ENV = env_int('WECHAT_VIRTUALPAY_ENV', 0)
-WECHAT_VIRTUALPAY_ZONE_ID = os.environ.get('WECHAT_VIRTUALPAY_ZONE_ID', '1')
-WECHAT_VIRTUALPAY_CURRENCY_TYPE = os.environ.get('WECHAT_VIRTUALPAY_CURRENCY_TYPE', 'CNY')
-WECHAT_VIRTUALPAY_BUY_QUANTITY = env_int('WECHAT_VIRTUALPAY_BUY_QUANTITY', 1)
-WECHAT_VIRTUALPAY_PLATFORM = os.environ.get('WECHAT_VIRTUALPAY_PLATFORM', 'android')
-WECHAT_VIRTUALPAY_HTTP_TIMEOUT = env_int('WECHAT_VIRTUALPAY_HTTP_TIMEOUT', 10)
+WECHAT_VIRTUALPAY_APP_KEY = os.environ.get('WECHAT_VIRTUALPAY_APP_KEY', '')
+WECHAT_VIRTUALPAY_HTTP_TIMEOUT = float(os.environ.get('WECHAT_VIRTUALPAY_HTTP_TIMEOUT', '10'))
 
-# 微信订阅消息
+# Sandbox-only fallback for the first fixed-price test item. A database binding takes priority.
+WECHAT_VIRTUALPAY_SANDBOX_PRODUCT_ID = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX_PRODUCT_ID', 'escort_15')
+WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN = env_int('WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN', '1500')
+WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD', '四套四弹')
+
+# WeChat subscription message for paid player-designated product orders.  The
+# field mapping is an administrator-controlled JSON object, for example:
+# {"thing1":"{package_name}","time2":"{created_at}","thing3":"{boss_contact}"}
 WECHAT_PLAYER_ORDER_TEMPLATE_ID = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_ID', '')
 WECHAT_PLAYER_ORDER_TEMPLATE_PAGE = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_PAGE', 'pages/player/my-orders/index')
-WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS', '')
+WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS', '{}')
 WECHAT_SUBSCRIBE_MESSAGE_MINIPROGRAM_STATE = os.environ.get('WECHAT_SUBSCRIBE_MESSAGE_MINIPROGRAM_STATE', 'formal')
 
-# 管理后台安全开关
-ADMIN_ORDER_DELETE_ENABLED = env_bool('ADMIN_ORDER_DELETE_ENABLED', 'false')
+# 人民币 → 鱼干兑换比例：每 1 元 RMB = ? 鱼干
+FISH_CRACKER_EXCHANGE_RATE = env_int('FISH_CRACKER_EXCHANGE_RATE', '10')
 
-# iOS 在线购买默认关闭；仅查询和售后能力保留。
-IOS_PURCHASE_ENABLED = env_bool('IOS_PURCHASE_ENABLED', 'false')
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'apps.payments.virtualpay': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
