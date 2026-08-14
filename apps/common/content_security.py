@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import uuid
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -33,12 +34,29 @@ class ContentSecurityUnavailable(ContentSecurityError):
     pass
 
 
+def _env_bool(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 def content_security_enabled():
-    return bool(getattr(settings, 'WECHAT_CONTENT_SECURITY_ENABLED', False))
+    configured = getattr(settings, 'WECHAT_CONTENT_SECURITY_ENABLED', None)
+    if configured is not None:
+        return bool(configured)
+    # 本地/CI 默认关闭，生产（DEBUG=false）默认强制开启；也可以显式用环境变量覆盖。
+    return _env_bool('WECHAT_CONTENT_SECURITY_ENABLED', not settings.DEBUG)
 
 
 def _timeout():
-    return float(getattr(settings, 'WECHAT_CONTENT_SECURITY_HTTP_TIMEOUT', 8))
+    configured = getattr(settings, 'WECHAT_CONTENT_SECURITY_HTTP_TIMEOUT', None)
+    if configured is not None:
+        return float(configured)
+    try:
+        return float(os.environ.get('WECHAT_CONTENT_SECURITY_HTTP_TIMEOUT', '8'))
+    except (TypeError, ValueError):
+        return 8.0
 
 
 def _token_cache_key():
