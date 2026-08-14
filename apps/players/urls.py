@@ -19,6 +19,7 @@ urlpatterns = [
     path('escort-qualification', require_operational(escort_views.escort_qualification)),
     path('apply', require_operational(application_views.apply)),
     path('apply/audio', require_operational(public_input_views.upload_application_audio)),
+    path('apply/audio/security-status', public_input_views.application_audio_security_status),
     path('apply/status', views.apply_status),
     path('available-orders', permission_views.available_orders),
     path('available-orders-summary', permission_views.available_orders_summary),
