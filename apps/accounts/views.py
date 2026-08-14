@@ -15,6 +15,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.common.content_security import SCENE_PROFILE, ensure_image_safe, ensure_text_safe
 from apps.players.models import Player
 
 from .models import ClientProfile
@@ -79,16 +80,14 @@ def wechat_login(request):
         # 新用户默认昵称由 OpenID 的不可逆摘要生成，例如“微信用户-4A8F2D91C7”。
         profile.nickname_customized = False
     else:
-        # 老用户：只有从未自定义过昵称，且微信昵称不是默认占位符时，才覆盖。
+        # 客户端带回的微信昵称仍属于可展示用户内容，保存前必须经过内容安全检测。
         wx_nickname = serializer.validated_data.get('nickname')
         if wx_nickname and wx_nickname != '微信用户' and not profile.nickname_customized:
+            ensure_text_safe(wx_nickname, openid=openid, scene=SCENE_PROFILE)
             profile.nickname = wx_nickname
 
-    if 'avatar_url' in serializer.validated_data:
-        avatar = serializer.validated_data.get('avatar_url')
-        if avatar:
-            profile.avatar_url = avatar
-
+    # 不再信任登录请求直接携带的 avatar_url。头像只能经过 /profile/avatar
+    # 上传并完成图片内容安全检测后才能成为公开头像，避免绕过审核。
     profile.save()
     return Response({'token': issue_token(user), 'profile': ClientProfileSerializer(profile).data})
 
@@ -116,6 +115,14 @@ def profile(request):
                 return Response({'detail': '昵称已被使用'}, status=status.HTTP_400_BAD_REQUEST)
             if Player.objects.filter(name=nickname).exclude(user=request.user).exists():
                 return Response({'detail': '昵称已被陪玩师使用'}, status=status.HTTP_400_BAD_REQUEST)
+            ensure_text_safe(nickname, openid=profile_obj.openid, scene=SCENE_PROFILE)
+
+        requested_avatar = str(request.data.get('avatar_url') or '') if avatar_provided else None
+        if avatar_provided and requested_avatar and requested_avatar != (profile_obj.avatar_url or ''):
+            return Response(
+                {'detail': '头像必须通过头像上传接口完成安全检测后保存'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             with transaction.atomic():
@@ -124,8 +131,9 @@ def profile(request):
                     profile_obj.nickname = nickname
                     profile_obj.nickname_customized = True
                     profile_update_fields.extend(['nickname', 'nickname_customized'])
-                if avatar_provided:
-                    profile_obj.avatar_url = request.data.get('avatar_url') or ''
+                # 允许清空头像；新的非空头像只能由 avatar 上传接口写入。
+                if avatar_provided and requested_avatar == '' and profile_obj.avatar_url:
+                    profile_obj.avatar_url = ''
                     profile_update_fields.append('avatar_url')
                 if profile_update_fields:
                     profile_obj.save(update_fields=[*profile_update_fields, 'updated_at'])
@@ -155,6 +163,9 @@ def avatar(request):
 
     if file_obj.size > 5 * 1024 * 1024:
         return Response({'detail': '头像文件不能超过 5MB'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 先审核、后落盘、后公开。违规图片永远不会成为公开头像。
+    ensure_image_safe(file_obj, openid=profile_obj.openid)
 
     extension = {
         'image/jpeg': 'jpg',
