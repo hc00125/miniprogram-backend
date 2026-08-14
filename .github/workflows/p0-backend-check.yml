@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python manage.py makemigrations accounts catalog earnings orders payments players refunds wallet support --check --dry-run --verbosity 3 > migration-check.txt 2>&1
+          python manage.py makemigrations accounts catalog common earnings orders payments players refunds wallet support --check --dry-run --verbosity 3 > migration-check.txt 2>&1
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
@@ -56,7 +56,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python manage.py test apps.common.test_purchase_guard apps.common.test_content_security apps.earnings apps.orders.test_admin_delete apps.orders.test_order_cancellation apps.orders.test_player_cancellations apps.orders.test_matching_flow apps.orders.test_payment_deadlines apps.orders.test_room_entry_requeue apps.orders.test_p0_pricing apps.orders.test_designated_pricing apps.orders.test_designations apps.orders.test_escort_order_qualification apps.orders.test_cart_batch_orders apps.orders.test_service_duration apps.orders.test_shared_player_service_listings apps.payments.test_payment_deadline_alignment apps.payments.test_virtualpay apps.payments.test_closed_virtual_payment apps.payments.test_unified_diamond_refunds apps.payments.test_admin_search apps.refunds.tests apps.players.tests apps.players.test_application_submission apps.players.test_escort_qualification apps.accounts.test_default_nickname apps.accounts.test_p2 apps.accounts.test_account_restrictions apps.wallet.test_wallet_creation apps.wallet.test_balance_payment apps.wallet.test_balance_refund_auto apps.support --verbosity 2 > test-results.txt 2>&1
+          python manage.py test apps.common.test_purchase_guard apps.common.test_content_security apps.common.test_media_security apps.earnings apps.orders.test_admin_delete apps.orders.test_order_cancellation apps.orders.test_player_cancellations apps.orders.test_matching_flow apps.orders.test_payment_deadlines apps.orders.test_room_entry_requeue apps.orders.test_p0_pricing apps.orders.test_designated_pricing apps.orders.test_designations apps.orders.test_escort_order_qualification apps.orders.test_cart_batch_orders apps.orders.test_service_duration apps.orders.test_shared_player_service_listings apps.payments.test_payment_deadline_alignment apps.payments.test_virtualpay apps.payments.test_closed_virtual_payment apps.payments.test_unified_diamond_refunds apps.payments.test_admin_search apps.refunds.tests apps.players.tests apps.players.test_application_submission apps.players.test_escort_qualification apps.accounts.test_default_nickname apps.accounts.test_p2 apps.accounts.test_account_restrictions apps.wallet.test_wallet_creation apps.wallet.test_balance_payment apps.wallet.test_balance_refund_auto apps.support --verbosity 2 > test-results.txt 2>&1
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
