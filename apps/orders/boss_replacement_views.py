@@ -9,6 +9,7 @@ from .replacements import (
     publish_replacement_public,
     reassign_replacement,
     request_cancel_remaining,
+    revoke_cancel_remaining,
 )
 
 
@@ -75,5 +76,19 @@ def cancel_remaining(request, order_no):
     request_cancel_remaining(order, request.user)
     return Response({
         'message': '已提交取消剩余服务申请，客服将核算未履行部分',
+        'replacement': replacement_payload(order),
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def revoke_cancel_remaining(request, order_no):
+    """撤销「取消剩余服务」申请，恢复补位流程。"""
+    order, error_response = _accessible_order(request, order_no)
+    if error_response:
+        return error_response
+    revoke_cancel_remaining(order, request.user)
+    return Response({
+        'message': '已撤销取消申请，可重新指定或转公开补位',
         'replacement': replacement_payload(order),
     })

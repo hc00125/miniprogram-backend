@@ -36,6 +36,7 @@ def replacement_payload(order):
         'can_reassign': state.mode == OrderReplacementState.MODE_TARGETED and state.status == OrderReplacementState.STATUS_OPEN,
         'can_publish_public': state.status == OrderReplacementState.STATUS_OPEN,
         'can_request_cancel': bool(order.paid and state.status == OrderReplacementState.STATUS_OPEN),
+        'can_revoke_cancel': state.status == OrderReplacementState.STATUS_CANCEL_REQUESTED,
         'created_at': state.created_at,
         'updated_at': state.updated_at,
     }

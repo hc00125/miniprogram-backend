@@ -334,3 +334,22 @@ def request_cancel_remaining(order, operator=None):
     _sync_designated_snapshot(order)
     OrderStatusLog.objects.create(order=order, from_status=order.status, to_status=order.status, operator=operator, reason='老板申请取消未履行的剩余服务，等待客服核算退款')
     return state
+
+
+@transaction.atomic
+def revoke_cancel_remaining(order, operator=None):
+    """撤销「取消剩余服务」申请，恢复补位流程（cancel_requested -> open）。
+
+    客服未核算退款前老板可反悔：撤销后订单回到可重新指定/转公开状态。
+    """
+    state = OrderReplacementState.objects.select_for_update().filter(order=order).first()
+    if not state or state.status != OrderReplacementState.STATUS_CANCEL_REQUESTED:
+        raise ValidationError({'detail': '当前没有可撤销的取消申请'})
+    if order.status == Order.STATUS_CANCELLED:
+        raise ValidationError({'detail': '订单已取消，无法撤销取消申请'})
+    state.status = OrderReplacementState.STATUS_OPEN
+    state.current_designation = None
+    state.save(update_fields=['status', 'current_designation', 'updated_at'])
+    _sync_designated_snapshot(order)
+    OrderStatusLog.objects.create(order=order, from_status=order.status, to_status=order.status, operator=operator, reason='老板撤销取消剩余服务申请，恢复补位流程')
+    return state

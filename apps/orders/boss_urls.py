@@ -33,6 +33,7 @@ urlpatterns = [
     path('order/<str:order_no>/replacement/public', boss_replacement_views.publish_public),
     path('order/<str:order_no>/replacement/reassign', boss_replacement_views.reassign),
     path('order/<str:order_no>/replacement/cancel-remaining', boss_replacement_views.cancel_remaining),
+    path('order/<str:order_no>/replacement/revoke-cancel', boss_replacement_views.revoke_cancel_remaining),
     path('orders/me', boss_views.my_orders),
     path('orders/batch', require_purchase_available(require_operational(batch_views.create_cart_order_batch))),
     path('orders/<str:boss_wechat>', boss_views.boss_orders),
