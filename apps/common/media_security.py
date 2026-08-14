@@ -1,4 +1,5 @@
-from rest_framework.exceptions import ValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from .content_security import MEDIA_TYPE_AUDIO, content_security_enabled
 from .models import MediaContentSecurityCheck
@@ -50,29 +51,33 @@ def ensure_tracked_media_reference(*, user, media_url, media_type=MEDIA_TYPE_AUD
 
     check = latest_media_check(user=user, media_url=url, media_type=media_type)
     if not check:
-        raise ValidationError({'detail': '语音必须通过平台上传接口完成内容安全检测后提交'})
+        raise DRFValidationError({'detail': '语音必须通过平台上传接口完成内容安全检测后提交'})
     if check.status in {
         MediaContentSecurityCheck.STATUS_REVIEW,
         MediaContentSecurityCheck.STATUS_RISKY,
         MediaContentSecurityCheck.STATUS_ERROR,
     }:
-        raise ValidationError({'detail': '语音内容安全检测未通过，请重新上传'})
+        raise DRFValidationError({'detail': '语音内容安全检测未通过，请重新上传'})
     return check
 
 
 def ensure_media_publishable(*, user, media_url, media_type=MEDIA_TYPE_AUDIO):
-    """Require an async WeChat media check to have returned ``pass`` before publication."""
+    """Require an async WeChat media check to have returned ``pass`` before publication.
+
+    This guard is also used by Django model/admin code, so it intentionally raises
+    Django's ValidationError rather than DRF's API exception.
+    """
     url = str(media_url or '').strip()
     if not url or not content_security_enabled():
         return None
 
     check = latest_media_check(user=user, media_url=url, media_type=media_type)
     if not check:
-        raise ValidationError('语音缺少微信内容安全检测记录，不能公开')
+        raise DjangoValidationError('语音缺少微信内容安全检测记录，不能公开')
     if check.status == MediaContentSecurityCheck.STATUS_PENDING:
-        raise ValidationError('语音内容安全检测尚未完成，请稍后再审核')
+        raise DjangoValidationError('语音内容安全检测尚未完成，请稍后再审核')
     if check.status != MediaContentSecurityCheck.STATUS_PASS:
-        raise ValidationError('语音内容安全检测未通过，不能公开')
+        raise DjangoValidationError('语音内容安全检测未通过，不能公开')
     return check
 
 
