@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.common.content_security import SCENE_COMMENT, ensure_text_safe, user_openid
 from apps.players.models import Player
 
 from .models import Order, Rating
@@ -77,6 +78,9 @@ def order_ratings(request, order_no):
 
     serializer = RatingCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    comment = serializer.validated_data.get('comment') or ''
+    ensure_text_safe(comment, openid=user_openid(request.user), scene=SCENE_COMMENT)
+
     player = Player.objects.filter(id=serializer.validated_data['player_id']).first()
     if not player:
         return Response({'detail': '陪玩不存在'}, status=status.HTTP_404_NOT_FOUND)
@@ -89,7 +93,7 @@ def order_ratings(request, order_no):
             player=player,
             defaults={
                 'rating': serializer.validated_data['rating'],
-                'comment': serializer.validated_data.get('comment'),
+                'comment': comment,
             },
         )
         if not created:
