@@ -7,6 +7,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from apps.accounts.models import ClientProfile
+from apps.common.content_security import SCENE_PROFILE, ensure_texts_safe, user_openid
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.orders.models import Order
 
@@ -155,6 +156,15 @@ def profile_settings(request):
     serializer = PlayerProfileUpdateCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
+
+    # 简介、语音标题以及用户填写的媒体 URL 都属于会被保存的资料内容。
+    # 音频本体仍保留人工审核流程；文本部分先由微信内容安全 API 拦截。
+    ensure_texts_safe(
+        [data.get('bio'), data.get('audio_intro_title'), data.get('audio_intro_url')],
+        openid=user_openid(request.user),
+        scene=SCENE_PROFILE,
+    )
+
     with transaction.atomic():
         locked_player = Player.objects.select_for_update().get(pk=player.pk)
         pending = (
