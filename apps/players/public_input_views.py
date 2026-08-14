@@ -16,6 +16,8 @@ from apps.common.content_security import (
     ensure_text_safe,
     user_openid,
 )
+from apps.common.media_security import register_media_check
+from apps.common.models import MediaContentSecurityCheck
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.orders.models import Order
 from apps.orders.serializers import OrderKookRoomSerializer
@@ -34,7 +36,8 @@ def _absolute_media_url(request, path):
 def upload_application_audio(request):
     """上传陪玩语音并提交微信异步媒体安全检测。
 
-    语音并不会因上传而直接公开；它仍需随后随陪玩申请/资料修改进入人工审核。
+    语音上传后只会得到一条待检测记录，不会直接公开。微信通过消息推送回调写入
+    最终检测结果；管理员公开资料前仍会再次要求该记录必须为 ``pass``。
     """
     file_obj = request.FILES.get('file')
     if not file_obj:
@@ -78,16 +81,47 @@ def upload_application_audio(request):
             media_type=MEDIA_TYPE_AUDIO,
             scene=SCENE_PROFILE,
         )
+        tracked_check = register_media_check(
+            user=request.user,
+            media_url=audio_url,
+            media_type=MEDIA_TYPE_AUDIO,
+            scene=SCENE_PROFILE,
+            trace_id=(media_check or {}).get('trace_id', ''),
+        )
     except Exception:
-        # 微信未接受安全检测任务时，不保留这次新上传的媒体。
+        # 微信未接受安全检测任务或记录落库失败时，不保留这次新上传的媒体。
         default_storage.delete(path)
         raise
 
     return Response({
         'audio_intro_url': audio_url,
         'audio_intro_title': title,
-        'content_security_trace_id': (media_check or {}).get('trace_id', ''),
-        'content_security_status': 'submitted' if media_check else 'disabled_in_development',
+        'content_security_trace_id': tracked_check.trace_id if tracked_check else '',
+        'content_security_status': tracked_check.status if tracked_check else 'disabled_in_development',
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def application_audio_security_status(request):
+    trace_id = str(request.query_params.get('trace_id') or '').strip()
+    if not trace_id:
+        return Response({'detail': '缺少 trace_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+    check = MediaContentSecurityCheck.objects.filter(trace_id=trace_id, user=request.user).first()
+    if not check:
+        return Response({'detail': '检测记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if check.status == MediaContentSecurityCheck.STATUS_PASS:
+        message = '内容安全检测已通过'
+    elif check.status == MediaContentSecurityCheck.STATUS_PENDING:
+        message = '内容安全检测中'
+    else:
+        message = '内容安全检测未通过，请重新上传'
+    return Response({
+        'trace_id': check.trace_id,
+        'status': check.status,
+        'message': message,
     })
 
 
