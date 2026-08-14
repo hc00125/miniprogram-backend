@@ -21,6 +21,9 @@ SCENE_COMMENT = 2
 SCENE_FORUM = 3
 SCENE_SOCIAL = 4
 
+MEDIA_TYPE_AUDIO = 1
+MEDIA_TYPE_IMAGE = 2
+
 
 class ContentSecurityError(Exception):
     pass
@@ -217,6 +220,37 @@ def check_texts(contents, *, openid, scene=SCENE_SOCIAL):
     return check_text('\n'.join(parts), openid=openid, scene=scene)
 
 
+def submit_media_check_async(media_url, *, openid, media_type, scene=SCENE_PROFILE):
+    """提交图片/音频到微信异步媒体内容安全检测。
+
+    这里只负责确认微信已接受检测任务并返回 trace_id。真正需要自动公开的图片
+    仍使用同步图片检测；音频本身在本项目中还要经过管理员资料审核，因此异步
+    检测任务提交成功后也不会直接公开。
+    """
+    url = str(media_url or '').strip()
+    if not url or not content_security_enabled():
+        return None
+    if not openid:
+        raise ContentSecurityUnavailable('当前账号缺少微信 OpenID，无法完成媒体安全检测')
+    if int(media_type) not in {MEDIA_TYPE_AUDIO, MEDIA_TYPE_IMAGE}:
+        raise ContentSecurityUnavailable('不支持的媒体安全检测类型')
+
+    data = _post_json('/wxa/media_check_async', {
+        'media_url': url,
+        'media_type': int(media_type),
+        'version': 2,
+        'scene': int(scene),
+        'openid': str(openid),
+    })
+    errcode = int(data.get('errcode') or 0)
+    if errcode != 0:
+        logger.warning('mediaCheckAsync failed errcode=%s errmsg=%s', data.get('errcode'), data.get('errmsg'))
+        raise ContentSecurityUnavailable(data.get('errmsg') or '媒体内容安全检测提交失败')
+    if not data.get('trace_id'):
+        raise ContentSecurityUnavailable('媒体内容安全检测未返回 trace_id')
+    return data
+
+
 def check_image_file(file_obj, *, openid=None):
     del openid  # 同步图片安全接口不需要额外传 OpenID。
     if not content_security_enabled():
@@ -274,6 +308,18 @@ def ensure_image_safe(file_obj, *, openid=None):
     except ContentSecurityError as exc:
         if isinstance(exc, ContentSecurityRejected):
             raise ValidationError({'detail': '图片含违规内容，请更换后重试'}) from exc
+        raise ValidationError({'detail': '内容安全检测暂时不可用，请稍后重试'}) from exc
+
+
+def ensure_media_check_submitted(media_url, *, openid, media_type, scene=SCENE_PROFILE):
+    try:
+        return submit_media_check_async(
+            media_url,
+            openid=openid,
+            media_type=media_type,
+            scene=scene,
+        )
+    except ContentSecurityError as exc:
         raise ValidationError({'detail': '内容安全检测暂时不可用，请稍后重试'}) from exc
 
 
