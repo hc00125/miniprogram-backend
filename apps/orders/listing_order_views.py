@@ -3,6 +3,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.common.content_security import SCENE_SOCIAL, ensure_texts_safe, user_openid
+
 from .listing_orders import create_listing_order
 from .serializers import OrderCreateSerializer
 
@@ -22,6 +24,13 @@ def create_order(request):
         payload.pop('listing_id', None)
     serializer = OrderCreateSerializer(data=payload)
     serializer.is_valid(raise_exception=True)
+
+    ensure_texts_safe(
+        [serializer.validated_data.get('game_id'), serializer.validated_data.get('boss_note')],
+        openid=str(serializer.validated_data.get('boss_wechat') or '') or user_openid(request.user),
+        scene=SCENE_SOCIAL,
+    )
+
     order = create_listing_order(serializer.validated_data, listing_id, request.user)
     return Response({
         'order_no': order.order_no,
