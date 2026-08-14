@@ -40,7 +40,8 @@ urlpatterns = [
     path('order/<str:order_no>/pause', boss_views.pause),
     path('order/<str:order_no>/resume', boss_views.resume),
     path('order/<str:order_no>/self-confirm-payment', require_operational(boss_views.self_confirm_payment)),
-    path('order/<str:order_no>/rate', boss_views.rate_player),
+    # 旧 /rate 地址继续兼容，但统一进入带内容安全检测的新评价处理器。
+    path('order/<str:order_no>/rate', rating_views.order_ratings),
     path('order/<str:order_no>/ratings', rating_views.order_ratings),
     path('cart', require_operational(boss_views.cart)),
     path('cart/clear', require_operational(boss_views.clear_cart)),
