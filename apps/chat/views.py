@@ -4,20 +4,57 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
+from apps.common.content_security import SCENE_SOCIAL, ensure_texts_safe, user_openid
 from apps.orders.models import Order
+from apps.players.models import Player
+
 from .models import ChatMessage, ChatReadStatus, KeywordAlert, KeywordAlertLog
 from .serializers import ChatMessageSerializer, ChatReadStatusSerializer, ChatSendSerializer
+
+
+def _chat_sender_openid(order, data):
+    sender_type = data.get('sender_type')
+    sender_id = str(data.get('sender_id') or '').strip()
+
+    if sender_type == 'player' and sender_id.isdigit():
+        player = (
+            Player.objects
+            .filter(pk=int(sender_id))
+            .select_related('user__client_profile')
+            .first()
+        )
+        if player and player.user:
+            openid = user_openid(player.user)
+            if openid:
+                return openid
+
+    if order.boss_user_id:
+        openid = user_openid(order.boss_user)
+        if openid:
+            return openid
+
+    # 老数据可能只有 boss_wechat；当前订单契约中这里保存老板 OpenID。
+    return str(order.boss_wechat or '')
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def send(request, order_no):
-    order = Order.objects.filter(order_no=order_no).first()
+    order = Order.objects.filter(order_no=order_no).select_related('boss_user__client_profile').first()
     if not order:
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
     serializer = ChatSendSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    message = ChatMessage.objects.create(order=order, **serializer.validated_data)
+    data = serializer.validated_data
+
+    # 聊天发送者名称和正文都会被其他人看到，发布前统一检测。
+    ensure_texts_safe(
+        [data.get('sender_name'), data.get('content')],
+        openid=_chat_sender_openid(order, data),
+        scene=SCENE_SOCIAL,
+    )
+
+    message = ChatMessage.objects.create(order=order, **data)
     for alert in KeywordAlert.objects.filter(is_active=True):
         if alert.keyword and alert.keyword in message.content:
             KeywordAlertLog.objects.create(
