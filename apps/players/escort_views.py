@@ -1,6 +1,7 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
+from apps.common.content_security import SCENE_PROFILE, ensure_text_safe, user_openid
 from apps.common.permissions import IsApprovedPlayer, current_player
 
 from .escort_qualification import get_escort_qualification, submit_escort_application
@@ -46,6 +47,11 @@ def escort_qualification(request):
 
     serializer = PlayerEscortApplicationCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    ensure_text_safe(
+        serializer.validated_data['experience'],
+        openid=user_openid(request.user),
+        scene=SCENE_PROFILE,
+    )
     application, _ = submit_escort_application(
         player,
         serializer.validated_data['experience'],
