@@ -5,10 +5,10 @@ from rest_framework.response import Response
 
 from .boss_views import can_access_order, forbidden_response, get_order_or_response
 from .replacement_fixes import replacement_payload
+from .replacement_refunds import cancel_remaining_and_refund
 from .replacements import (
     publish_replacement_public,
     reassign_replacement,
-    request_cancel_remaining,
     revoke_cancel_remaining,
 )
 
@@ -73,9 +73,15 @@ def cancel_remaining(request, order_no):
     order, error_response = _accessible_order(request, order_no)
     if error_response:
         return error_response
-    request_cancel_remaining(order, request.user)
+
+    result = cancel_remaining_and_refund(order, request.user)
+    refund_amount = result['refund_amount']
     return Response({
-        'message': '已提交取消剩余服务申请，客服将核算未履行部分',
+        'message': f'剩余服务已取消，¥{refund_amount:.2f} 已退回钱包',
+        'refund_amount': refund_amount,
+        'remaining_minutes': result['remaining_minutes'],
+        'refunded_order_nos': result['refunded_order_nos'],
+        'order_status': order.status,
         'replacement': replacement_payload(order),
     })
 
@@ -83,12 +89,12 @@ def cancel_remaining(request, order_no):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def revoke_cancel_remaining(request, order_no):
-    """撤销「取消剩余服务」申请，恢复补位流程。"""
+    """兼容旧版本遗留的 cancel_requested 记录；新版本不再创建此状态。"""
     order, error_response = _accessible_order(request, order_no)
     if error_response:
         return error_response
     revoke_cancel_remaining(order, request.user)
     return Response({
-        'message': '已撤销取消申请，可重新指定或转公开补位',
+        'message': '已撤销旧版取消申请，可重新指定或转公开补位',
         'replacement': replacement_payload(order),
     })
