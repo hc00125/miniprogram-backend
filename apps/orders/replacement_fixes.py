@@ -19,6 +19,13 @@ def replacement_payload(order):
     current_players = order.order_players.count()
     missing_slots = max(0, int(order.required_players or 0) - current_players)
     phase = 'in_service' if order.timer_started_at else ('pre_service' if order.paid else 'matching')
+    can_finish_cancel = bool(
+        order.paid
+        and state.status in {
+            OrderReplacementState.STATUS_OPEN,
+            OrderReplacementState.STATUS_CANCEL_REQUESTED,
+        }
+    )
     return {
         'active': True,
         'mode': state.mode,
@@ -35,8 +42,10 @@ def replacement_payload(order):
         'current_designation_id': state.current_designation_id,
         'can_reassign': state.mode == OrderReplacementState.MODE_TARGETED and state.status == OrderReplacementState.STATUS_OPEN,
         'can_publish_public': state.status == OrderReplacementState.STATUS_OPEN,
-        'can_request_cancel': bool(order.paid and state.status == OrderReplacementState.STATUS_OPEN),
-        'can_revoke_cancel': state.status == OrderReplacementState.STATUS_CANCEL_REQUESTED,
+        'can_request_cancel': can_finish_cancel,
+        # 旧版本可能已经留下 cancel_requested。新前端不再提供撤回入口，
+        # 而是允许再次点击“取消剩余服务”直接完成自动退款。
+        'can_revoke_cancel': False,
         'created_at': state.created_at,
         'updated_at': state.updated_at,
     }
