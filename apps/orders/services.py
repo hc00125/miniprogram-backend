@@ -310,7 +310,7 @@ def create_cart_orders(cart_item_ids, validated_data, user):
         raise ValidationError({'detail': '请选择需要结算的购物车商品'})
 
     locked_items = list(
-        CartItem.objects.select_for_update()
+        CartItem.objects.select_for_update(of=('self',))
         .filter(id__in=ordered_ids, user=user)
         .select_related('package', 'spec')
     )

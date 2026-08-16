@@ -163,7 +163,7 @@ def create_cart_orders(cart_item_ids, validated_data, user):
         raise ValidationError({'detail': f'单次最多结算{MAX_CART_ORDER_ITEMS}项商品'})
 
     locked_items = list(
-        CartItem.objects.select_for_update()
+        CartItem.objects.select_for_update(of=('self',))
         .filter(id__in=ordered_ids, user=user)
         .select_related('package', 'spec')
     )
