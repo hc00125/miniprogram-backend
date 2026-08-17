@@ -37,7 +37,6 @@ class Command(BaseCommand):
             .filter(
                 status=RechargeOrder.STATUS_PAYING,
                 channel=RechargeOrder.CHANNEL_WECHAT_VIRTUAL,
-                expires_at__lte=timezone.now(),
             )
             .order_by('id')
         )
