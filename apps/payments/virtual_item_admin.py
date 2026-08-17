@@ -119,6 +119,15 @@ def _ensure_thumbnail(thumb_dir, item_id, pkg, host):
                 src = path
                 break
 
+    # 主字段无图时，从 PackageImage 表取第一张
+    if not src:
+        from apps.catalog.models import PackageImage
+        first = PackageImage.objects.filter(package=pkg).order_by('sort_order', 'id').first()
+        if first and first.image:
+            candidate = os.path.join(settings.MEDIA_ROOT, str(first.image))
+            if os.path.exists(candidate):
+                src = candidate
+
     if src:
         img = Image.open(src)
         size = min(img.width, img.height)
