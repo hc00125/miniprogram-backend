@@ -430,7 +430,29 @@ class PackageAdmin(admin.ModelAdmin):
     actions = [
         mark_active, mark_inactive, 'duplicate_packages',
         'generate_guarantee_specs', 'mark_as_guarantee_product',
+        'export_unbound_virtual_items',
     ]
+
+    @admin.action(description='导出未绑定虚拟道具 Excel（选中商品）')
+    def export_unbound_virtual_items(self, request, queryset):
+        """为选中商品的未绑定规格生成微信虚拟支付批量导入 Excel。"""
+        try:
+            from apps.payments.virtual_item_admin import build_import_excel
+            file_path, count = build_import_excel(packages=queryset)
+            if count == 0:
+                self.message_user(request, '所选商品没有未绑定的规格（均已绑定或无法推导道具ID）', level='warning')
+                return
+            host = 'https://api.huc125.cn'
+            relative = file_path.split('/media/')[-1]
+            url = f'{host}/media/{relative}'
+            self.message_user(
+                request,
+                f'已生成 {count} 条道具导入清单。微信后台虚拟支付-道具配置-批量导入，使用该文件：{url}',
+            )
+        except Exception as exc:  # pragma: no cover - admin helper
+            import logging
+            logging.getLogger(__name__).exception('导出虚拟道具 Excel 失败')
+            self.message_user(request, f'导出失败：{exc}', level='error')
     formfield_overrides = {
         models.JSONField: {
             'widget': forms.Textarea(attrs={

@@ -302,6 +302,7 @@ class VirtualProductBindingAdmin(admin.ModelAdmin):
     search_fields = ['product_id', 'package__name', 'spec__name', 'spec__package__name', 'remark']
     autocomplete_fields = ['package', 'spec']
     list_editable = ['is_active']
+    actions = ['sync_bindings_from_wechat']
 
     @admin.display(description='绑定对象')
     def binding_target(self, obj):
@@ -310,6 +311,24 @@ class VirtualProductBindingAdmin(admin.ModelAdmin):
     @admin.display(description='单价')
     def goods_price_yuan(self, obj):
         return f'¥{obj.goods_price_fen / 100:.2f}'
+
+    @admin.action(description='一键同步未绑定商品的道具绑定（全部商品）')
+    def sync_bindings_from_wechat(self, request, queryset):
+        """为所有未绑定商品规格按命名规则自动创建 VirtualProductBinding。"""
+        try:
+            from apps.payments.virtual_item_admin import sync_bindings_from_wechat_items
+            stats = sync_bindings_from_wechat_items()
+            self.message_user(
+                request,
+                f'同步完成：新建 {stats["created"]} 条，'
+                f'跳过重复 {stats["skipped_duplicate"]} 条，'
+                f'跳过无效 {stats["skipped_invalid"]} 条。'
+                f'注意：新建的绑定对应的微信道具需先在微信后台导入，否则支付会报错。',
+            )
+        except Exception as exc:  # pragma: no cover - admin helper
+            import logging
+            logging.getLogger(__name__).exception('一键同步虚拟道具绑定失败')
+            self.message_user(request, f'同步失败：{exc}', level='error')
 
 
 @admin.register(PaymentCallbackLog)
