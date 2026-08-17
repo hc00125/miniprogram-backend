@@ -49,6 +49,34 @@ CUP_TYPE_MAP = {
     '上分': 'shangfen',
 }
 
+# 命名中需要剔除的结构词（不参与拼音提取）
+STRUCTURE_WORDS = [
+    '专属陪玩服务', '专属服务', '专属', '陪玩服务', '服务',
+    '单人', '双人', '三人',
+    '单',  # 商品名尾缀（水枪单/摄影机单 -> 水枪/摄影机）
+    '金色',  # 纯修饰色，保留核心名词更简洁（金色摄影机单 -> 摄影机）
+]
+
+
+def _pinyin(text):
+    """中文转拼音（无空格）。"""
+    try:
+        from pypinyin import lazy_pinyin
+        return ''.join(lazy_pinyin(str(text))).lower()
+    except Exception:
+        return ''
+
+
+def _core_words(package_name):
+    """提取商品名中的核心词（去掉结构词），返回拼音。"""
+    name = str(package_name or '')
+    for word in STRUCTURE_WORDS:
+        name = name.replace(word, '')
+    name = name.strip()
+    if not name:
+        return ''
+    return _pinyin(name)
+
 
 def _cn_char_count(text):
     """统计中文字符数。"""
@@ -95,6 +123,11 @@ def package_category_code(package_name):
             if count_code:
                 return f'{count_code}_{code}', name
             return f'solo_{code}', name
+
+    # 兜底：核心词转拼音（金色摄影机单 -> sheyingji）
+    core = _core_words(name)
+    if core:
+        return core, name
     return '', name
 
 
@@ -127,6 +160,15 @@ def _spec_identifier(spec_name, package_name, price):
     ascii_only = re.sub(r'[^\x20-\x7e]', '', name).strip()
     if ascii_only and len(ascii_only) <= 12:
         return ascii_only.lower().replace(' ', '_')
+
+    # 6. 中文规格名转拼音（摸金圣手 -> mojinshengshou，仅当商品无映射表时兜底）
+    cleaned = str(name)
+    for word in STRUCTURE_WORDS:
+        cleaned = cleaned.replace(word, '')
+    cleaned = cleaned.strip()
+    pinyin = _pinyin(cleaned) if cleaned else ''
+    if pinyin and len(pinyin) <= 12:
+        return pinyin
 
     # 兜底：用商品价格
     if price:
