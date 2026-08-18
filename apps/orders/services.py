@@ -19,12 +19,6 @@ from .designations import (
 )
 
 
-ACTIVE_ORDER_STATUSES = [
-    Order.STATUS_WAITING,
-    Order.STATUS_PENDING_PAYMENT,
-    Order.STATUS_READY_TO_START,
-    Order.STATUS_IN_PROGRESS,
-]
 MAX_CART_BATCH_ORDERS = 20
 
 
@@ -147,11 +141,6 @@ def validate_targeted_product(package):
     return player
 
 
-def ensure_no_active_orders(boss_wechat):
-    if Order.objects.filter(boss_wechat=boss_wechat, status__in=ACTIVE_ORDER_STATUSES).exists():
-        raise ValidationError({'detail': '您有未完成的订单，请先完成后再下单'})
-
-
 @transaction.atomic
 def create_order(validated_data, user=None, allow_existing_active=False):
     order_items = normalize_order_items(validated_data)
@@ -171,9 +160,6 @@ def create_order(validated_data, user=None, allow_existing_active=False):
         raise ValidationError({'detail': '带陪玩类型的规格不能与其他商品合并结算'})
     if spec_lineup and first_item['quantity'] != 1:
         raise ValidationError({'detail': '陪玩类型规格每次只能购买1份，人数由商品默认人数决定'})
-
-    if not allow_existing_active and not targeted_order:
-        ensure_no_active_orders(validated_data['boss_wechat'])
 
     # 带“最低陪玩等级”的固定规格，由商品定义整单人数，后端不接受前端篡改人数。
     required_players = int(package.player_count)
@@ -327,7 +313,6 @@ def create_cart_orders(cart_item_ids, validated_data, user):
     if order_count > MAX_CART_BATCH_ORDERS:
         raise ValidationError({'detail': f'单次最多发布 {MAX_CART_BATCH_ORDERS} 个独立订单'})
 
-    ensure_no_active_orders(validated_data['boss_wechat'])
     orders = []
     for cart_item in ordered_items:
         for _ in range(normalize_quantity(cart_item.quantity)):
