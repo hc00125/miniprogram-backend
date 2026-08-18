@@ -1,7 +1,7 @@
 import json
 import uuid
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -16,10 +16,12 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.common.content_security import SCENE_PROFILE, ensure_image_safe, ensure_text_safe
+from apps.payments.virtualpay import get_access_token
 from apps.players.models import Player
 
 from .models import ClientProfile
 from .nicknames import get_or_create_wechat_profile
+from .phone_models import ClientPhoneBinding
 from .serializers import ClientProfileSerializer, WechatLoginSerializer
 
 
@@ -51,6 +53,34 @@ def resolve_openid(code='', openid=''):
             raise ValueError(data.get('errmsg') or '微信登录失败')
         return data['openid'], data.get('unionid') or ''
     raise ValueError('微信登录配置不完整，请联系管理员')
+
+
+def resolve_phone_number(code):
+    if not code:
+        raise ValueError('缺少手机号授权 code，请重新点击绑定手机号')
+    token = get_access_token()
+    query = urlencode({'access_token': token})
+    request = Request(
+        f'https://api.weixin.qq.com/wxa/business/getuserphonenumber?{query}',
+        data=json.dumps({'code': code}, ensure_ascii=False).encode('utf-8'),
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+        method='POST',
+    )
+    with urlopen(request, timeout=settings.WECHAT_PHONE_NUMBER_HTTP_TIMEOUT) as response:
+        data = json.loads(response.read().decode('utf-8'))
+    if int(data.get('errcode') or 0) != 0:
+        raise ValueError(data.get('errmsg') or '微信手机号验证失败')
+
+    phone_info = data.get('phone_info') or {}
+    phone_number = str(phone_info.get('purePhoneNumber') or phone_info.get('phoneNumber') or '').strip()
+    country_code = str(phone_info.get('countryCode') or '86').strip() or '86'
+    if phone_number.startswith(f'+{country_code}'):
+        phone_number = phone_number[len(country_code) + 1:]
+    elif country_code == '86' and phone_number.startswith('86') and len(phone_number) > 11:
+        phone_number = phone_number[2:]
+    if not phone_number:
+        raise ValueError('微信未返回可用手机号，请重新授权')
+    return phone_number, country_code
 
 
 @api_view(['POST'])
@@ -143,6 +173,35 @@ def profile(request):
         except IntegrityError:
             return Response({'detail': '昵称已被使用'}, status=status.HTTP_400_BAD_REQUEST)
     return Response(ClientProfileSerializer(profile_obj).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bind_phone_number(request):
+    profile_obj = getattr(request.user, 'client_profile', None)
+    if not profile_obj:
+        return Response({'detail': '请先微信登录'}, status=status.HTTP_404_NOT_FOUND)
+
+    code = str(request.data.get('code') or '').strip()
+    try:
+        phone_number, country_code = resolve_phone_number(code)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        return Response({'detail': '微信手机号服务暂不可用，请稍后重试'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    ClientPhoneBinding.objects.update_or_create(
+        profile=profile_obj,
+        defaults={
+            'phone_number': phone_number,
+            'country_code': country_code,
+        },
+    )
+    profile_obj.refresh_from_db()
+    return Response({
+        'detail': '手机号绑定成功',
+        'profile': ClientProfileSerializer(profile_obj).data,
+    })
 
 
 @api_view(['POST'])
