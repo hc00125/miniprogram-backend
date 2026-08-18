@@ -33,6 +33,8 @@ def create_listing_order(validated_data, listing_id, user=None):
         raise ValidationError({'detail': '该陪玩师账户当前不可预约，请重新选择'})
     if player.status != Player.STATUS_APPROVED or not player.can_be_designated:
         raise ValidationError({'detail': '该陪玩师当前暂不接受指定'})
+    if not player.is_online:
+        raise ValidationError({'detail': '该陪玩师当前离线，暂不可指定'})
     if not player.can_accept_orders:
         raise ValidationError({'detail': '该陪玩师当前暂不接单'})
 
