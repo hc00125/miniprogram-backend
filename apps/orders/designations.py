@@ -57,6 +57,10 @@ def validate_designated_players(raw_ids, required_players):
     if blocked:
         raise ValidationError({'designated_players': f"{'、'.join(blocked)}当前不接受指定"})
 
+    offline = [player.name for player in players if not player.is_online]
+    if offline:
+        raise ValidationError({'designated_players': f"{'、'.join(offline)}当前离线，暂不能指定，请选择在线的陪玩师"})
+
     busy_ids = set(
         OrderPlayer.objects
         .filter(

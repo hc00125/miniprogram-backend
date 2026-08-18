@@ -142,6 +142,8 @@ def validate_targeted_product(package):
         raise ValidationError({'detail': '该陪玩师当前暂不接受指定'})
     if not player.can_accept_orders:
         raise ValidationError({'detail': '该陪玩师当前暂不接单'})
+    if not player.is_online:
+        raise ValidationError({'detail': '该陪玩师当前离线，暂时无法指定下单'})
     return player
 
 
