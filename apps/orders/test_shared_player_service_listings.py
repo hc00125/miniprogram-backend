@@ -30,6 +30,7 @@ class SharedPlayerServiceListingTests(TestCase):
             can_accept_orders=True,
             can_be_designated=True,
             is_publicly_visible=True,
+            is_online=True,
         )
         self.package = Package.objects.create(
             name='共享四套四弹',
