@@ -174,7 +174,7 @@ SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', 'false' if DEBUG else 
 CSRF_COOKIE_SECURE = env_bool('CSRF_COOKIE_SECURE', 'false' if DEBUG else 'true')
 SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', 'false')
 SECURE_HSTS_SECONDS = env_int('SECURE_HSTS_SECONDS', '0' if DEBUG else '31536000')
-SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'false' if DEBUG else 'true')
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'false')
 SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', 'false')
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if env_bool('SECURE_PROXY_SSL_HEADER', 'true') else None
 
@@ -247,30 +247,28 @@ WECHAT_VIRTUALPAY_SANDBOX_PRODUCT_ID = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX
 WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN = env_int('WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN', '1500')
 WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD', '四套四弹')
 
-# WeChat subscription message for paid player-designated product orders.  The
-# field mapping is an administrator-controlled JSON object, for example:
-# {"thing1":"{package_name}","time2":"{created_at}","thing3":"{boss_contact}"}
-WECHAT_PLAYER_ORDER_TEMPLATE_ID = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_ID', '')
-WECHAT_PLAYER_ORDER_TEMPLATE_PAGE = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_PAGE', 'pages/player/my-orders/index')
-WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS = os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS', '{}')
+# WeChat one-time subscription message for designated-player invitations.
+# Default keywords follow the configured "顾客下单提醒" template:
+# 订单金额 / 订单备注 / 订单时间 / 订单号 / 商品名称。
+DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_ID = 'AhMjmuvib1HCABMK48XFaIUNWI2vKfjTSUFX-hXHNlw'
+DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS = (
+    '{"amount1":"{total_amount}","thing2":"{notification_note}",'
+    '"time3":"{created_at}","character_string4":"{order_no}",'
+    '"thing5":"{package_name}"}'
+)
+WECHAT_PLAYER_ORDER_TEMPLATE_ID = (
+    os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_ID', '').strip()
+    or DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_ID
+)
+WECHAT_PLAYER_ORDER_TEMPLATE_PAGE = (
+    os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_PAGE', '').strip()
+    or 'pages/player/grab/index'
+)
+WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS = (
+    os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS', '').strip()
+    or DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS
+)
 WECHAT_SUBSCRIBE_MESSAGE_MINIPROGRAM_STATE = os.environ.get('WECHAT_SUBSCRIBE_MESSAGE_MINIPROGRAM_STATE', 'formal')
 
 # 人民币 → 鱼干兑换比例：每 1 元 RMB = ? 鱼干
 FISH_CRACKER_EXCHANGE_RATE = env_int('FISH_CRACKER_EXCHANGE_RATE', '10')
-
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
-        },
-    },
-    'loggers': {
-        'apps.payments.virtualpay': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-    },
-}
