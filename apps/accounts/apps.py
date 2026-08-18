@@ -7,4 +7,4 @@ class AccountsConfig(AppConfig):
     verbose_name = '客户管理'
 
     def ready(self):
-        from . import signals  # noqa: F401
+        from . import phone_models, signals  # noqa: F401
