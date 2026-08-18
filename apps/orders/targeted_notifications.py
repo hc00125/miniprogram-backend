@@ -1,7 +1,8 @@
-"""Best-effort WeChat subscription notifications for paid targeted orders."""
+"""Best-effort WeChat subscription notifications for designated orders."""
 
 import json
 import logging
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -12,7 +13,7 @@ from django.utils import timezone
 from apps.payments.virtualpay import get_access_token
 from apps.players.models import PlayerOrderNoticeSubscription
 
-from .models import Order, OrderStatusLog
+from .models import Order, OrderDesignation, OrderStatusLog
 
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,29 @@ def _template_fields():
     return value if isinstance(value, dict) else {}
 
 
-def _render_template_data(order):
+def _format_amount(order):
+    raw = order.total_amount if order.total_amount is not None else order.total_price_per_hour
+    try:
+        amount = Decimal(str(raw or 0)).quantize(Decimal('0.01'))
+    except (InvalidOperation, TypeError, ValueError):
+        amount = Decimal('0.00')
+    return f'{amount:.2f}元'
+
+
+def _trim_field_value(field, value):
+    text = str(value or '')
+    if field.startswith('thing'):
+        return text[:20]
+    if field.startswith('time'):
+        return text[:20]
+    if field.startswith('amount'):
+        return text[:20]
+    if field.startswith('character_string'):
+        return text[:32]
+    return text[:32]
+
+
+def _render_template_data(order, notification_note='老板已指定您，请尽快确认'):
     context = {
         'package_name': order.package_name_snapshot or order.package.name,
         'spec_name': order.spec_name_snapshot or '',
@@ -35,15 +58,18 @@ def _render_template_data(order):
         'game_id': order.game_id or '',
         'booked_hours': str(order.booked_hours or 1),
         'order_no': order.order_no,
+        'total_amount': _format_amount(order),
+        'notification_note': notification_note,
     }
     data = {}
     for field, template in _template_fields().items():
         if not isinstance(field, str) or not isinstance(template, str):
             continue
         try:
-            data[field] = {'value': str(template.format_map(context))[:32]}
+            rendered = template.format_map(context)
+            data[field] = {'value': _trim_field_value(field, rendered)}
         except (KeyError, ValueError):
-            logger.warning('invalid targeted-order notification field template: %s', field)
+            logger.warning('invalid designated-order notification field template: %s', field)
     return data
 
 
@@ -70,32 +96,17 @@ def _consume_subscription(player, template_id):
     return True
 
 
-def notify_paid_targeted_order(order_id):
-    """Send one notification after the transaction that records payment commits.
-
-    The notification is never used as the only delivery mechanism: the pending
-    invitation remains in the player order list when a player has not granted a
-    subscription-message permission or WeChat rejects the message.
-    """
-    order = (
-        Order.objects
-        .select_related('package', 'target_player__user__client_profile')
-        .filter(pk=order_id, fulfillment_mode=Order.FULFILLMENT_MODE_TARGETED, paid=True)
-        .first()
-    )
-    if not order or not order.target_player_id:
-        return False
-
+def _send_order_notice(order, player, notification_note):
     template_id = (settings.WECHAT_PLAYER_ORDER_TEMPLATE_ID or '').strip()
-    data = _render_template_data(order)
-    profile = getattr(getattr(order.target_player, 'user', None), 'client_profile', None)
+    data = _render_template_data(order, notification_note=notification_note)
+    profile = getattr(getattr(player, 'user', None), 'client_profile', None)
     if not template_id or not data or not profile or not profile.openid:
-        _record(order, '指定服务邀请已生成；陪玩师未配置可用的微信订阅消息，已保留站内待接单提醒')
+        _record(order, '指定邀请已生成；陪玩师未配置可用的微信订阅消息，已保留站内待接单提醒')
         return False
 
     with transaction.atomic():
-        if not _consume_subscription(order.target_player, template_id):
-            _record(order, '指定服务邀请已生成；陪玩师尚未授权接单订阅消息，已保留站内待接单提醒')
+        if not _consume_subscription(player, template_id):
+            _record(order, '指定邀请已生成；陪玩师尚未授权接单订阅消息，已保留站内待接单提醒')
             return False
 
     payload = {
@@ -115,13 +126,59 @@ def notify_paid_targeted_order(order_id):
         )
         with urlopen(request, timeout=settings.WECHAT_VIRTUALPAY_HTTP_TIMEOUT) as response:
             result = json.loads(response.read().decode('utf-8'))
-    except Exception as exc:  # Network failures must not roll back a paid order.
-        logger.exception('targeted-order notification failed order=%s', order.order_no)
-        _record(order, f'指定服务邀请已生成；微信通知发送失败，已保留站内待接单提醒：{exc}')
+    except Exception as exc:  # Network failures must not roll back an order.
+        logger.exception('designated-order notification failed order=%s player=%s', order.order_no, player.id)
+        _record(order, f'指定邀请已生成；微信通知发送失败，已保留站内待接单提醒：{exc}')
         return False
 
     if int(result.get('errcode') or 0) != 0:
-        _record(order, f'指定服务邀请已生成；微信通知未送达，已保留站内待接单提醒：{result.get("errmsg") or result.get("errcode")}')
+        _record(order, f'指定邀请已生成；微信通知未送达，已保留站内待接单提醒：{result.get("errmsg") or result.get("errcode")}')
         return False
-    _record(order, '指定服务邀请已发送微信订阅消息，并保留站内待接单提醒')
+    _record(order, f'已向陪玩师 {player.name} 发送微信指定订单提醒，并保留站内待接单提醒')
     return True
+
+
+def notify_designation(designation_id):
+    """Send a subscription message for one pending designation."""
+    designation = (
+        OrderDesignation.objects
+        .select_related('order__package', 'player__user__client_profile')
+        .filter(pk=designation_id, status=OrderDesignation.STATUS_PENDING)
+        .first()
+    )
+    if not designation:
+        return False
+
+    order = designation.order
+    if designation.expires_at:
+        deadline = timezone.localtime(designation.expires_at).strftime('%H:%M')
+        notification_note = f'老板已指定您，请在{deadline}前确认'
+    else:
+        notification_note = '老板已指定您，请尽快确认'
+    return _send_order_notice(order, designation.player, notification_note)
+
+
+def notify_paid_targeted_order(order_id):
+    """Send the paid targeted-product invitation after its transaction commits."""
+    order = (
+        Order.objects
+        .select_related('target_player')
+        .filter(pk=order_id, fulfillment_mode=Order.FULFILLMENT_MODE_TARGETED, paid=True)
+        .first()
+    )
+    if not order or not order.target_player_id:
+        return False
+
+    designation = (
+        OrderDesignation.objects
+        .filter(
+            order=order,
+            player_id=order.target_player_id,
+            status=OrderDesignation.STATUS_PENDING,
+        )
+        .order_by('-id')
+        .first()
+    )
+    if not designation:
+        return False
+    return notify_designation(designation.id)
