@@ -1,4 +1,4 @@
-"""Best-effort WeChat subscription notifications for designated orders."""
+"""Best-effort WeChat and SMS notifications for designated orders."""
 
 import json
 import logging
@@ -139,7 +139,7 @@ def _send_order_notice(order, player, notification_note):
 
 
 def notify_designation(designation_id):
-    """Send a subscription message for one pending designation."""
+    """Send WeChat/SMS notifications for one pending designation."""
     designation = (
         OrderDesignation.objects
         .select_related('order__package', 'player__user__client_profile')
@@ -155,7 +155,18 @@ def notify_designation(designation_id):
         notification_note = f'老板已指定您，请在{deadline}前确认'
     else:
         notification_note = '老板已指定您，请尽快确认'
-    return _send_order_notice(order, designation.player, notification_note)
+
+    wechat_sent = _send_order_notice(order, designation.player, notification_note)
+
+    from .sms_notifications import send_designation_sms
+
+    sms_sent = send_designation_sms(designation)
+    if sms_sent is True:
+        _record(order, f'已向陪玩师 {designation.player.name} 的绑定手机号发送指定订单短信提醒')
+    elif sms_sent is False:
+        _record(order, '指定邀请已生成；短信通知发送失败，但不影响站内邀请和微信提醒')
+
+    return bool(wechat_sent or sms_sent)
 
 
 def notify_paid_targeted_order(order_id):
