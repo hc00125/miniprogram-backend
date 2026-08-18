@@ -18,12 +18,16 @@ class ClientProfileSerializer(serializers.ModelSerializer):
     wallet = serializers.SerializerMethodField()
     cumulative_consumption_diamonds = serializers.SerializerMethodField()
     account_status_text = serializers.CharField(source='get_account_status_display', read_only=True)
+    phone_bound = serializers.SerializerMethodField()
+    phone_number_masked = serializers.SerializerMethodField()
+    phone_bound_at = serializers.SerializerMethodField()
 
     class Meta:
         model = ClientProfile
         fields = [
             'id', 'openid', 'nickname', 'nickname_customized', 'avatar_url', 'role', 'player_status',
             'account_status', 'account_status_text', 'account_suspended_until', 'account_restriction_reason',
+            'phone_bound', 'phone_number_masked', 'phone_bound_at',
             'cumulative_consumption', 'cumulative_consumption_diamonds', 'vip', 'wallet',
             'created_at', 'application', 'player',
         ]
@@ -31,6 +35,23 @@ class ClientProfileSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         refresh_expired_account_restriction(instance)
         return super().to_representation(instance)
+
+    def get_phone_binding(self, obj):
+        try:
+            return obj.phone_binding
+        except Exception:
+            return None
+
+    def get_phone_bound(self, obj):
+        return bool(self.get_phone_binding(obj))
+
+    def get_phone_number_masked(self, obj):
+        binding = self.get_phone_binding(obj)
+        return binding.masked_phone_number if binding else ''
+
+    def get_phone_bound_at(self, obj):
+        binding = self.get_phone_binding(obj)
+        return binding.updated_at if binding else None
 
     def get_cumulative_consumption_diamonds(self, obj):
         return yuan_to_diamonds(obj.cumulative_consumption)
