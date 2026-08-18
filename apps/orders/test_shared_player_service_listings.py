@@ -147,6 +147,35 @@ class SharedPlayerServiceListingTests(TestCase):
         invitation = OrderDesignation.objects.get(order=order, player=self.player)
         self.assertEqual(invitation.status, OrderDesignation.STATUS_PENDING)
 
+    def test_listing_order_rejects_offline_player(self):
+        listing = PlayerServiceListing.objects.create(
+            player=self.player,
+            spec=self.spec,
+            status=PlayerServiceListing.STATUS_APPROVED,
+            is_available=True,
+        )
+        self.player.is_online = False
+        self.player.save(update_fields=['is_online'])
+
+        boss_client = APIClient()
+        boss_client.force_authenticate(self.boss_user)
+        response = boss_client.post(
+            '/api/boss/listing-order',
+            {
+                'listing_id': listing.id,
+                'boss_wechat': 'shared-listing-openid',
+                'game_id': 'SHARED-LISTING-ROOM',
+                'package_id': self.package.id,
+                'spec_id': self.spec.id,
+                'quantity': 1,
+                'booked_hours': 1,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('离线', str(response.data))
+        self.assertFalse(Order.objects.filter(target_player=self.player).exists())
+
     def test_listing_order_rejects_mismatched_spec(self):
         listing = PlayerServiceListing.objects.create(
             player=self.player,
