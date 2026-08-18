@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.db import transaction
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 from rest_framework.exceptions import ValidationError
@@ -7,7 +8,7 @@ from rest_framework.exceptions import ValidationError
 from apps.common.money import money
 
 from .designated_pricing import calculate_designated_pricing
-from .models import Order
+from .models import Order, OrderDesignation
 
 
 PRICING_FIELDS = {'total_price_per_hour', 'total_amount', 'designated_types'}
@@ -107,3 +108,17 @@ def persist_individual_designated_pricing(sender, instance, created, update_fiel
         total_amount=instance.total_amount,
         designated_types=instance.designated_types,
     )
+
+
+@receiver(post_save, sender=OrderDesignation, dispatch_uid='notify_public_designation_wechat')
+def notify_public_designation_wechat(sender, instance, created, **kwargs):
+    """普通指定邀请创建后，在事务提交成功后发送一次微信订阅消息。"""
+    if not created or instance.status != OrderDesignation.STATUS_PENDING:
+        return
+    if instance.order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+        # 专属商品订单由支付成功流程触发，避免重复发送。
+        return
+
+    from .targeted_notifications import notify_designation
+
+    transaction.on_commit(lambda designation_id=instance.id: notify_designation(designation_id))
