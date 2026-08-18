@@ -10,7 +10,6 @@ from apps.common.money import money
 
 from .models import CartItem
 from .services import create_order as create_order_base
-from .services import ensure_no_active_orders
 
 
 MAX_SERVICE_HOURS = 24
@@ -171,7 +170,6 @@ def create_cart_orders(cart_item_ids, validated_data, user):
     if len(item_map) != len(ordered_ids):
         raise ValidationError({'detail': '部分购物车商品不存在、已变化或不属于当前账号'})
 
-    ensure_no_active_orders(validated_data['boss_wechat'])
     orders = []
     for cart_item in [item_map[item_id] for item_id in ordered_ids]:
         hours = normalize_service_hours(cart_item.quantity)

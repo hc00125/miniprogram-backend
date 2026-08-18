@@ -14,7 +14,7 @@ from .composition_pricing import (
 )
 from .designations import create_designations, validate_designated_players
 from .models import DesignatedOrderDraft, Order, OrderItem, OrderStatusLog
-from .services import ensure_no_active_orders, generate_order_no
+from .services import generate_order_no
 
 
 def _draft_for_user(draft_id, user, *, for_update=False):
@@ -153,7 +153,6 @@ def submit_draft(*, user, draft_id):
         booked_hours=draft.booked_hours,
         require_virtual_binding=True,
     )
-    ensure_no_active_orders(draft.boss_wechat)
 
     # Reuse the established busy-player check immediately before invitations;
     # `quote_composition` owns type/offer/price validation.
