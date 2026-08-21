@@ -87,7 +87,7 @@ class UnifiedDiamondRefundTests(TestCase):
         self.assertEqual(spend.amount, Decimal('-30.00'))
         self.assertEqual(credit.balance_after, Decimal('80.00'))
         self.assertEqual(spend.balance_after, Decimal('50.00'))
-        self.assertEqual(self.payment.notify_payload['diamond_settlement']['diamonds'], 300)
+        self.assertEqual(self.payment.notify_payload['diamond_settlement']['diamonds'], '300.0')
 
     def test_regular_refund_returns_diamonds_for_wechat_direct_payment(self):
         refund = create_wallet_refund(
