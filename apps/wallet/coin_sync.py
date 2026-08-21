@@ -1,7 +1,6 @@
 import hashlib
 from decimal import Decimal
 
-from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
 from apps.payments.models import Payment, Refund
@@ -61,13 +60,7 @@ def _refund_coin_map(profile):
 
 
 def coin_backed_wallet_amount(profile):
-    """Return the local wallet amount that is still backed by WeChat XPay coins.
-
-    Coin-backed value is replayed from the same wallet ledger used for local
-    accounting.  Ordinary/manual/legacy value is treated as non-coin first;
-    therefore we never ask WeChat to deduct more coins than can be traced to
-    successful short_series_coin recharges (plus synced coin refunds).
-    """
+    """计算当前本地钱包中仍由微信官方 coin 支撑的人民币等值余额。"""
     recharge_map = _coin_recharge_map(profile)
     payment_map = _payment_coin_map(profile)
     refund_map = _refund_coin_map(profile)
@@ -102,10 +95,6 @@ def coin_backed_wallet_amount(profile):
             explicit_coin = payment_map.get(str(entry.reference_id or ''), ZERO)
             coin_backed = qyuan(max(ZERO, coin_backed - min(explicit_coin, coin_backed)))
         else:
-            # For legacy/manual negative adjustments we consume non-coin value
-            # first.  If the local deduction exceeds non-coin value, drop the
-            # remaining local coin backing; this is conservative and never
-            # causes a future XPay over-deduction.
             non_coin = max(ZERO, running - coin_backed)
             overflow = max(ZERO, spend - non_coin)
             coin_backed = qyuan(max(ZERO, coin_backed - overflow))
@@ -127,6 +116,22 @@ def _request_session(profile, code):
     if openid != profile.openid:
         raise ValidationError({'detail': '本次微信登录账号与当前账号不一致'})
     return session_key
+
+
+def query_remote_coin_balance(profile, session_key, user_ip='127.0.0.1'):
+    """查询微信官方 coin 余额，用于本地账本扣款前的双账校验。"""
+    response = user_xpay_post('/xpay/query_user_balance', {
+        'openid': profile.openid,
+        'env': virtual_env(),
+        'user_ip': user_ip or '127.0.0.1',
+    }, session_key)
+    try:
+        balance = int(response.get('balance') or 0)
+    except (TypeError, ValueError):
+        raise ValidationError({'detail': '微信官方钻石余额返回异常，请稍后重试'})
+    if balance < 0:
+        raise ValidationError({'detail': '微信官方钻石余额返回异常，请稍后重试'})
+    return balance, response
 
 
 def has_pending_coin_refunds(profile):
@@ -175,13 +180,7 @@ def sync_pending_coin_refunds(profile, session_key, user_ip='127.0.0.1'):
 
 
 def allocate_refund_coin_amount(refund):
-    """Attach the coin-backed share of a successful local wallet refund.
-
-    Actual XPay cancellation needs a fresh session_key and is retried on the
-    customer's next authenticated coin operation.  The local wallet credit is
-    deliberately not counted as coin-backed until that remote cancellation has
-    succeeded.
-    """
+    """给成功的本地钱包退款分配应同步回微信 coin 的份额。"""
     payment = refund.payment
     if not payment or payment.channel != 'balance':
         return 0
@@ -215,12 +214,7 @@ def allocate_refund_coin_amount(refund):
 
 
 def prepare_coin_spend(profile, amount, code, user_ip='127.0.0.1'):
-    """Synchronize pending coin refunds and deduct the coin-backed share.
-
-    Returns metadata to persist in Payment.notify_payload.  If this wallet has
-    only legacy/manual value no wx.login code is required, keeping old clients
-    and historical balances compatible.
-    """
+    """先同步 pending coin 退款，再准备本次官方 coin 扣减。"""
     amount = qyuan(amount)
     backed = coin_backed_wallet_amount(profile)
     pending_refunds = has_pending_coin_refunds(profile)
@@ -247,9 +241,16 @@ def prepare_coin_spend(profile, amount, code, user_ip='127.0.0.1'):
         }
 
     diamonds = yuan_to_diamonds(spend_yuan)
+    remote_balance, balance_response = query_remote_coin_balance(profile, session_key, user_ip)
+    if remote_balance < diamonds:
+        raise ValidationError({
+            'detail': (
+                f'钻石账本需要扣除{diamonds}钻石，但微信官方余额仅有{remote_balance}钻石；'
+                '已停止本次支付，请刷新钱包或联系客服核对'
+            )
+        })
+
     order_id = _coin_payment_order_id(profile.user_id, diamonds)
-    # Caller overwrites order_id with a business-order-specific deterministic id
-    # via finalize_coin_spend; this fallback is only a safety placeholder.
     return {
         '_session_key': session_key,
         '_user_ip': user_ip or '127.0.0.1',
@@ -257,6 +258,8 @@ def prepare_coin_spend(profile, amount, code, user_ip='127.0.0.1'):
         'wechat_coin_amount_yuan': str(spend_yuan),
         'wechat_coin_status': 'prepared',
         'wechat_coin_order_id': order_id,
+        'wechat_coin_balance_before': remote_balance,
+        'wechat_coin_balance_query': balance_response,
     }
 
 
@@ -284,4 +287,8 @@ def execute_coin_spend(profile, order, metadata):
     metadata['wechat_coin_status'] = 'succeeded'
     metadata['wechat_coin_order_id'] = order_id
     metadata['wechat_coin_response'] = response
+    try:
+        metadata['wechat_coin_balance_after'] = int(response.get('balance'))
+    except (TypeError, ValueError):
+        pass
     return metadata
