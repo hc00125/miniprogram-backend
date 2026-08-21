@@ -13,13 +13,13 @@ from apps.payments.virtualpay import (
     VirtualPaymentError,
 )
 
+from .coin_balance_service import pay_order_with_coin_aware_balance
 from .diamonds import DIAMONDS_PER_YUAN, qyuan, yuan_to_diamonds
 from .models import ALLOWED_RECHARGE_AMOUNTS, ClientWallet, ClientWalletLedger, RechargeOrder, RechargeProduct
 from .serializers import BalancePaymentCreateSerializer, RechargeCreateSerializer
 from .services import (
     create_recharge,
     mark_recharge_paid,
-    pay_order_with_balance,
     qmoney,
     query_recharge,
     recharge_status_payload,
@@ -36,6 +36,11 @@ def _missing_profile_response():
 
 def _local_iso(value):
     return timezone.localtime(value).isoformat() if value else None
+
+
+def _request_ip(request):
+    forwarded = str(request.META.get('HTTP_X_FORWARDED_FOR') or '').split(',')[0].strip()
+    return forwarded or str(request.META.get('REMOTE_ADDR') or '127.0.0.1')
 
 
 def _recharge_payload(recharge):
@@ -65,7 +70,6 @@ def overview(request):
     recharged_total = qmoney(wallet.recharged_total if wallet else 0)
     spent_total = qmoney(wallet.spent_total if wallet else 0)
     return Response({
-        # 旧字段保留一个发布周期供历史客户端使用；新客户端只展示整数钻石字段。
         'balance': str(balance),
         'recharged_total': str(recharged_total),
         'spent_total': str(spent_total),
@@ -194,8 +198,6 @@ def transactions(request):
     queryset = (
         ClientWalletLedger.objects
         .filter(wallet__profile=profile)
-        # 微信直付会在后台写“购钻石 + 订单消费”两条内部桥接流水，
-        # 它们只用于统一财务模型和审计，不应让用户账单出现无意义的+/-两条记录。
         .exclude(entry_type__in=ClientWalletLedger.INTERNAL_ENTRY_TYPES)
         .order_by('-created_at', '-id')
     )
@@ -224,8 +226,6 @@ def transactions(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def recharge_mock_success(request, recharge_no):
-    # 模拟支付必须显式启用，且不允许与真实虚拟支付通道并存：
-    # 否则真实 wechat_virtual 充值单可被免费确认成余额。
     if not settings.ENABLE_MOCK_PAYMENT or settings.WECHAT_VIRTUALPAY_ENABLED:
         return Response({'detail': '模拟支付未启用'}, status=status.HTTP_404_NOT_FOUND)
     recharge = (
@@ -252,7 +252,12 @@ def pay_balance_create(request):
     serializer.is_valid(raise_exception=True)
     order_no = serializer.validated_data['order_no']
     try:
-        result = pay_order_with_balance(order_no, request.user)
+        result = pay_order_with_coin_aware_balance(
+            order_no,
+            request.user,
+            code=serializer.validated_data.get('code') or '',
+            user_ip=_request_ip(request),
+        )
     except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
         return virtual_payment_error_response(exc)
     except APIException:
