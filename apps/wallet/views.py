@@ -14,7 +14,7 @@ from apps.payments.virtualpay import (
 )
 
 from .coin_balance_service import pay_order_with_coin_aware_balance
-from .diamonds import DIAMONDS_PER_YUAN, qyuan, yuan_to_diamonds
+from .diamonds import DIAMONDS_PER_YUAN, format_diamonds, qyuan
 from .models import ALLOWED_RECHARGE_AMOUNTS, ClientWallet, ClientWalletLedger, RechargeOrder, RechargeProduct
 from .serializers import BalancePaymentCreateSerializer, RechargeCreateSerializer
 from .services import (
@@ -47,7 +47,7 @@ def _recharge_payload(recharge):
     payload = recharge_status_payload(recharge)
     payload.update({
         'pay_amount_yuan': str(qyuan(recharge.amount)),
-        'diamonds': yuan_to_diamonds(recharge.amount),
+        'diamonds': format_diamonds(recharge.amount),
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
         'created_at': _local_iso(recharge.created_at),
         'paid_at': _local_iso(recharge.paid_at),
@@ -55,7 +55,7 @@ def _recharge_payload(recharge):
     })
     if recharge.status == RechargeOrder.STATUS_CREDITED:
         wallet = ClientWallet.objects.filter(profile_id=recharge.profile_id).first()
-        payload['balance_diamonds'] = yuan_to_diamonds(wallet.balance if wallet else 0)
+        payload['balance_diamonds'] = format_diamonds(wallet.balance if wallet else 0)
     return payload
 
 
@@ -76,9 +76,9 @@ def overview(request):
         'balance_yuan': str(balance),
         'recharged_total_yuan': str(recharged_total),
         'spent_total_yuan': str(spent_total),
-        'balance_diamonds': yuan_to_diamonds(balance),
-        'recharged_total_diamonds': yuan_to_diamonds(recharged_total),
-        'spent_total_diamonds': yuan_to_diamonds(spent_total),
+        'balance_diamonds': format_diamonds(balance),
+        'recharged_total_diamonds': format_diamonds(recharged_total),
+        'spent_total_diamonds': format_diamonds(spent_total),
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
     })
 
@@ -101,7 +101,7 @@ def recharge_packages(request):
                 'id': product.id,
                 'amount': str(qmoney(product.amount)),
                 'pay_amount_yuan': str(qmoney(product.amount)),
-                'diamonds': product.diamond_amount,
+                'diamonds': format_diamonds(product.amount),
             }
             for product in products
         ],
@@ -130,7 +130,7 @@ def recharge_create(request):
         return unexpected_virtual_payment_response(exc, action='recharge_create', request=request)
     payload.update({
         'pay_amount_yuan': str(qyuan(recharge.amount)),
-        'diamonds': yuan_to_diamonds(recharge.amount),
+        'diamonds': format_diamonds(recharge.amount),
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
     })
     return Response(payload)
@@ -213,8 +213,8 @@ def transactions(request):
                 'entry_type_display': entry.get_entry_type_display(),
                 'amount': str(qmoney(entry.amount)),
                 'balance_after': str(qmoney(entry.balance_after)),
-                'amount_diamonds': yuan_to_diamonds(entry.amount),
-                'balance_after_diamonds': yuan_to_diamonds(entry.balance_after),
+                'amount_diamonds': format_diamonds(entry.amount),
+                'balance_after_diamonds': format_diamonds(entry.balance_after),
                 'note': entry.note,
                 'created_at': timezone.localtime(entry.created_at).isoformat(),
             }
@@ -271,9 +271,9 @@ def pay_balance_create(request):
         )
     result.update({
         'amount_yuan': str(qyuan(result.get('amount'))),
-        'amount_diamonds': yuan_to_diamonds(result.get('amount')),
+        'amount_diamonds': format_diamonds(result.get('amount')),
         'balance_yuan': str(qyuan(result.get('balance'))),
-        'balance_diamonds': yuan_to_diamonds(result.get('balance')),
+        'balance_diamonds': format_diamonds(result.get('balance')),
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
     })
     return Response(result)
