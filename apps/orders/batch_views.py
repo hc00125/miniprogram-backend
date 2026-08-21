@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from apps.common.money import money
 
 from .batch_serializers import CartBatchOrderCreateSerializer
+from .models import Order
 from .services import create_cart_orders
 
 
@@ -15,6 +16,25 @@ def create_cart_order_batch(request):
     serializer = CartBatchOrderCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
+
+    # A boss may publish multiple items inside one cart batch, but a new batch
+    # must not start while a previous order is still active. Keeping the guard
+    # at the batch boundary avoids blocking the second/third order created by
+    # this same transaction.
+    active_statuses = [
+        Order.STATUS_WAITING,
+        Order.STATUS_PENDING_PAYMENT,
+        Order.STATUS_READY_TO_START,
+        Order.STATUS_IN_PROGRESS,
+    ]
+    if Order.objects.filter(
+        boss_user=request.user,
+        status__in=active_statuses,
+    ).exists():
+        return Response(
+            {'detail': '您有未完成的订单，请先完成后再下单'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     orders = create_cart_orders(
         cart_item_ids=data['cart_item_ids'],
