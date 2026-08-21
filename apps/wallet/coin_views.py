@@ -20,26 +20,49 @@ from .coin_recharge import (
     query_coin_recharge,
     recharge_limits,
 )
-from .diamonds import DIAMONDS_PER_YUAN, format_diamonds, yuan_to_coin_units
+from .diamonds import DIAMONDS_PER_YUAN, format_diamonds, qyuan, yuan_to_coin_units
+from .models import RechargeProduct
 
 
 class CoinRechargeCreateSerializer(serializers.Serializer):
+    # New clients send an arbitrary RMB amount. Keep the legacy product fields
+    # for one compatibility window so an older published mini-program can use
+    # the same endpoint after the backend is upgraded.
     amount_yuan = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
         min_value=Decimal('0.01'),
+        required=False,
     )
+    recharge_product_id = serializers.IntegerField(min_value=1, required=False)
+    product_id = serializers.IntegerField(min_value=1, required=False)
     code = serializers.CharField(required=False, allow_blank=True, allow_null=True, default='')
 
-    def validate_amount_yuan(self, value):
-        # The RMB ledger is cent-precise.  Validate against the configured XPay
-        # integer settlement unit instead of requiring displayed diamonds to be
-        # integers (¥12.35 = 123.5 displayed diamonds is valid).
+    def validate(self, attrs):
+        amount = attrs.get('amount_yuan')
+        legacy_product_id = attrs.get('recharge_product_id') or attrs.get('product_id')
+
+        if amount is None:
+            if not legacy_product_id:
+                raise serializers.ValidationError({'amount_yuan': '请输入充值金额'})
+            product = RechargeProduct.objects.filter(
+                id=legacy_product_id,
+                is_active=True,
+            ).first()
+            if not product:
+                raise serializers.ValidationError({'recharge_product_id': '充值档位不存在或已停用'})
+            amount = qyuan(product.amount)
+            attrs['amount_yuan'] = amount
+            attrs['legacy_recharge_product_id'] = product.id
+
+        # RMB is the accounting truth and remains cent-precise. XPay still
+        # receives an integer settlement quantity, independent of displayed
+        # diamonds (e.g. ¥12.35 = 123.5 diamonds = 1235 settlement units).
         try:
-            yuan_to_coin_units(value)
+            yuan_to_coin_units(amount)
         except Exception as exc:
-            raise serializers.ValidationError(str(exc)) from exc
-        return value
+            raise serializers.ValidationError({'amount_yuan': str(exc)}) from exc
+        return attrs
 
 
 @api_view(['GET'])
@@ -49,7 +72,28 @@ def recharge_config(request):
     minimum, maximum = recharge_limits(platform)
     from apps.earnings.platform_fees import platform_fee_percent, target_net_margin_percent
 
-    quick_amounts = [10, 30, 50, 100, 200, 500]
+    # These are UI shortcuts only. When a matching legacy RechargeProduct is
+    # present, expose its real id so old published clients can still submit it.
+    quick_amounts = [10, 30, 50, 100, 200, 500, 1000]
+    legacy_products = {
+        qyuan(product.amount): product
+        for product in RechargeProduct.objects.filter(is_active=True)
+    }
+    results = []
+    for raw_amount in quick_amounts:
+        amount = qyuan(raw_amount)
+        if amount < minimum or amount > maximum:
+            continue
+        legacy_product = legacy_products.get(amount)
+        results.append({
+            'id': legacy_product.id if legacy_product else raw_amount,
+            'amount': f'{amount:.2f}',
+            'pay_amount_yuan': f'{amount:.2f}',
+            'diamonds': format_diamonds(amount),
+            'quick_amount': True,
+            'legacy_recharge_product_id': legacy_product.id if legacy_product else None,
+        })
+
     return Response({
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
         'min_amount_yuan': str(minimum),
@@ -59,18 +103,7 @@ def recharge_config(request):
         'client_platform': platform,
         'platform_fee_percent': str(platform_fee_percent(platform)),
         'target_net_margin_percent': str(target_net_margin_percent()),
-        # 保留 results 兼容旧客户端；这些只是快捷金额，不再绑定微信商品ID。
-        'results': [
-            {
-                'id': amount,
-                'amount': f'{amount:.2f}',
-                'pay_amount_yuan': f'{amount:.2f}',
-                'diamonds': format_diamonds(Decimal(amount)),
-                'quick_amount': True,
-            }
-            for amount in quick_amounts
-            if Decimal(amount) >= minimum and Decimal(amount) <= maximum
-        ],
+        'results': results,
     })
 
 
