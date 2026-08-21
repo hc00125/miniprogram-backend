@@ -3,8 +3,10 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.test import TestCase, override_settings
 from rest_framework.exceptions import ValidationError
+from rest_framework.test import APIClient
 
 from apps.accounts.models import ClientProfile
 
@@ -33,6 +35,8 @@ class CoinRechargeTests(TestCase):
             openid='openid_coin_recharge',
             nickname='自由充值测试老板',
         )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
 
     def _create(self, amount='37.20', platform='android'):
         with patch(
@@ -54,8 +58,17 @@ class CoinRechargeTests(TestCase):
         self.assertNotIn('goodsPrice', sign_data)
 
     def test_amount_must_map_to_integer_diamonds(self):
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(DjangoValidationError):
             self._create('37.25')
+
+        response = self.client.post(
+            '/api/client/wallet/recharge/create',
+            {'amount_yuan': '37.25', 'code': 'wx-code'},
+            format='json',
+            HTTP_X_CLIENT_PLATFORM='android',
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('0.1元', str(response.data))
 
     def test_ios_minimum_is_one_yuan(self):
         with self.assertRaises(ValidationError):
