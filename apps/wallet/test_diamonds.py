@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import ClientProfile
 
 from .diamonds import (
+    coin_units_per_yuan,
     coin_units_to_yuan,
     diamonds_to_yuan,
     format_diamonds,
@@ -26,16 +27,18 @@ class DiamondConversionTests(TestCase):
         self.assertEqual(diamonds_to_yuan(Decimal('199.9')), Decimal('19.99'))
 
     @override_settings(WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN=100)
-    def test_cent_amount_maps_exactly_to_integer_xpay_units(self):
-        self.assertEqual(yuan_to_coin_units(Decimal('19.99')), 1999)
+    def test_published_scale_cannot_be_overridden_by_stale_server_setting(self):
+        self.assertEqual(coin_units_per_yuan(), 10)
+        self.assertEqual(yuan_to_coin_units(Decimal('19.90')), 199)
+        with self.assertRaises(DjangoValidationError):
+            yuan_to_coin_units(Decimal('19.99'))
+
+    def test_historical_100_scale_rows_remain_interpretable_explicitly(self):
+        self.assertEqual(yuan_to_coin_units(Decimal('19.99'), units_per_yuan=100), 1999)
         self.assertEqual(
             coin_units_to_yuan(1999, units_per_yuan=100),
             Decimal('19.99'),
         )
-
-    def test_legacy_xpay_scale_rejects_unrepresentable_cent_amount(self):
-        with self.assertRaises(DjangoValidationError):
-            yuan_to_coin_units(Decimal('19.99'), units_per_yuan=10)
 
     def test_recharge_product_only_accepts_fixed_tiers(self):
         valid = RechargeProduct(
@@ -107,7 +110,6 @@ class DiamondWalletApiTests(TestCase):
                 'sort_order': 1,
             },
         )
-        # 直接写入模拟历史非标准档位；API仍不得向用户展示。
         RechargeProduct.objects.create(
             product_id='test_api_20',
             amount=Decimal('20.00'),
