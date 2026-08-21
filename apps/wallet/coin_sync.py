@@ -2,6 +2,7 @@ import hashlib
 import logging
 from decimal import Decimal
 
+from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -9,7 +10,14 @@ from apps.payments.models import Payment, Refund
 from apps.payments.virtualpay import exchange_code_for_session, virtual_env
 from apps.payments.xpay_user import user_xpay_post
 
-from .diamonds import diamonds_to_yuan, qyuan, yuan_to_diamonds
+from .diamonds import (
+    LEGACY_COIN_UNITS_PER_YUAN,
+    coin_units_per_yuan,
+    coin_units_to_yuan,
+    format_diamonds,
+    qyuan,
+    yuan_to_coin_units,
+)
 from .models import ClientWalletLedger, RechargeOrder
 
 
@@ -21,6 +29,30 @@ REMOTE_REFUND_STATUS_KEY = 'wechat_coin_remote_refund_status'
 REMOTE_REFUND_ORDER_ID_KEY = 'wechat_coin_remote_refund_order_id'
 
 
+def _payload_coin_scale(payload):
+    raw = dict(payload or {}).get('wechat_coin_units_per_yuan')
+    if raw is not None:
+        return coin_units_per_yuan(raw)
+    # Legacy rows used the displayed diamond count itself as XPay amount.
+    return LEGACY_COIN_UNITS_PER_YUAN
+
+
+def _payment_coin_units(payload):
+    payload = dict(payload or {})
+    if 'wechat_coin_units' in payload:
+        return int(payload.get('wechat_coin_units') or 0)
+    # Historical compatibility: before the unit split this field was the
+    # integer XPay amount, not merely a display value.
+    return int(payload.get('wechat_coin_diamonds') or 0)
+
+
+def _refund_coin_units(payload):
+    payload = dict(payload or {})
+    if 'wechat_coin_refund_units' in payload:
+        return int(payload.get('wechat_coin_refund_units') or 0)
+    return int(payload.get('wechat_coin_refund_diamonds') or 0)
+
+
 def _coin_recharge_map(profile):
     result = {}
     queryset = RechargeOrder.objects.filter(
@@ -29,8 +61,12 @@ def _coin_recharge_map(profile):
     ).only('recharge_no', 'amount', 'notify_payload')
     for recharge in queryset.iterator():
         payload = dict(recharge.notify_payload or {})
-        if payload.get('mode') == COIN_MODE:
-            result[recharge.recharge_no] = qyuan(recharge.amount)
+        if payload.get('mode') != COIN_MODE:
+            continue
+        result[recharge.recharge_no] = (
+            qyuan(recharge.amount),
+            _payload_coin_scale(payload),
+        )
     return result
 
 
@@ -43,9 +79,14 @@ def _payment_coin_map(profile):
     ).only('payment_no', 'notify_payload')
     for payment in queryset.iterator():
         payload = dict(payment.notify_payload or {})
-        diamonds = int(payload.get('wechat_coin_diamonds') or 0)
-        if diamonds > 0:
-            result[payment.payment_no] = diamonds_to_yuan(diamonds)
+        units = _payment_coin_units(payload)
+        if units <= 0:
+            continue
+        scale = _payload_coin_scale(payload)
+        result[payment.payment_no] = (
+            coin_units_to_yuan(units, units_per_yuan=scale),
+            scale,
+        )
     return result
 
 
@@ -59,20 +100,51 @@ def _refund_coin_map(profile):
         payload = dict(refund.notify_payload or {})
         if payload.get('wechat_coin_refund_status') != 'succeeded':
             continue
-        diamonds = int(payload.get('wechat_coin_refund_diamonds') or 0)
-        if diamonds > 0:
-            result[refund.refund_no] = diamonds_to_yuan(diamonds)
+        units = _refund_coin_units(payload)
+        if units <= 0:
+            continue
+        scale = _payload_coin_scale(payload)
+        result[refund.refund_no] = (
+            coin_units_to_yuan(units, units_per_yuan=scale),
+            scale,
+        )
     return result
 
 
-def coin_backed_wallet_amount(profile):
-    """计算当前本地钱包中仍由微信官方 coin 支撑的人民币等值余额。"""
+def _consume_lots(lots, amount, *, scale=None):
+    remaining = qyuan(amount)
+    if remaining <= ZERO:
+        return ZERO
+    consumed = ZERO
+    for lot in lots:
+        if remaining <= ZERO:
+            break
+        if scale is not None and lot['scale'] != scale:
+            continue
+        available = qyuan(lot['amount'])
+        if available <= ZERO:
+            continue
+        take = min(available, remaining)
+        lot['amount'] = qyuan(available - take)
+        remaining = qyuan(remaining - take)
+        consumed = qyuan(consumed + take)
+    return consumed
+
+
+def coin_backed_wallet_buckets(profile):
+    """Replay local wallet history into remaining coin-backed RMB by XPay scale.
+
+    Keeping scales separate prevents a historical 10-units/RMB coin balance
+    from being silently mixed with a new 100-units/RMB balance.  No historical
+    order amount is rewritten; this is purely an interpretation of immutable
+    ledger metadata.
+    """
     recharge_map = _coin_recharge_map(profile)
     payment_map = _payment_coin_map(profile)
     refund_map = _refund_coin_map(profile)
 
     running = ZERO
-    coin_backed = ZERO
+    lots = []
     entries = ClientWalletLedger.objects.filter(wallet__profile=profile).order_by('id')
     for entry in entries.iterator():
         amount = qyuan(entry.amount)
@@ -81,48 +153,69 @@ def coin_backed_wallet_amount(profile):
 
         if entry.entry_type == ClientWalletLedger.TYPE_RECHARGE:
             running = qyuan(running + amount)
-            coin_backed = qyuan(coin_backed + recharge_map.get(str(entry.reference_id or ''), ZERO))
-            coin_backed = min(coin_backed, running)
+            source = recharge_map.get(str(entry.reference_id or ''))
+            if source:
+                source_amount, scale = source
+                lots.append({'scale': scale, 'amount': qyuan(source_amount)})
+            backed = qyuan(sum((lot['amount'] for lot in lots), ZERO))
+            if backed > running:
+                _consume_lots(lots, backed - running)
             continue
 
         if entry.entry_type == ClientWalletLedger.TYPE_REFUND_IN:
             running = qyuan(running + amount)
-            coin_backed = qyuan(coin_backed + refund_map.get(str(entry.reference_id or ''), ZERO))
-            coin_backed = min(coin_backed, running)
+            source = refund_map.get(str(entry.reference_id or ''))
+            if source:
+                source_amount, scale = source
+                lots.append({'scale': scale, 'amount': qyuan(source_amount)})
+            backed = qyuan(sum((lot['amount'] for lot in lots), ZERO))
+            if backed > running:
+                _consume_lots(lots, backed - running)
             continue
 
         if amount >= ZERO:
             running = qyuan(running + amount)
-            coin_backed = min(coin_backed, running)
             continue
 
         spend = -amount
         if entry.entry_type == ClientWalletLedger.TYPE_ORDER_PAYMENT:
-            explicit_coin = payment_map.get(str(entry.reference_id or ''), ZERO)
-            coin_backed = qyuan(max(ZERO, coin_backed - min(explicit_coin, coin_backed)))
+            explicit = payment_map.get(str(entry.reference_id or ''))
+            if explicit:
+                explicit_amount, explicit_scale = explicit
+                _consume_lots(lots, explicit_amount, scale=explicit_scale)
         else:
-            non_coin = max(ZERO, running - coin_backed)
+            backed = qyuan(sum((lot['amount'] for lot in lots), ZERO))
+            non_coin = max(ZERO, running - backed)
             overflow = max(ZERO, spend - non_coin)
-            coin_backed = qyuan(max(ZERO, coin_backed - overflow))
+            _consume_lots(lots, overflow)
+
         running = qyuan(max(ZERO, running - spend))
-        coin_backed = min(coin_backed, running)
+        backed = qyuan(sum((lot['amount'] for lot in lots), ZERO))
+        if backed > running:
+            _consume_lots(lots, backed - running)
 
-    return qyuan(max(ZERO, coin_backed))
+    buckets = {}
+    for lot in lots:
+        amount = qyuan(lot['amount'])
+        if amount <= ZERO:
+            continue
+        scale = lot['scale']
+        buckets[scale] = qyuan(buckets.get(scale, ZERO) + amount)
+    return buckets
 
 
-def _coin_payment_order_id(order_no, diamonds):
-    digest = hashlib.sha256(f'{order_no}:{diamonds}'.encode('utf-8')).hexdigest()[:28].upper()
+def coin_backed_wallet_amount(profile):
+    return qyuan(sum(coin_backed_wallet_buckets(profile).values(), ZERO))
+
+
+def _coin_payment_order_id(order_no, coin_units, scale):
+    digest = hashlib.sha256(
+        f'{order_no}:{coin_units}:{scale}'.encode('utf-8')
+    ).hexdigest()[:28].upper()
     return f'CP{digest}'
 
 
 def _coin_remote_refund_order_id(payment, pay_order_id):
-    """One deterministic remote refund id per original currency_pay.
-
-    WeChat documents 268490005 as "the order has already been refunded through
-    cancel_currency_pay; additional refunds are not supported".  Therefore the
-    remote side is reversed exactly once for the full coin portion, even when
-    the business creates several partial local refunds.
-    """
     digest = hashlib.sha256(
         f'{payment.payment_no}:{pay_order_id}:full-coin-refund'.encode('utf-8')
     ).hexdigest()[:28].upper()
@@ -139,7 +232,7 @@ def _request_session(profile, code):
 
 
 def query_remote_coin_balance(profile, session_key, user_ip='127.0.0.1'):
-    """查询微信官方 coin 余额，用于支付前审计和双账异常诊断。"""
+    """Return the raw integer XPay balance; interpretation uses the active scale."""
     response = user_xpay_post('/xpay/query_user_balance', {
         'openid': profile.openid,
         'env': virtual_env(),
@@ -162,7 +255,7 @@ def has_pending_coin_refunds(profile):
     ).only('notify_payload')
     for refund in queryset.iterator():
         payload = dict(refund.notify_payload or {})
-        if int(payload.get('wechat_coin_refund_diamonds') or 0) > 0 and payload.get('wechat_coin_refund_status') != 'succeeded':
+        if _refund_coin_units(payload) > 0 and payload.get('wechat_coin_refund_status') != 'succeeded':
             return True
     return False
 
@@ -177,19 +270,13 @@ def _mark_local_refund_coin_synced(refund, payload, response, remote_order_id, *
 
 
 def sync_pending_coin_refunds(profile, session_key, user_ip='127.0.0.1'):
-    """Synchronize successful local wallet refunds back to WeChat coin.
+    """Synchronize local refunds while issuing at most one remote cancel per pay.
 
-    ``cancel_currency_pay`` only permits one refund operation per original
-    ``currency_pay``.  The first local refund therefore reverses the entire
-    original coin-backed portion remotely.  Later partial local refunds merely
-    consume that already-restored remote coin pool and must not call the remote
-    cancellation endpoint again.
-
-    If the remote full cancellation succeeded but the process died before the
-    local DB update, retrying the deterministic cancellation may return
-    268490005.  In this protocol that code is safe to treat as recovered success
-    because every remote cancellation for this payment always uses the same
-    deterministic order id and the full original coin amount.
+    WeChat's 268490005 states that an order already refunded by
+    ``cancel_currency_pay`` cannot be refunded again.  The first local refund
+    therefore restores the whole original coin-backed spend remotely.  Later
+    partial local refunds only unlock their corresponding local coin-backed
+    share from that already-restored remote pool.
     """
     queryset = Refund.objects.filter(
         order__boss_user__client_profile=profile,
@@ -199,12 +286,10 @@ def sync_pending_coin_refunds(profile, session_key, user_ip='127.0.0.1'):
     synced = 0
     for refund in queryset.iterator():
         payload = dict(refund.notify_payload or {})
-        diamonds = int(payload.get('wechat_coin_refund_diamonds') or 0)
-        if diamonds <= 0 or payload.get('wechat_coin_refund_status') == 'succeeded':
+        refund_units = _refund_coin_units(payload)
+        if refund_units <= 0 or payload.get('wechat_coin_refund_status') == 'succeeded':
             continue
 
-        # Reload each payment so a previous refund in this same loop (or another
-        # worker) can publish the remote full-cancel marker before we continue.
         payment = Payment.objects.filter(pk=refund.payment_id).only(
             'id', 'payment_no', 'notify_payload'
         ).first()
@@ -212,8 +297,8 @@ def sync_pending_coin_refunds(profile, session_key, user_ip='127.0.0.1'):
             continue
         payment_payload = dict(payment.notify_payload or {})
         pay_order_id = str(payment_payload.get('wechat_coin_order_id') or '')
-        total_coin = int(payment_payload.get('wechat_coin_diamonds') or 0)
-        if not pay_order_id or total_coin <= 0:
+        total_units = _payment_coin_units(payment_payload)
+        if not pay_order_id or total_units <= 0:
             continue
 
         remote_order_id = str(
@@ -238,14 +323,12 @@ def sync_pending_coin_refunds(profile, session_key, user_ip='127.0.0.1'):
             'user_ip': user_ip or '127.0.0.1',
             'pay_order_id': pay_order_id,
             'order_id': remote_order_id,
-            # WeChat only allows one cancel per currency_pay, so restore the
-            # complete original coin-backed spend on the first refund.
-            'amount': total_coin,
+            'amount': total_units,
         }, session_key, extra_success_codes={XPAY_ALREADY_REFUNDED_CODE})
 
         payment_payload[REMOTE_REFUND_STATUS_KEY] = 'succeeded'
         payment_payload[REMOTE_REFUND_ORDER_ID_KEY] = remote_order_id
-        payment_payload['wechat_coin_remote_refund_amount'] = total_coin
+        payment_payload['wechat_coin_remote_refund_amount_units'] = total_units
         payment_payload['wechat_coin_remote_refund_response'] = response
         payment_payload['wechat_coin_remote_refunded_at'] = timezone.now().isoformat()
         Payment.objects.filter(pk=payment.pk).update(notify_payload=payment_payload)
@@ -261,60 +344,78 @@ def sync_pending_coin_refunds(profile, session_key, user_ip='127.0.0.1'):
 
 
 def allocate_refund_coin_amount(refund):
-    """给成功的本地钱包退款分配应由微信 coin 支撑的份额。
-
-    Each local refund still records only its own coin-backed share.  The remote
-    API may already have restored the original payment's whole coin portion;
-    that surplus remains intentionally unavailable to the local wallet until
-    subsequent local refunds are created.
-    """
-    payment = refund.payment
-    if not payment or payment.channel != 'balance':
-        return 0
-    payment_payload = dict(payment.notify_payload or {})
-    total_coin = int(payment_payload.get('wechat_coin_diamonds') or 0)
-    if total_coin <= 0:
+    """Allocate the exact coin-backed share of one successful local refund."""
+    if not refund.payment_id or refund.payment.channel != 'balance':
         return 0
 
-    payload = dict(refund.notify_payload or {})
-    if 'wechat_coin_refund_diamonds' in payload:
-        return int(payload.get('wechat_coin_refund_diamonds') or 0)
+    with transaction.atomic():
+        payment = Payment.objects.select_for_update().get(pk=refund.payment_id)
+        locked_refund = Refund.objects.select_for_update().get(pk=refund.pk)
+        payment_payload = dict(payment.notify_payload or {})
+        total_units = _payment_coin_units(payment_payload)
+        if total_units <= 0:
+            return 0
+        scale = _payload_coin_scale(payment_payload)
 
-    allocated_before = 0
-    for previous in payment.refunds.exclude(pk=refund.pk).filter(
-        status=Refund.STATUS_SUCCEEDED,
-    ).only('notify_payload'):
-        previous_payload = dict(previous.notify_payload or {})
-        allocated_before += int(previous_payload.get('wechat_coin_refund_diamonds') or 0)
+        payload = dict(locked_refund.notify_payload or {})
+        if 'wechat_coin_refund_units' in payload:
+            return int(payload.get('wechat_coin_refund_units') or 0)
+        # Historical rows may already have the legacy allocation field.
+        if 'wechat_coin_refund_diamonds' in payload and 'wechat_coin_units' not in payment_payload:
+            return int(payload.get('wechat_coin_refund_diamonds') or 0)
 
-    available = max(0, total_coin - allocated_before)
-    # Never silently turn an unrepresentable money amount into a zero coin
-    # refund.  Doing so would make the local wallet and WeChat ledger diverge.
-    refund_diamonds = yuan_to_diamonds(refund.amount)
-    allocated = min(available, refund_diamonds)
-    payload['wechat_coin_refund_diamonds'] = allocated
-    payload['wechat_coin_refund_status'] = 'pending' if allocated > 0 else 'not_required'
-    Refund.objects.filter(pk=refund.pk).update(notify_payload=payload)
-    refund.notify_payload = payload
-    return allocated
+        allocated_before = 0
+        previous_refunds = payment.refunds.exclude(pk=locked_refund.pk).filter(
+            status=Refund.STATUS_SUCCEEDED,
+        ).only('notify_payload')
+        for previous in previous_refunds:
+            allocated_before += _refund_coin_units(previous.notify_payload)
+
+        available = max(0, total_units - allocated_before)
+        requested_units = yuan_to_coin_units(
+            locked_refund.amount,
+            units_per_yuan=scale,
+        )
+        allocated = min(available, requested_units)
+        allocated_yuan = coin_units_to_yuan(allocated, units_per_yuan=scale) if allocated else ZERO
+        payload['wechat_coin_refund_units'] = allocated
+        payload['wechat_coin_units_per_yuan'] = scale
+        payload['wechat_coin_refund_diamonds'] = format_diamonds(allocated_yuan)
+        payload['wechat_coin_refund_status'] = 'pending' if allocated > 0 else 'not_required'
+        Refund.objects.filter(pk=locked_refund.pk).update(notify_payload=payload)
+        refund.notify_payload = payload
+        return allocated
+
+
+def _compatible_backing_amount(profile, scale):
+    buckets = coin_backed_wallet_buckets(profile)
+    incompatible = qyuan(sum(
+        (amount for item_scale, amount in buckets.items() if item_scale != scale),
+        ZERO,
+    ))
+    if incompatible > ZERO:
+        raise ValidationError({
+            'detail': (
+                '钱包仍含旧版微信钻石余额，结算单位与当前配置不一致；'
+                '为避免倍率误扣已暂停支付，请管理员先完成旧余额迁移或保持原结算配置'
+            )
+        })
+    return qyuan(buckets.get(scale, ZERO))
 
 
 def prepare_coin_spend(profile, amount, code, user_ip='127.0.0.1'):
-    """先同步 pending coin 退款，再准备本次官方 coin 扣减。
-
-    官方余额查询是审计信号，不作为“余额不足就禁止重放”的硬门槛：
-    currency_pay 使用确定性 order_id，若上一次远端已成功但本地事务失败，
-    重试必须继续用同一 order_id 让微信返回幂等成功，才能补齐本地账。
-    真正余额不足且从未成功过的请求会由 currency_pay 自身拒绝。
-    """
+    """Prepare an exact integer XPay spend for the coin-backed wallet share."""
     amount = qyuan(amount)
-    backed = coin_backed_wallet_amount(profile)
+    scale = coin_units_per_yuan()
+    backed = _compatible_backing_amount(profile, scale)
     pending_refunds = has_pending_coin_refunds(profile)
     spend_yuan = min(amount, backed)
 
     if spend_yuan <= ZERO and not pending_refunds:
         return {
-            'wechat_coin_diamonds': 0,
+            'wechat_coin_units': 0,
+            'wechat_coin_units_per_yuan': scale,
+            'wechat_coin_diamonds': '0.0',
             'wechat_coin_amount_yuan': '0.00',
             'wechat_coin_status': 'not_required',
         }
@@ -322,56 +423,64 @@ def prepare_coin_spend(profile, amount, code, user_ip='127.0.0.1'):
     session_key = _request_session(profile, code)
     if pending_refunds:
         sync_pending_coin_refunds(profile, session_key, user_ip)
-        backed = coin_backed_wallet_amount(profile)
+        backed = _compatible_backing_amount(profile, scale)
         spend_yuan = min(amount, backed)
 
     if spend_yuan <= ZERO:
         return {
-            'wechat_coin_diamonds': 0,
+            'wechat_coin_units': 0,
+            'wechat_coin_units_per_yuan': scale,
+            'wechat_coin_diamonds': '0.0',
             'wechat_coin_amount_yuan': '0.00',
             'wechat_coin_status': 'not_required',
         }
 
-    diamonds = yuan_to_diamonds(spend_yuan)
+    coin_units = yuan_to_coin_units(spend_yuan, units_per_yuan=scale)
     remote_balance, balance_response = query_remote_coin_balance(profile, session_key, user_ip)
-    if remote_balance < diamonds:
+    if remote_balance < coin_units:
         logger.warning(
             '[官方钻石] 本地coin支撑额高于微信当前余额，继续用确定性order_id重放以区分幂等恢复与真实不足 '
-            'user_id=%s required=%s remote=%s',
+            'user_id=%s required_units=%s remote_units=%s scale=%s',
             profile.user_id,
-            diamonds,
+            coin_units,
             remote_balance,
+            scale,
         )
 
     return {
         '_session_key': session_key,
         '_user_ip': user_ip or '127.0.0.1',
-        'wechat_coin_diamonds': diamonds,
+        'wechat_coin_units': coin_units,
+        'wechat_coin_units_per_yuan': scale,
+        'wechat_coin_diamonds': format_diamonds(spend_yuan),
         'wechat_coin_amount_yuan': str(spend_yuan),
         'wechat_coin_status': 'prepared',
+        'wechat_coin_balance_before_units': remote_balance,
+        # Compatibility key retained for existing diagnostics/frontends.
         'wechat_coin_balance_before': remote_balance,
         'wechat_coin_balance_query': balance_response,
-        'wechat_coin_balance_mismatch': remote_balance < diamonds,
+        'wechat_coin_balance_mismatch': remote_balance < coin_units,
     }
 
 
 def execute_coin_spend(profile, order, metadata):
-    diamonds = int(metadata.get('wechat_coin_diamonds') or 0)
-    if diamonds <= 0:
+    coin_units = int(metadata.get('wechat_coin_units') or 0)
+    if coin_units <= 0:
         return metadata
+    scale = coin_units_per_yuan(metadata.get('wechat_coin_units_per_yuan'))
     session_key = metadata.pop('_session_key', '')
     user_ip = metadata.pop('_user_ip', '127.0.0.1')
-    order_id = _coin_payment_order_id(order.order_no, diamonds)
+    order_id = _coin_payment_order_id(order.order_no, coin_units, scale)
     payitem = [{
         'productid': f'order_{order.order_no}'[:64],
-        'unit_price': diamonds,
+        'unit_price': coin_units,
         'quantity': 1,
     }]
     response = user_xpay_post('/xpay/currency_pay', {
         'openid': profile.openid,
         'env': virtual_env(),
         'user_ip': user_ip,
-        'amount': diamonds,
+        'amount': coin_units,
         'order_id': order_id,
         'payitem': __import__('json').dumps(payitem, ensure_ascii=False, separators=(',', ':')),
         'remark': f'订单{order.order_no}钻石支付'[:64],
@@ -380,6 +489,7 @@ def execute_coin_spend(profile, order, metadata):
     metadata['wechat_coin_order_id'] = order_id
     metadata['wechat_coin_response'] = response
     try:
+        metadata['wechat_coin_balance_after_units'] = int(response.get('balance'))
         metadata['wechat_coin_balance_after'] = int(response.get('balance'))
     except (TypeError, ValueError):
         pass
