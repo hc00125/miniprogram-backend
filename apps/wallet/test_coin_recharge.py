@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import ClientProfile
 
 from .coin_recharge import VIRTUAL_MODE_COIN, create_coin_recharge, query_coin_recharge
-from .models import ClientWallet, ClientWalletLedger, RechargeOrder
+from .models import ClientWallet, ClientWalletLedger, RechargeOrder, RechargeProduct
 
 
 VIRTUAL_SETTINGS = {
@@ -74,6 +74,50 @@ class CoinRechargeTests(TestCase):
         self.assertEqual(response.data['pay_amount_yuan'], '37.25')
         self.assertEqual(response.data['diamonds'], '372.5')
         self.assertEqual(response.data['wechat_coin_units'], 3725)
+
+    def test_legacy_product_id_is_converted_to_unified_coin_recharge(self):
+        product = RechargeProduct.objects.create(
+            amount=Decimal('30.00'),
+            product_id='legacy_recharge_30',
+            goods_price_fen=3000,
+            is_active=True,
+        )
+        with patch(
+            'apps.wallet.coin_recharge.exchange_code_for_session',
+            return_value=(self.profile.openid, 'session-key'),
+        ):
+            response = self.client.post(
+                '/api/client/wallet/recharge/create',
+                {'recharge_product_id': product.id, 'code': 'wx-code'},
+                format='json',
+                HTTP_X_CLIENT_PLATFORM='android',
+            )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['pay_amount_yuan'], '30.00')
+        self.assertEqual(response.data['diamonds'], '300.0')
+        self.assertEqual(response.data['mode'], VIRTUAL_MODE_COIN)
+        recharge = RechargeOrder.objects.get(recharge_no=response.data['recharge_no'])
+        self.assertIsNone(recharge.product_id)
+        self.assertEqual(recharge.amount, Decimal('30.00'))
+
+    def test_recharge_config_exposes_real_legacy_product_id_when_available(self):
+        product = RechargeProduct.objects.create(
+            amount=Decimal('30.00'),
+            product_id='legacy_config_30',
+            goods_price_fen=3000,
+            is_active=True,
+        )
+        response = self.client.get(
+            '/api/client/wallet/recharge/packages',
+            HTTP_X_CLIENT_PLATFORM='android',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['amount_step_yuan'], '0.01')
+        item = next(item for item in response.data['results'] if item['pay_amount_yuan'] == '30.00')
+        self.assertEqual(item['id'], product.id)
+        self.assertEqual(item['legacy_recharge_product_id'], product.id)
 
     def test_ios_minimum_is_one_yuan(self):
         with self.assertRaises(ValidationError):
