@@ -39,13 +39,20 @@ def _user_xpay_post_once(endpoint, body, pay_sig, signature, access_token):
         raise VirtualPaymentAPIError('network_error', '微信虚拟支付用户态接口暂不可用') from exc
 
 
-def user_xpay_post(endpoint, payload, session_key, *, idempotent_success=True):
-    """Call an XPay API that requires both AppKey and session_key signatures.
+def user_xpay_post(
+    endpoint,
+    payload,
+    session_key,
+    *,
+    idempotent_success=True,
+    extra_success_codes=None,
+):
+    """Call an XPay API requiring both AppKey and session_key signatures.
 
-    query_user_balance/currency_pay/cancel_currency_pay sign the exact compact
-    JSON request body with AppKey (pay_sig) and the current session_key
-    (signature).  Duplicate-operation code 268490004 is treated as success for
-    idempotent payment/refund retries.
+    268490004 is the generic duplicate-operation success code.  Some endpoints
+    expose additional state-specific codes that are only safe to accept after
+    the caller has validated its own protocol.  Callers may pass those via
+    ``extra_success_codes`` instead of weakening every XPay request globally.
     """
     if not session_key:
         raise VirtualPaymentAPIError('session_key_missing', '微信登录态已失效，请重新进入小程序后重试')
@@ -67,7 +74,10 @@ def user_xpay_post(endpoint, payload, session_key, *, idempotent_success=True):
         )
         errcode = int(data.get('errcode') or 0)
 
-    if errcode == 0 or (idempotent_success and errcode in IDEMPOTENT_SUCCESS_CODES):
+    accepted_codes = set(extra_success_codes or ())
+    if idempotent_success:
+        accepted_codes.update(IDEMPOTENT_SUCCESS_CODES)
+    if errcode == 0 or errcode in accepted_codes:
         return data
 
     logger.error(
