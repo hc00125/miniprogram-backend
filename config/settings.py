@@ -188,14 +188,6 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PAGINATION_CLASS': 'apps.common.pagination.OptionalPageNumberPagination',
     'PAGE_SIZE': env_int('DRF_PAGE_SIZE', '20'),
-    # 'DEFAULT_THROTTLE_CLASSES': (
-    #     'rest_framework.throttling.AnonRateThrottle',
-    #     'rest_framework.throttling.UserRateThrottle',
-    # ),
-    # 'DEFAULT_THROTTLE_RATES': {
-    #     'anon': os.environ.get('DRF_THROTTLE_ANON', '300/min'),
-    #     'user': os.environ.get('DRF_THROTTLE_USER', '600/min'),
-    # },
     'COERCE_DECIMAL_TO_STRING': False,
     'EXCEPTION_HANDLER': 'apps.common.exceptions.compat_exception_handler',
 }
@@ -242,15 +234,15 @@ WECHAT_VIRTUALPAY_ENV = env_int('WECHAT_VIRTUALPAY_ENV', '1')
 WECHAT_VIRTUALPAY_OFFER_ID = os.environ.get('WECHAT_VIRTUALPAY_OFFER_ID', '')
 WECHAT_VIRTUALPAY_APP_KEY = os.environ.get('WECHAT_VIRTUALPAY_APP_KEY', '')
 WECHAT_VIRTUALPAY_HTTP_TIMEOUT = float(os.environ.get('WECHAT_VIRTUALPAY_HTTP_TIMEOUT', '10'))
+WECHAT_VIRTUALPAY_RECHARGE_MIN_YUAN = os.environ.get('WECHAT_VIRTUALPAY_RECHARGE_MIN_YUAN', '0.10')
+WECHAT_VIRTUALPAY_RECHARGE_MAX_YUAN = os.environ.get('WECHAT_VIRTUALPAY_RECHARGE_MAX_YUAN', '5000.00')
 
-# Sandbox-only fallback for the first fixed-price test item. A database binding takes priority.
+# Sandbox-only fallback for legacy short_series_goods test items. New checkout uses short_series_coin.
 WECHAT_VIRTUALPAY_SANDBOX_PRODUCT_ID = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX_PRODUCT_ID', 'escort_15')
 WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN = env_int('WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN', '1500')
 WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD', '四套四弹')
 
 # WeChat one-time subscription message for designated-player invitations.
-# Default keywords follow the configured "顾客下单提醒" template:
-# 订单金额 / 订单备注 / 订单时间 / 订单号 / 商品名称。
 DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_ID = 'AhMjmuvib1HCABMK48XFaIUNWI2vKfjTSUFX-hXHNlw'
 DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS = (
     '{"amount1":"{total_amount}","thing2":"{notification_note}",'
