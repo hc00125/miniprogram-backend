@@ -1,3 +1,5 @@
+from decimal import Decimal, InvalidOperation
+
 from django import forms
 from django.contrib import admin, messages
 from django.contrib.admin.helpers import ActionForm
@@ -10,15 +12,17 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from apps.accounts.models import ClientProfile
 
-from .diamonds import diamonds_to_yuan, yuan_to_diamonds
+from .diamonds import diamonds_to_yuan, format_diamonds
 from .models import ClientWallet, ClientWalletLedger, RechargeOrder, RechargeProduct
 from .services import create_manual_wallet_adjustment
 
 
 class WalletAdjustActionForm(ActionForm):
-    diamonds = forms.IntegerField(
+    diamonds = forms.DecimalField(
         required=False,
-        label='调整钻石（整数，负数为扣减）',
+        max_digits=12,
+        decimal_places=1,
+        label='调整钻石（最多1位小数，负数为扣减）',
     )
     reason = forms.CharField(required=False, label='调整原因')
 
@@ -29,9 +33,11 @@ class ManualWalletAdjustmentForm(forms.Form):
         label='老板用户',
         help_text='可搜索昵称、OpenID或后台用户名。没有钱包的用户会自动创建钱包。',
     )
-    diamonds = forms.IntegerField(
+    diamonds = forms.DecimalField(
+        max_digits=12,
+        decimal_places=1,
         label='调整钻石',
-        help_text='填写正整数增加余额，填写负整数扣减余额。',
+        help_text='最小0.1钻石（对应0.01元）；正数增加余额，负数扣减余额。',
     )
     reason = forms.CharField(
         label='调整原因',
@@ -59,7 +65,7 @@ class ManualWalletAdjustmentForm(forms.Form):
         try:
             diamonds_to_yuan(abs(value))
         except (DjangoValidationError, DRFValidationError) as exc:
-            raise forms.ValidationError('调整钻石必须是有效的非零整数') from exc
+            raise forms.ValidationError('调整钻石最多保留1位小数，且不能为0') from exc
         return value
 
     def clean_reason(self):
@@ -83,15 +89,15 @@ class ClientWalletAdmin(admin.ModelAdmin):
 
     @admin.display(description='可用钻石', ordering='balance')
     def available_diamonds(self, obj):
-        return yuan_to_diamonds(obj.balance)
+        return format_diamonds(obj.balance)
 
     @admin.display(description='累计充值钻石', ordering='recharged_total')
     def recharged_diamonds(self, obj):
-        return yuan_to_diamonds(obj.recharged_total)
+        return format_diamonds(obj.recharged_total)
 
     @admin.display(description='累计支付钻石', ordering='spent_total')
     def spent_diamonds(self, obj):
-        return yuan_to_diamonds(obj.spent_total)
+        return format_diamonds(obj.spent_total)
 
     def changelist_view(self, request, extra_context=None):
         extra_context = {
@@ -128,23 +134,23 @@ class ClientWalletAdmin(admin.ModelAdmin):
                 amount_yuan = -amount_yuan
 
             existing_wallet = ClientWallet.objects.filter(profile=profile).first()
-            before_diamonds = yuan_to_diamonds(existing_wallet.balance) if existing_wallet else 0
+            before_diamonds = format_diamonds(existing_wallet.balance) if existing_wallet else '0.0'
             try:
                 entry = create_manual_wallet_adjustment(
                     profile=profile,
                     amount=amount_yuan,
-                    reason=f'{reason}（调整钻石 {diamond_value:+d}）',
+                    reason=f'{reason}（调整钻石 {diamond_value:+.1f}）',
                     operator=request.user,
                 )
             except (DjangoValidationError, DRFValidationError) as exc:
                 detail = getattr(exc, 'detail', None) or getattr(exc, 'messages', None) or str(exc)
                 form.add_error(None, str(detail))
             else:
-                after_diamonds = yuan_to_diamonds(entry.balance_after)
+                after_diamonds = format_diamonds(entry.balance_after)
                 wallet_note = '，并已自动创建钱包' if existing_wallet is None else ''
                 self.message_user(
                     request,
-                    f'已为“{profile}”调整 {diamond_value:+d} 钻石{wallet_note}。'
+                    f'已为“{profile}”调整 {diamond_value:+.1f} 钻石{wallet_note}。'
                     f'余额：{before_diamonds} → {after_diamonds} 钻石。',
                     level=messages.SUCCESS,
                 )
@@ -172,17 +178,17 @@ class ClientWalletAdmin(admin.ModelAdmin):
         diamonds = (request.POST.get('diamonds') or '').strip()
         reason = (request.POST.get('reason') or '').strip()
         if not diamonds or not reason:
-            self.message_user(request, '手工调整必须填写整数钻石与原因', level=messages.ERROR)
+            self.message_user(request, '手工调整必须填写钻石与原因', level=messages.ERROR)
             return
         try:
-            diamond_value = int(diamonds)
-            if str(diamond_value) != diamonds or diamond_value == 0:
+            diamond_value = Decimal(diamonds)
+            if diamond_value == 0 or diamond_value != diamond_value.quantize(Decimal('0.1')):
                 raise ValueError
             amount_yuan = diamonds_to_yuan(abs(diamond_value))
             if diamond_value < 0:
                 amount_yuan = -amount_yuan
-        except (ValueError, DjangoValidationError, DRFValidationError):
-            self.message_user(request, '调整钻石必须是非零整数', level=messages.ERROR)
+        except (InvalidOperation, ValueError, DjangoValidationError, DRFValidationError):
+            self.message_user(request, '调整钻石必须是非零数，最多保留1位小数', level=messages.ERROR)
             return
 
         success_count = 0
@@ -191,7 +197,7 @@ class ClientWalletAdmin(admin.ModelAdmin):
                 create_manual_wallet_adjustment(
                     profile=wallet.profile,
                     amount=amount_yuan,
-                    reason=f'{reason}（调整钻石 {diamond_value:+d}）',
+                    reason=f'{reason}（调整钻石 {diamond_value:+.1f}）',
                     operator=request.user,
                 )
                 success_count += 1
@@ -220,7 +226,7 @@ class RechargeProductAdmin(admin.ModelAdmin):
 
     @admin.display(description='到账钻石', ordering='amount')
     def diamond_amount_display(self, obj):
-        return obj.diamond_amount
+        return format_diamonds(obj.amount)
 
 
 @admin.register(RechargeOrder)
@@ -239,7 +245,7 @@ class RechargeOrderAdmin(admin.ModelAdmin):
 
     @admin.display(description='到账钻石', ordering='amount')
     def diamond_amount_display(self, obj):
-        return obj.diamond_amount
+        return format_diamonds(obj.amount)
 
     def has_add_permission(self, request):
         return False
@@ -267,11 +273,11 @@ class ClientWalletLedgerAdmin(admin.ModelAdmin):
 
     @admin.display(description='变动钻石', ordering='amount')
     def amount_diamonds_display(self, obj):
-        return obj.amount_diamonds
+        return format_diamonds(obj.amount)
 
     @admin.display(description='变动后钻石', ordering='balance_after')
     def balance_after_diamonds_display(self, obj):
-        return obj.balance_after_diamonds
+        return format_diamonds(obj.balance_after)
 
     def has_add_permission(self, request):
         return False
