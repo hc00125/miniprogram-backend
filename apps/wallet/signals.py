@@ -7,6 +7,7 @@ from django.dispatch import receiver
 from apps.accounts.models import ClientProfile
 from apps.payments.models import Refund
 
+from .coin_sync import allocate_refund_coin_amount
 from .models import ClientWallet, RechargeOrder
 from .services import refund_balance_payment
 
@@ -31,12 +32,7 @@ def create_wallet_for_new_client(sender, instance, created, using, **kwargs):
 
 @receiver(post_save, sender=RechargeOrder)
 def record_actual_recharge_channel_fee(sender, instance, **kwargs):
-    """When WeChat returns the real platform fee, replace the conservative estimate.
-
-    The configured percentage is only a pre-payment safety estimate.  query_order
-    may return platform_fee_fen after settlement; using the real number makes the
-    wallet's weighted fee reserve and later margin protection more accurate.
-    """
+    """微信返回真实渠道手续费后覆盖保守估算值。"""
     if instance.status != RechargeOrder.STATUS_CREDITED:
         return
     payload = dict(instance.notify_payload or {})
@@ -66,9 +62,15 @@ def record_actual_recharge_channel_fee(sender, instance, **kwargs):
 
 @receiver(post_save, sender=Refund)
 def sync_balance_refund(sender, instance, **kwargs):
-    """余额支付退款的兜底入账；其他渠道由各自退款服务显式处理。"""
+    """本地余额退款先入账，再标记需要回退到微信官方 coin 的对应份额。
+
+    cancel_currency_pay 需要用户当前 session_key，不能安全地长期保存 session_key。
+    因此退款成功时只做确定性分配；用户下一次钻石支付前会先自动同步所有
+    pending coin refund，再继续扣款。这样不会出现同一笔官方 coin 被重复消费。
+    """
     if instance.status != Refund.STATUS_SUCCEEDED:
         return
     if not instance.payment_id or instance.payment.channel != 'balance':
         return
     refund_balance_payment(instance)
+    allocate_refund_coin_amount(instance)
