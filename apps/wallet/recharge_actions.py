@@ -15,7 +15,7 @@ from apps.payments.virtualpay import (
 )
 
 from .coin_recharge import VIRTUAL_MODE_COIN, query_coin_recharge
-from .diamonds import DIAMONDS_PER_YUAN, qyuan, yuan_to_diamonds
+from .diamonds import DIAMONDS_PER_YUAN, format_diamonds, qyuan
 from .models import RechargeOrder
 from .services import query_recharge as query_legacy_recharge
 
@@ -47,7 +47,7 @@ def _payload(recharge):
         'recharge_no': recharge.recharge_no,
         'status': recharge.status,
         'pay_amount_yuan': str(qyuan(recharge.amount)),
-        'diamonds': yuan_to_diamonds(recharge.amount),
+        'diamonds': format_diamonds(recharge.amount),
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
         'checkout_order_no': stored.get('checkout_order_no'),
         'created_at': timezone.localtime(recharge.created_at).isoformat(),
