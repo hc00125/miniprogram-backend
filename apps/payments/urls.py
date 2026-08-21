@@ -18,6 +18,12 @@ urlpatterns = [
         'wechat/virtual/create',
         capture_client_platform(require_purchase_available(require_operational(views.create_wechat_virtual))),
     ),
+    # 已完成的 coin 充值必须始终允许落到业务订单；即使临时关闭新购买入口，
+    # 也不能阻断已扣款用户的 finalize，因此这里只保留账户状态校验，不套购买熔断。
+    path(
+        'wechat/virtual/finalize/<str:recharge_no>',
+        capture_client_platform(require_operational(views.finalize_checkout_coin)),
+    ),
     path('status/<str:payment_no>', views.status_view),
     path('wechat/query/<str:payment_no>', views.query_wechat_order),
     path(
