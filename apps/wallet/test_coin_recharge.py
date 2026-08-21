@@ -21,7 +21,7 @@ VIRTUAL_SETTINGS = {
     'WECHAT_VIRTUALPAY_APP_KEY': 'test_app_key',
     'WECHAT_VIRTUALPAY_ENV': 0,
     'WECHAT_VIRTUALPAY_HTTP_TIMEOUT': 10,
-    'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN': 100,
+    'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN': 10,
     'ENABLE_MOCK_PAYMENT': False,
 }
 
@@ -45,21 +45,21 @@ class CoinRechargeTests(TestCase):
         ):
             return create_coin_recharge(self.user, amount, 'wx-code', platform)
 
-    def test_arbitrary_amount_builds_coin_payment_without_fixed_product(self):
-        recharge, payload = self._create('37.25')
+    def test_five_yuan_builds_fifty_published_wechat_coins(self):
+        recharge, payload = self._create('5.00')
 
         self.assertIsNone(recharge.product_id)
-        self.assertEqual(recharge.amount, Decimal('37.25'))
+        self.assertEqual(recharge.amount, Decimal('5.00'))
         self.assertEqual(payload['mode'], VIRTUAL_MODE_COIN)
-        self.assertEqual(payload['diamonds'], '372.5')
-        self.assertEqual(payload['wechat_coin_units'], 3725)
-        self.assertEqual(payload['wechat_coin_units_per_yuan'], 100)
+        self.assertEqual(payload['diamonds'], '50.0')
+        self.assertEqual(payload['wechat_coin_units'], 50)
+        self.assertEqual(payload['wechat_coin_units_per_yuan'], 10)
         sign_data = json.loads(payload['signData'])
-        self.assertEqual(sign_data['buyQuantity'], 3725)
+        self.assertEqual(sign_data['buyQuantity'], 50)
         self.assertNotIn('productId', sign_data)
         self.assertNotIn('goodsPrice', sign_data)
 
-    def test_cent_amount_is_accepted_by_api_without_rounding(self):
+    def test_unrepresentable_cent_amount_is_rejected_without_rounding(self):
         with patch(
             'apps.wallet.coin_recharge.exchange_code_for_session',
             return_value=(self.profile.openid, 'session-key'),
@@ -70,10 +70,9 @@ class CoinRechargeTests(TestCase):
                 format='json',
                 HTTP_X_CLIENT_PLATFORM='android',
             )
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data['pay_amount_yuan'], '37.25')
-        self.assertEqual(response.data['diamonds'], '372.5')
-        self.assertEqual(response.data['wechat_coin_units'], 3725)
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('0.10', str(response.data))
+        self.assertFalse(RechargeOrder.objects.filter(amount=Decimal('37.25')).exists())
 
     def test_legacy_product_id_is_converted_to_unified_coin_recharge(self):
         product = RechargeProduct.objects.create(
@@ -96,12 +95,14 @@ class CoinRechargeTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['pay_amount_yuan'], '30.00')
         self.assertEqual(response.data['diamonds'], '300.0')
+        self.assertEqual(response.data['wechat_coin_units'], 300)
+        self.assertEqual(response.data['wechat_coin_units_per_yuan'], 10)
         self.assertEqual(response.data['mode'], VIRTUAL_MODE_COIN)
         recharge = RechargeOrder.objects.get(recharge_no=response.data['recharge_no'])
         self.assertIsNone(recharge.product_id)
         self.assertEqual(recharge.amount, Decimal('30.00'))
 
-    def test_recharge_config_exposes_real_legacy_product_id_when_available(self):
+    def test_recharge_config_exposes_published_scale_and_legacy_product_id(self):
         product = RechargeProduct.objects.create(
             amount=Decimal('30.00'),
             product_id='legacy_config_30',
@@ -114,7 +115,9 @@ class CoinRechargeTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data['amount_step_yuan'], '0.01')
+        self.assertEqual(response.data['amount_step_yuan'], '0.10')
+        self.assertEqual(response.data['diamond_step'], '1.0')
+        self.assertEqual(response.data['wechat_coin_units_per_yuan'], 10)
         item = next(item for item in response.data['results'] if item['pay_amount_yuan'] == '30.00')
         self.assertEqual(item['id'], product.id)
         self.assertEqual(item['legacy_recharge_product_id'], product.id)
@@ -129,14 +132,14 @@ class CoinRechargeTests(TestCase):
             self._create('10.00', platform='ios')
 
     def test_paid_query_credits_once_and_does_not_send_goods_delivery(self):
-        recharge, _payload = self._create('18.87')
+        recharge, _payload = self._create('18.80')
         paid = {
             'errcode': 0,
             'errmsg': 'OK',
             'order': {
                 'status': 3,
-                'order_fee': 1887,
-                'paid_fee': 1887,
+                'order_fee': 1880,
+                'paid_fee': 1880,
                 'wx_order_id': 'WX_COIN_001',
             },
         }
@@ -146,8 +149,8 @@ class CoinRechargeTests(TestCase):
         self.assertEqual(synced.status, RechargeOrder.STATUS_CREDITED)
         self.assertEqual(xpay.call_count, 1)
         wallet = ClientWallet.objects.get(profile=self.profile)
-        self.assertEqual(wallet.balance, Decimal('18.87'))
-        self.assertEqual(wallet.recharged_total, Decimal('18.87'))
+        self.assertEqual(wallet.balance, Decimal('18.80'))
+        self.assertEqual(wallet.recharged_total, Decimal('18.80'))
         self.assertEqual(ClientWalletLedger.objects.filter(
             entry_type=ClientWalletLedger.TYPE_RECHARGE,
             reference_id=recharge.recharge_no,
