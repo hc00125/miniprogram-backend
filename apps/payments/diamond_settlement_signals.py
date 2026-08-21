@@ -5,7 +5,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
 
-from apps.wallet.diamonds import yuan_to_diamonds
+from apps.wallet.diamonds import format_diamonds
 from apps.wallet.models import ClientWalletLedger
 from apps.wallet.services import get_or_lock_wallet, qmoney, write_wallet_ledger
 
@@ -103,7 +103,9 @@ def settle_virtual_payment_diamonds(payment_or_id):
             **(current if isinstance(current, dict) else {}),
             'status': 'settled',
             'amount_yuan': str(amount),
-            'diamonds': yuan_to_diamonds(amount),
+            # JSONField must never receive Decimal.  The public diamond amount
+            # is a one-decimal presentation string (e.g. ¥12.35 -> "123.5").
+            'diamonds': format_diamonds(amount),
             'purchase_credit_ledger_id': credit.id,
             'order_payment_ledger_id': spend.id,
             'purchase_credit_reference': payment.payment_no,
