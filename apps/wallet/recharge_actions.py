@@ -52,7 +52,26 @@ def _payload(recharge):
         'checkout_order_no': stored.get('checkout_order_no'),
         'created_at': timezone.localtime(recharge.created_at).isoformat(),
         'expires_at': timezone.localtime(recharge.expires_at).isoformat() if recharge.expires_at else None,
+        'reconciliation_required': bool(stored.get('reconciliation_required')),
     }
+
+
+def _mark_reconciliation_required(recharge, exc):
+    """Record an unknown remote state without locally closing the recharge.
+
+    A timeout/network error is not evidence that the WeChat order is unpaid.
+    Keeping the order PAYING allows the scheduled reconciliation/query endpoint
+    to recover a late remote success safely.
+    """
+    payload = dict(recharge.notify_payload or {})
+    payload['reconciliation_required'] = True
+    payload['reconciliation_requested_at'] = timezone.now().isoformat()
+    payload['reconciliation_last_error'] = str(exc)[:300]
+    RechargeOrder.objects.filter(
+        pk=recharge.pk,
+        status=RechargeOrder.STATUS_PAYING,
+    ).update(notify_payload=payload, updated_at=timezone.now())
+    recharge.notify_payload = payload
 
 
 @api_view(['POST'])
@@ -62,6 +81,8 @@ def cancel_recharge(request, recharge_no):
 
     Coin recharges are queried through the coin-specific path, so cancellation
     can never accidentally invoke notify_provide_goods (cash-goods delivery).
+    A remote query failure is treated as an unknown state and never as proof of
+    non-payment, even after the local expiry time has passed.
     """
     recharge = (
         RechargeOrder.objects
@@ -80,13 +101,14 @@ def cancel_recharge(request, recharge_no):
     if recharge.status in {RechargeOrder.STATUS_CLOSED, RechargeOrder.STATUS_FAILED}:
         return Response(_payload(recharge))
 
-    expired = _is_expired(recharge)
+    # 仍保留 expiry 计算供审计/日志使用，但不能用“已过期”替代微信查单结果。
+    _is_expired(recharge)
     if recharge.channel == RechargeOrder.CHANNEL_WECHAT_VIRTUAL:
         try:
             recharge = _query_current_status(recharge, request.user)
         except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
-            if not expired:
-                return virtual_payment_error_response(exc)
+            _mark_reconciliation_required(recharge, exc)
+            return virtual_payment_error_response(exc)
         if recharge.status in {RechargeOrder.STATUS_PAID, RechargeOrder.STATUS_CREDITED}:
             return Response(
                 {'detail': '微信已确认付款，不能取消', **_payload(recharge)},
@@ -104,6 +126,7 @@ def cancel_recharge(request, recharge_no):
             notify_payload = dict(locked.notify_payload or {})
             notify_payload['cancelled_by_user'] = True
             notify_payload['cancelled_at'] = timezone.now().isoformat()
+            notify_payload.pop('reconciliation_required', None)
             locked.notify_payload = notify_payload
             locked.status = RechargeOrder.STATUS_CLOSED
             locked.save(update_fields=['status', 'notify_payload', 'updated_at'])
