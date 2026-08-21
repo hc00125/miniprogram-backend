@@ -3,7 +3,6 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.core.exceptions import ValidationError as DjangoValidationError
 from django.test import TestCase, override_settings
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
@@ -22,6 +21,7 @@ VIRTUAL_SETTINGS = {
     'WECHAT_VIRTUALPAY_APP_KEY': 'test_app_key',
     'WECHAT_VIRTUALPAY_ENV': 0,
     'WECHAT_VIRTUALPAY_HTTP_TIMEOUT': 10,
+    'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN': 100,
     'ENABLE_MOCK_PAYMENT': False,
 }
 
@@ -46,29 +46,34 @@ class CoinRechargeTests(TestCase):
             return create_coin_recharge(self.user, amount, 'wx-code', platform)
 
     def test_arbitrary_amount_builds_coin_payment_without_fixed_product(self):
-        recharge, payload = self._create('37.20')
+        recharge, payload = self._create('37.25')
 
         self.assertIsNone(recharge.product_id)
-        self.assertEqual(recharge.amount, Decimal('37.20'))
+        self.assertEqual(recharge.amount, Decimal('37.25'))
         self.assertEqual(payload['mode'], VIRTUAL_MODE_COIN)
-        self.assertEqual(payload['diamonds'], 372)
+        self.assertEqual(payload['diamonds'], '372.5')
+        self.assertEqual(payload['wechat_coin_units'], 3725)
+        self.assertEqual(payload['wechat_coin_units_per_yuan'], 100)
         sign_data = json.loads(payload['signData'])
-        self.assertEqual(sign_data['buyQuantity'], 372)
+        self.assertEqual(sign_data['buyQuantity'], 3725)
         self.assertNotIn('productId', sign_data)
         self.assertNotIn('goodsPrice', sign_data)
 
-    def test_amount_must_map_to_integer_diamonds(self):
-        with self.assertRaises(DjangoValidationError):
-            self._create('37.25')
-
-        response = self.client.post(
-            '/api/client/wallet/recharge/create',
-            {'amount_yuan': '37.25', 'code': 'wx-code'},
-            format='json',
-            HTTP_X_CLIENT_PLATFORM='android',
-        )
-        self.assertEqual(response.status_code, 400, response.data)
-        self.assertIn('0.1元', str(response.data))
+    def test_cent_amount_is_accepted_by_api_without_rounding(self):
+        with patch(
+            'apps.wallet.coin_recharge.exchange_code_for_session',
+            return_value=(self.profile.openid, 'session-key'),
+        ):
+            response = self.client.post(
+                '/api/client/wallet/recharge/create',
+                {'amount_yuan': '37.25', 'code': 'wx-code'},
+                format='json',
+                HTTP_X_CLIENT_PLATFORM='android',
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['pay_amount_yuan'], '37.25')
+        self.assertEqual(response.data['diamonds'], '372.5')
+        self.assertEqual(response.data['wechat_coin_units'], 3725)
 
     def test_ios_minimum_is_one_yuan(self):
         with self.assertRaises(ValidationError):
@@ -80,14 +85,14 @@ class CoinRechargeTests(TestCase):
             self._create('10.00', platform='ios')
 
     def test_paid_query_credits_once_and_does_not_send_goods_delivery(self):
-        recharge, _payload = self._create('18.80')
+        recharge, _payload = self._create('18.87')
         paid = {
             'errcode': 0,
             'errmsg': 'OK',
             'order': {
                 'status': 3,
-                'order_fee': 1880,
-                'paid_fee': 1880,
+                'order_fee': 1887,
+                'paid_fee': 1887,
                 'wx_order_id': 'WX_COIN_001',
             },
         }
@@ -97,8 +102,8 @@ class CoinRechargeTests(TestCase):
         self.assertEqual(synced.status, RechargeOrder.STATUS_CREDITED)
         self.assertEqual(xpay.call_count, 1)
         wallet = ClientWallet.objects.get(profile=self.profile)
-        self.assertEqual(wallet.balance, Decimal('18.80'))
-        self.assertEqual(wallet.recharged_total, Decimal('18.80'))
+        self.assertEqual(wallet.balance, Decimal('18.87'))
+        self.assertEqual(wallet.recharged_total, Decimal('18.87'))
         self.assertEqual(ClientWalletLedger.objects.filter(
             entry_type=ClientWalletLedger.TYPE_RECHARGE,
             reference_id=recharge.recharge_no,
