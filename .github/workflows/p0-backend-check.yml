@@ -18,7 +18,8 @@ jobs:
       ENABLE_MOCK_PAYMENT: "true"
       WECHAT_VIRTUALPAY_ENABLED: "false"
       WECHAT_CONTENT_SECURITY_ENABLED: "false"
-      WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN: "100"
+      # 微信公众平台已联调发布为 1人民币=10代币。
+      WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN: "10"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
       - uses: actions/checkout@v4
