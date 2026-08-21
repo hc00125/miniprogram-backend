@@ -5,6 +5,7 @@ from apps.orders.models import Order
 from apps.payments.models import Refund
 
 from .adjustments import reverse_refund_earnings
+from .platform_fees import protect_order_margin
 from .settlements import create_order_earnings
 
 
@@ -18,6 +19,10 @@ def create_earnings_after_order_completion(sender, instance, **kwargs):
         return
     if not instance.order_players.exists():
         return
+
+    # 在工资生成前把支付渠道成本计入订单抽成。默认目标净毛利15%；
+    # iOS按保守15%渠道费时自动得到约30%总抽成，非iOS约16%。
+    protect_order_margin(instance)
     create_order_earnings(instance, completed_at=instance.end_time)
 
 
