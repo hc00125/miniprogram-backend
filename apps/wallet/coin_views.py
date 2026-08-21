@@ -1,11 +1,10 @@
 from decimal import Decimal
 
-from django.conf import settings
+from rest_framework import serializers
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import APIException
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework import serializers
 
 from apps.common.purchase_guard import request_client_platform
 from apps.payments.views import unexpected_virtual_payment_response, virtual_payment_error_response
@@ -31,6 +30,12 @@ class CoinRechargeCreateSerializer(serializers.Serializer):
         min_value=Decimal('0.01'),
     )
     code = serializers.CharField(required=False, allow_blank=True, allow_null=True, default='')
+
+    def validate_amount_yuan(self, value):
+        diamonds = value * Decimal(str(DIAMONDS_PER_YUAN))
+        if diamonds != diamonds.to_integral_value():
+            raise serializers.ValidationError('金额必须为0.1元的整数倍，不能产生小数钻石')
+        return value
 
 
 @api_view(['GET'])
