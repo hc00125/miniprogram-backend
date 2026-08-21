@@ -20,7 +20,7 @@ from .coin_recharge import (
     query_coin_recharge,
     recharge_limits,
 )
-from .diamonds import DIAMONDS_PER_YUAN
+from .diamonds import DIAMONDS_PER_YUAN, format_diamonds, yuan_to_coin_units
 
 
 class CoinRechargeCreateSerializer(serializers.Serializer):
@@ -32,9 +32,13 @@ class CoinRechargeCreateSerializer(serializers.Serializer):
     code = serializers.CharField(required=False, allow_blank=True, allow_null=True, default='')
 
     def validate_amount_yuan(self, value):
-        diamonds = value * Decimal(str(DIAMONDS_PER_YUAN))
-        if diamonds != diamonds.to_integral_value():
-            raise serializers.ValidationError('金额必须为0.1元的整数倍，不能产生小数钻石')
+        # The RMB ledger is cent-precise.  Validate against the configured XPay
+        # integer settlement unit instead of requiring displayed diamonds to be
+        # integers (¥12.35 = 123.5 displayed diamonds is valid).
+        try:
+            yuan_to_coin_units(value)
+        except Exception as exc:
+            raise serializers.ValidationError(str(exc)) from exc
         return value
 
 
@@ -50,7 +54,8 @@ def recharge_config(request):
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
         'min_amount_yuan': str(minimum),
         'max_amount_yuan': str(maximum),
-        'amount_step_yuan': '0.10',
+        'amount_step_yuan': '0.01',
+        'diamond_step': '0.1',
         'client_platform': platform,
         'platform_fee_percent': str(platform_fee_percent(platform)),
         'target_net_margin_percent': str(target_net_margin_percent()),
@@ -60,7 +65,7 @@ def recharge_config(request):
                 'id': amount,
                 'amount': f'{amount:.2f}',
                 'pay_amount_yuan': f'{amount:.2f}',
-                'diamonds': amount * DIAMONDS_PER_YUAN,
+                'diamonds': format_diamonds(Decimal(amount)),
                 'quick_amount': True,
             }
             for amount in quick_amounts
