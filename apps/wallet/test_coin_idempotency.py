@@ -20,7 +20,7 @@ VIRTUAL_SETTINGS = {
     'WECHAT_VIRTUALPAY_APP_KEY': 'test_app_key',
     'WECHAT_VIRTUALPAY_ENV': 0,
     'WECHAT_VIRTUALPAY_HTTP_TIMEOUT': 10,
-    'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN': 100,
+    'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN': 10,
     'ENABLE_MOCK_PAYMENT': False,
 }
 
@@ -59,7 +59,7 @@ class CoinRemoteSuccessRetryTests(TestCase):
             status=RechargeOrder.STATUS_CREDITED,
             notify_payload={
                 'mode': 'short_series_coin',
-                'wechat_coin_units_per_yuan': 100,
+                'wechat_coin_units_per_yuan': 10,
             },
         )
         ClientWalletLedger.objects.create(
@@ -75,10 +75,10 @@ class CoinRemoteSuccessRetryTests(TestCase):
         """模拟上一次微信已扣币、本地事务却未落账后的重试。"""
         def xpay(endpoint, payload, _session_key):
             if endpoint == '/xpay/query_user_balance':
-                # 微信侧上次已经扣了2000个最小单位，所以现在余额为0。
+                # 微信侧上次已经扣了200个官方代币，所以现在余额为0。
                 return {'errcode': 0, 'balance': 0}
             if endpoint == '/xpay/currency_pay':
-                self.assertEqual(payload['amount'], 2000)
+                self.assertEqual(payload['amount'], 200)
                 return {'errcode': 268490004, 'errmsg': 'duplicate success'}
             self.fail(f'unexpected endpoint {endpoint}')
 
@@ -94,8 +94,8 @@ class CoinRemoteSuccessRetryTests(TestCase):
 
         self.assertEqual(result['status'], 'paid')
         self.assertEqual(result['wechat_coin_diamonds'], '200.0')
-        self.assertEqual(result['wechat_coin_units'], 2000)
-        self.assertEqual(result['wechat_coin_units_per_yuan'], 100)
+        self.assertEqual(result['wechat_coin_units'], 200)
+        self.assertEqual(result['wechat_coin_units_per_yuan'], 10)
         self.assertEqual(
             [call.args[0] for call in mocked_xpay.call_args_list],
             ['/xpay/query_user_balance', '/xpay/currency_pay'],
@@ -103,6 +103,6 @@ class CoinRemoteSuccessRetryTests(TestCase):
         payment = self.order.payments.get(status='paid')
         self.assertTrue(payment.notify_payload['wechat_coin_balance_mismatch'])
         self.assertEqual(payment.notify_payload['wechat_coin_order_id'][:2], 'CP')
-        self.assertEqual(payment.notify_payload['wechat_coin_units'], 2000)
+        self.assertEqual(payment.notify_payload['wechat_coin_units'], 200)
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal('0.00'))
