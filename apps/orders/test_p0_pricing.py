@@ -40,11 +40,13 @@ class DesignatedPlayerPricingTests(TestCase):
             name='娱乐陪测试',
             player_type=self.entertainment_type,
             status=Player.STATUS_APPROVED,
+            is_online=True,
         )
         self.technical_player = Player.objects.create(
             name='技术陪测试',
             player_type=self.technical_type,
             status=Player.STATUS_APPROVED,
+            is_online=True,
         )
 
     def payload(self, spec, player):
