@@ -21,6 +21,7 @@ VIRTUAL_SETTINGS = {
     'WECHAT_VIRTUALPAY_APP_KEY': 'test_app_key',
     'WECHAT_VIRTUALPAY_ENV': 0,
     'WECHAT_VIRTUALPAY_HTTP_TIMEOUT': 10,
+    'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN': 100,
     'ENABLE_MOCK_PAYMENT': False,
 }
 
@@ -79,6 +80,7 @@ class TargetedCoinCheckoutTests(TestCase):
             notify_payload={
                 'mode': 'short_series_coin',
                 'client_platform': 'ios',
+                'wechat_coin_units_per_yuan': 100,
             },
         )
         ClientWalletLedger.objects.create(
@@ -97,7 +99,7 @@ class TargetedCoinCheckoutTests(TestCase):
         ), patch(
             'apps.wallet.coin_sync.user_xpay_post',
             side_effect=[
-                {'errcode': 0, 'balance': 200},
+                {'errcode': 0, 'balance': 2000},
                 {'errcode': 0, 'balance': 0},
             ],
         ) as mocked_xpay:
@@ -109,7 +111,8 @@ class TargetedCoinCheckoutTests(TestCase):
             )
 
         self.assertEqual(result['status'], 'paid')
-        self.assertEqual(result['wechat_coin_diamonds'], 200)
+        self.assertEqual(result['wechat_coin_diamonds'], '200.0')
+        self.assertEqual(result['wechat_coin_units'], 2000)
         self.assertEqual(
             [call.args[0] for call in mocked_xpay.call_args_list],
             ['/xpay/query_user_balance', '/xpay/currency_pay'],
