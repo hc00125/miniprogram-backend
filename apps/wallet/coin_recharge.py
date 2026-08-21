@@ -48,7 +48,6 @@ def normalize_platform(value):
 
 
 def _platform_fee_percent(platform):
-    # Lazy import avoids making wallet model import depend on earnings app setup.
     from apps.earnings.platform_fees import platform_fee_percent
 
     return platform_fee_percent(platform)
@@ -72,8 +71,6 @@ def validate_recharge_amount(value, platform):
         raise ValidationError({'amount_yuan': f'单笔最低充值金额为{minimum:.2f}元'})
     if amount > maximum:
         raise ValidationError({'amount_yuan': f'单笔充值不能超过{maximum:.2f}元'})
-
-    # 当前业务保持“1元=10钻石”的整数钻石账本，因此自由金额最小步进为0.1元。
     yuan_to_diamonds(amount)
     return amount
 
@@ -92,6 +89,14 @@ def _fee_payload(amount, platform):
 
 def _is_coin_recharge(recharge):
     return dict(recharge.notify_payload or {}).get('mode') == VIRTUAL_MODE_COIN
+
+
+def _checkout_order_no(recharge):
+    return str(dict(recharge.notify_payload or {}).get('checkout_order_no') or '')
+
+
+def _same_recharge_purpose(recharge, checkout_order_no=''):
+    return _checkout_order_no(recharge) == str(checkout_order_no or '')
 
 
 def _build_coin_payment_payload(recharge, env, session_key):
@@ -132,6 +137,8 @@ def _build_coin_payment_payload(recharge, env, session_key):
         'paySign': pay_sig,
         'payment_no': recharge.recharge_no,
         'recharge_no': recharge.recharge_no,
+        'order_no': stored.get('checkout_order_no') or None,
+        'checkout_order_no': stored.get('checkout_order_no') or None,
         'amount': str(qyuan(recharge.amount)),
         'pay_amount_yuan': str(qyuan(recharge.amount)),
         'diamonds': diamonds,
@@ -156,6 +163,8 @@ def _build_mock_payload(recharge):
         'paySign': recharge.recharge_no,
         'payment_no': recharge.recharge_no,
         'recharge_no': recharge.recharge_no,
+        'order_no': stored.get('checkout_order_no') or None,
+        'checkout_order_no': stored.get('checkout_order_no') or None,
         'amount': str(qyuan(recharge.amount)),
         'pay_amount_yuan': str(qyuan(recharge.amount)),
         'diamonds': yuan_to_diamonds(recharge.amount),
@@ -169,9 +178,9 @@ def _build_mock_payload(recharge):
     }
 
 
-def _create_mock_recharge(profile, amount, platform):
+def _create_mock_recharge(profile, amount, platform, checkout_order_no=''):
     now = timezone.now()
-    existing = (
+    candidates = (
         RechargeOrder.objects
         .filter(
             profile=profile,
@@ -182,15 +191,16 @@ def _create_mock_recharge(profile, amount, platform):
             expires_at__gt=now,
         )
         .order_by('-created_at')
-        .first()
     )
-    if existing and _is_coin_recharge(existing):
+    existing = next((item for item in candidates if _is_coin_recharge(item) and _same_recharge_purpose(item, checkout_order_no)), None)
+    if existing:
         return existing, _build_mock_payload(existing)
 
     payload = {
         'recharge': True,
         'mock': True,
         'mode': VIRTUAL_MODE_COIN,
+        'checkout_order_no': str(checkout_order_no or ''),
         **_fee_payload(amount, platform),
     }
     recharge = RechargeOrder.objects.create(
@@ -206,16 +216,17 @@ def _create_mock_recharge(profile, amount, platform):
     return recharge, _build_mock_payload(recharge)
 
 
-def create_coin_recharge(user, amount_yuan, code, platform):
+def create_coin_recharge(user, amount_yuan, code, platform, checkout_order_no=''):
     profile = getattr(user, 'client_profile', None)
     if not profile or not profile.openid:
         raise PermissionDenied('当前账号未绑定微信 openid，请重新登录')
 
     platform = normalize_platform(platform)
     amount = validate_recharge_amount(amount_yuan, platform)
+    checkout_order_no = str(checkout_order_no or '')
 
     if settings.ENABLE_MOCK_PAYMENT and not settings.WECHAT_VIRTUALPAY_ENABLED:
-        return _create_mock_recharge(profile, amount, platform)
+        return _create_mock_recharge(profile, amount, platform, checkout_order_no)
 
     env = validate_configuration()
     if platform == 'ios' and env != 0:
@@ -226,7 +237,7 @@ def create_coin_recharge(user, amount_yuan, code, platform):
         raise PermissionDenied('本次微信登录账号与当前账号不一致')
 
     now = timezone.now()
-    existing = (
+    candidates = (
         RechargeOrder.objects
         .filter(
             profile=profile,
@@ -236,9 +247,9 @@ def create_coin_recharge(user, amount_yuan, code, platform):
             status=RechargeOrder.STATUS_PAYING,
         )
         .order_by('-created_at')
-        .first()
     )
-    if existing and _is_coin_recharge(existing):
+    existing = next((item for item in candidates if _is_coin_recharge(item) and _same_recharge_purpose(item, checkout_order_no)), None)
+    if existing:
         stored_platform = normalize_platform(dict(existing.notify_payload or {}).get('client_platform'))
         if stored_platform == platform and (not existing.expires_at or existing.expires_at > now):
             return existing, _build_coin_payment_payload(existing, env, session_key)
@@ -255,6 +266,7 @@ def create_coin_recharge(user, amount_yuan, code, platform):
         'recharge': True,
         'mode': VIRTUAL_MODE_COIN,
         'env': env,
+        'checkout_order_no': checkout_order_no,
         **_fee_payload(amount, platform),
     }
     with transaction.atomic():
@@ -284,7 +296,6 @@ def query_coin_recharge(recharge_no, user):
     if not recharge:
         raise ValidationError({'detail': '充值单不存在'})
 
-    # 兼容切换前的固定道具充值单。
     if not _is_coin_recharge(recharge):
         return legacy_query_recharge(recharge_no, user)
 
@@ -372,12 +383,15 @@ def coin_recharge_payload(recharge):
     stored = dict(recharge.notify_payload or {})
     payload = {
         'recharge_no': recharge.recharge_no,
+        'payment_no': recharge.recharge_no,
         'status': recharge.status,
         'amount': str(qyuan(recharge.amount)),
         'pay_amount_yuan': str(qyuan(recharge.amount)),
         'diamonds': yuan_to_diamonds(recharge.amount),
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
         'recharge_product_id': recharge.product_id,
+        'order_no': stored.get('checkout_order_no') or None,
+        'checkout_order_no': stored.get('checkout_order_no') or None,
         'client_platform': stored.get('client_platform', 'other'),
         'platform_fee_percent': stored.get('platform_fee_percent'),
         'estimated_platform_fee_yuan': stored.get('estimated_platform_fee_yuan'),
