@@ -144,5 +144,7 @@ def pay_order_with_coin_aware_balance(order_no, user, code='', user_ip='127.0.0.
         'status': payment.status,
         'amount': str(qmoney(amount)),
         'balance': str(qmoney(wallet.balance)),
-        'wechat_coin_diamonds': int(coin_metadata.get('wechat_coin_diamonds') or 0),
+        'wechat_coin_diamonds': str(coin_metadata.get('wechat_coin_diamonds') or '0.0'),
+        'wechat_coin_units': int(coin_metadata.get('wechat_coin_units') or 0),
+        'wechat_coin_units_per_yuan': int(coin_metadata.get('wechat_coin_units_per_yuan') or 0),
     }
