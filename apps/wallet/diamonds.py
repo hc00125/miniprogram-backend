@@ -1,10 +1,11 @@
+import os
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 
 
-# User-facing exchange ratio.  This never changes: ¥1 = 10 diamonds.
+# User-facing exchange ratio. This never changes: ¥1 = 10 diamonds.
 DIAMONDS_PER_YUAN = 10
 DIAMONDS_PER_YUAN_DECIMAL = Decimal(str(DIAMONDS_PER_YUAN))
 DIAMOND_QUANTUM = Decimal('0.1')
@@ -12,8 +13,8 @@ CENT = Decimal('0.01')
 ZERO = Decimal('0.00')
 
 # Historical code used one XPay integer coin for one displayed diamond, i.e.
-# 10 integer units per RMB.  New coin settlement uses 100 integer units per RMB
-# so one XPay unit represents ¥0.01 = 0.1 displayed diamond.  The scale is
+# 10 integer units per RMB. New coin settlement uses 100 integer units per RMB
+# so one XPay unit represents ¥0.01 = 0.1 displayed diamond. The scale is
 # recorded on each new recharge/payment payload so historical rows remain
 # interpretable without rewriting real order data.
 LEGACY_COIN_UNITS_PER_YUAN = 10
@@ -31,7 +32,7 @@ def qyuan(value) -> Decimal:
 def yuan_to_diamonds(value) -> Decimal:
     """Convert RMB to the user-facing diamond amount at fixed 1:10.
 
-    RMB remains the accounting source of truth to the cent.  Therefore ¥12.35
+    RMB remains the accounting source of truth to the cent. Therefore ¥12.35
     is represented exactly as 123.5 diamonds; no rounding or truncation is
     needed and historical RMB order values remain unchanged.
     """
@@ -66,16 +67,22 @@ def diamonds_to_yuan(value) -> Decimal:
 
 
 def coin_units_per_yuan(value=None) -> int:
-    """Return the integer XPay settlement scale, independent of display ratio."""
-    raw = (
-        value
-        if value is not None
-        else getattr(
-            settings,
+    """Return the integer XPay settlement scale, independent of display ratio.
+
+    ``config.settings`` predates this option on some deployed branches, so the
+    environment is also checked directly. This keeps the setting effective
+    without requiring a database/data migration and still lets Django tests use
+    ``override_settings``.
+    """
+    if value is not None:
+        raw = value
+    elif hasattr(settings, 'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN'):
+        raw = settings.WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN
+    else:
+        raw = os.environ.get(
             'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN',
-            DEFAULT_COIN_UNITS_PER_YUAN,
+            str(DEFAULT_COIN_UNITS_PER_YUAN),
         )
-    )
     try:
         units = int(raw)
     except (TypeError, ValueError) as exc:
@@ -89,7 +96,7 @@ def yuan_to_coin_units(value, *, units_per_yuan=None) -> int:
     """Convert RMB cents to the integer unit required by XPay.
 
     With the new scale of 100 units/RMB, ¥12.35 becomes 1235 XPay units while
-    still displaying as 123.5 diamonds.  If an older 10-units/RMB scale is
+    still displaying as 123.5 diamonds. If an older 10-units/RMB scale is
     explicitly used, cent amounts that it cannot represent are rejected rather
     than silently rounded.
     """
