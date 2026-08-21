@@ -5,7 +5,7 @@ from rest_framework.exceptions import APIException
 from rest_framework.permissions import BasePermission
 
 
-IOS_PURCHASE_DISABLED_MESSAGE = 'iOS端虚拟支付当前未启用'
+IOS_PURCHASE_DISABLED_MESSAGE = 'iOS端当前暂不提供在线购买'
 
 
 class IOSPurchaseDisabled(APIException):
