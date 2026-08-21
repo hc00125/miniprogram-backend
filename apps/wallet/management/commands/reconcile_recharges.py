@@ -36,6 +36,9 @@ class Command(BaseCommand):
             .filter(
                 status=RechargeOrder.STATUS_PAYING,
                 channel=RechargeOrder.CHANNEL_WECHAT_VIRTUAL,
+                # 只处理真正过期的充值单。不能把刚创建、仍在微信收银台中的
+                # PAYING 订单当成“未支付”关闭，否则会形成远端已支付、本地 CLOSED。
+                expires_at__lte=now,
             )
             .order_by('id')
         )
