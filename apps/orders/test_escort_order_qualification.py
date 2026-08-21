@@ -30,11 +30,13 @@ class EscortOrderQualificationTests(TestCase):
             name='未认证陪玩',
             player_type=self.player_type,
             status=Player.STATUS_APPROVED,
+            is_online=True,
         )
         self.qualified_player = Player.objects.create(
             name='护航陪玩',
             player_type=self.player_type,
             status=Player.STATUS_APPROVED,
+            is_online=True,
         )
         PlayerEscortQualification.objects.create(
             player=self.qualified_player,
