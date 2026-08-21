@@ -1,7 +1,5 @@
-import os
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
 
 
@@ -12,13 +10,14 @@ DIAMOND_QUANTUM = Decimal('0.1')
 CENT = Decimal('0.01')
 ZERO = Decimal('0.00')
 
-# Historical code used one XPay integer coin for one displayed diamond, i.e.
-# 10 integer units per RMB. New coin settlement uses 100 integer units per RMB
-# so one XPay unit represents ¥0.01 = 0.1 displayed diamond. The scale is
-# recorded on each new recharge/payment payload so historical rows remain
-# interpretable without rewriting real order data.
+# The Mini Program coin configuration has already been published in WeChat as
+# 1 RMB = 10 official coin units. Published coin ratios cannot be treated as a
+# runtime tuning knob: new XPay recharge/spend requests must therefore always
+# use 10 units/RMB. Explicit historical scales are still accepted when reading
+# old rows so existing audit data remains interpretable.
+PUBLISHED_COIN_UNITS_PER_YUAN = 10
 LEGACY_COIN_UNITS_PER_YUAN = 10
-DEFAULT_COIN_UNITS_PER_YUAN = 100
+DEFAULT_COIN_UNITS_PER_YUAN = PUBLISHED_COIN_UNITS_PER_YUAN
 
 
 def qyuan(value) -> Decimal:
@@ -32,9 +31,9 @@ def qyuan(value) -> Decimal:
 def yuan_to_diamonds(value) -> Decimal:
     """Convert RMB to the user-facing diamond amount at fixed 1:10.
 
-    RMB remains the accounting source of truth to the cent. Therefore ¥12.35
-    is represented exactly as 123.5 diamonds; no rounding or truncation is
-    needed and historical RMB order values remain unchanged.
+    RMB remains the accounting source of truth to the cent. Therefore historical
+    or local ledger values such as ¥12.35 can still be displayed as 123.5
+    diamonds without rewriting existing order data.
     """
     yuan = qyuan(value)
     return (yuan * DIAMONDS_PER_YUAN_DECIMAL).quantize(
@@ -62,27 +61,18 @@ def diamonds_to_yuan(value) -> Decimal:
         raise ValidationError('钻石最多保留1位小数')
 
     yuan = diamonds / DIAMONDS_PER_YUAN_DECIMAL
-    # One decimal diamond maps exactly to one RMB cent.
     return qyuan(yuan)
 
 
 def coin_units_per_yuan(value=None) -> int:
-    """Return the integer XPay settlement scale, independent of display ratio.
+    """Return the integer XPay settlement scale.
 
-    ``config.settings`` predates this option on some deployed branches, so the
-    environment is also checked directly. This keeps the setting effective
-    without requiring a database/data migration and still lets Django tests use
-    ``override_settings``.
+    New requests are hard-locked to the already-published WeChat ratio 1:10 so
+    a stale server environment variable can never accidentally make XPay charge
+    ten times the intended quantity. ``value`` is only for interpreting a scale
+    explicitly recorded on a historical row.
     """
-    if value is not None:
-        raw = value
-    elif hasattr(settings, 'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN'):
-        raw = settings.WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN
-    else:
-        raw = os.environ.get(
-            'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN',
-            str(DEFAULT_COIN_UNITS_PER_YUAN),
-        )
+    raw = PUBLISHED_COIN_UNITS_PER_YUAN if value is None else value
     try:
         units = int(raw)
     except (TypeError, ValueError) as exc:
@@ -93,18 +83,17 @@ def coin_units_per_yuan(value=None) -> int:
 
 
 def yuan_to_coin_units(value, *, units_per_yuan=None) -> int:
-    """Convert RMB cents to the integer unit required by XPay.
-
-    With the new scale of 100 units/RMB, ¥12.35 becomes 1235 XPay units while
-    still displaying as 123.5 diamonds. If an older 10-units/RMB scale is
-    explicitly used, cent amounts that it cannot represent are rejected rather
-    than silently rounded.
-    """
+    """Convert RMB to the integer unit required by XPay without rounding."""
     yuan = qyuan(value)
     scale = coin_units_per_yuan(units_per_yuan)
     units = yuan * Decimal(scale)
     integral = units.to_integral_value()
     if units != integral:
+        if scale == PUBLISHED_COIN_UNITS_PER_YUAN:
+            raise ValidationError(
+                f'微信代币已发布为1元=10代币，金额{yuan:.2f}元无法精确结算；'
+                '微信充值和官方代币扣款金额必须为0.10元的整数倍'
+            )
         raise ValidationError(
             f'当前微信代币精度（每元{scale}单位）无法精确表示金额{yuan:.2f}元'
         )
@@ -123,7 +112,6 @@ def coin_units_to_yuan(value, *, units_per_yuan=None) -> Decimal:
     scale = coin_units_per_yuan(units_per_yuan)
     raw_yuan = Decimal(units) / Decimal(scale)
     rounded = qyuan(raw_yuan)
-    # Do not hide sub-cent settlement values in the RMB ledger.
     if rounded != raw_yuan:
         raise ValidationError('微信代币数量无法精确映射到人民币分')
     return rounded
