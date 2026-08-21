@@ -2,6 +2,7 @@ import hashlib
 import logging
 from decimal import Decimal
 
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from apps.payments.models import Payment, Refund
@@ -15,6 +16,9 @@ from .models import ClientWalletLedger, RechargeOrder
 logger = logging.getLogger(__name__)
 ZERO = Decimal('0.00')
 COIN_MODE = 'short_series_coin'
+XPAY_ALREADY_REFUNDED_CODE = 268490005
+REMOTE_REFUND_STATUS_KEY = 'wechat_coin_remote_refund_status'
+REMOTE_REFUND_ORDER_ID_KEY = 'wechat_coin_remote_refund_order_id'
 
 
 def _coin_recharge_map(profile):
@@ -111,6 +115,20 @@ def _coin_payment_order_id(order_no, diamonds):
     return f'CP{digest}'
 
 
+def _coin_remote_refund_order_id(payment, pay_order_id):
+    """One deterministic remote refund id per original currency_pay.
+
+    WeChat documents 268490005 as "the order has already been refunded through
+    cancel_currency_pay; additional refunds are not supported".  Therefore the
+    remote side is reversed exactly once for the full coin portion, even when
+    the business creates several partial local refunds.
+    """
+    digest = hashlib.sha256(
+        f'{payment.payment_no}:{pay_order_id}:full-coin-refund'.encode('utf-8')
+    ).hexdigest()[:28].upper()
+    return f'CR{digest}'
+
+
 def _request_session(profile, code):
     if not code:
         raise ValidationError({'detail': '当前钱包包含微信官方钻石，请重新登录后再支付'})
@@ -149,7 +167,30 @@ def has_pending_coin_refunds(profile):
     return False
 
 
+def _mark_local_refund_coin_synced(refund, payload, response, remote_order_id, *, reused_remote_refund=False):
+    payload['wechat_coin_refund_status'] = 'succeeded'
+    payload['wechat_coin_refund_response'] = response
+    payload['wechat_coin_remote_refund_order_id'] = remote_order_id
+    if reused_remote_refund:
+        payload['wechat_coin_refund_reused_remote_full_cancel'] = True
+    Refund.objects.filter(pk=refund.pk).update(notify_payload=payload)
+
+
 def sync_pending_coin_refunds(profile, session_key, user_ip='127.0.0.1'):
+    """Synchronize successful local wallet refunds back to WeChat coin.
+
+    ``cancel_currency_pay`` only permits one refund operation per original
+    ``currency_pay``.  The first local refund therefore reverses the entire
+    original coin-backed portion remotely.  Later partial local refunds merely
+    consume that already-restored remote coin pool and must not call the remote
+    cancellation endpoint again.
+
+    If the remote full cancellation succeeded but the process died before the
+    local DB update, retrying the deterministic cancellation may return
+    268490005.  In this protocol that code is safe to treat as recovered success
+    because every remote cancellation for this payment always uses the same
+    deterministic order id and the full original coin amount.
+    """
     queryset = Refund.objects.filter(
         order__boss_user__client_profile=profile,
         status=Refund.STATUS_SUCCEEDED,
@@ -161,9 +202,34 @@ def sync_pending_coin_refunds(profile, session_key, user_ip='127.0.0.1'):
         diamonds = int(payload.get('wechat_coin_refund_diamonds') or 0)
         if diamonds <= 0 or payload.get('wechat_coin_refund_status') == 'succeeded':
             continue
-        payment_payload = dict(refund.payment.notify_payload or {})
+
+        # Reload each payment so a previous refund in this same loop (or another
+        # worker) can publish the remote full-cancel marker before we continue.
+        payment = Payment.objects.filter(pk=refund.payment_id).only(
+            'id', 'payment_no', 'notify_payload'
+        ).first()
+        if not payment:
+            continue
+        payment_payload = dict(payment.notify_payload or {})
         pay_order_id = str(payment_payload.get('wechat_coin_order_id') or '')
-        if not pay_order_id:
+        total_coin = int(payment_payload.get('wechat_coin_diamonds') or 0)
+        if not pay_order_id or total_coin <= 0:
+            continue
+
+        remote_order_id = str(
+            payment_payload.get(REMOTE_REFUND_ORDER_ID_KEY)
+            or _coin_remote_refund_order_id(payment, pay_order_id)
+        )
+
+        if payment_payload.get(REMOTE_REFUND_STATUS_KEY) == 'succeeded':
+            _mark_local_refund_coin_synced(
+                refund,
+                payload,
+                payment_payload.get('wechat_coin_remote_refund_response') or {'reused': True},
+                remote_order_id,
+                reused_remote_refund=True,
+            )
+            synced += 1
             continue
 
         response = user_xpay_post('/xpay/cancel_currency_pay', {
@@ -171,18 +237,37 @@ def sync_pending_coin_refunds(profile, session_key, user_ip='127.0.0.1'):
             'env': virtual_env(),
             'user_ip': user_ip or '127.0.0.1',
             'pay_order_id': pay_order_id,
-            'order_id': refund.refund_no,
-            'amount': diamonds,
-        }, session_key)
-        payload['wechat_coin_refund_status'] = 'succeeded'
-        payload['wechat_coin_refund_response'] = response
-        Refund.objects.filter(pk=refund.pk).update(notify_payload=payload)
+            'order_id': remote_order_id,
+            # WeChat only allows one cancel per currency_pay, so restore the
+            # complete original coin-backed spend on the first refund.
+            'amount': total_coin,
+        }, session_key, extra_success_codes={XPAY_ALREADY_REFUNDED_CODE})
+
+        payment_payload[REMOTE_REFUND_STATUS_KEY] = 'succeeded'
+        payment_payload[REMOTE_REFUND_ORDER_ID_KEY] = remote_order_id
+        payment_payload['wechat_coin_remote_refund_amount'] = total_coin
+        payment_payload['wechat_coin_remote_refund_response'] = response
+        payment_payload['wechat_coin_remote_refunded_at'] = timezone.now().isoformat()
+        Payment.objects.filter(pk=payment.pk).update(notify_payload=payment_payload)
+
+        _mark_local_refund_coin_synced(
+            refund,
+            payload,
+            response,
+            remote_order_id,
+        )
         synced += 1
     return synced
 
 
 def allocate_refund_coin_amount(refund):
-    """给成功的本地钱包退款分配应同步回微信 coin 的份额。"""
+    """给成功的本地钱包退款分配应由微信 coin 支撑的份额。
+
+    Each local refund still records only its own coin-backed share.  The remote
+    API may already have restored the original payment's whole coin portion;
+    that surplus remains intentionally unavailable to the local wallet until
+    subsequent local refunds are created.
+    """
     payment = refund.payment
     if not payment or payment.channel != 'balance':
         return 0
@@ -203,10 +288,9 @@ def allocate_refund_coin_amount(refund):
         allocated_before += int(previous_payload.get('wechat_coin_refund_diamonds') or 0)
 
     available = max(0, total_coin - allocated_before)
-    try:
-        refund_diamonds = yuan_to_diamonds(refund.amount)
-    except Exception:
-        refund_diamonds = 0
+    # Never silently turn an unrepresentable money amount into a zero coin
+    # refund.  Doing so would make the local wallet and WeChat ledger diverge.
+    refund_diamonds = yuan_to_diamonds(refund.amount)
     allocated = min(available, refund_diamonds)
     payload['wechat_coin_refund_diamonds'] = allocated
     payload['wechat_coin_refund_status'] = 'pending' if allocated > 0 else 'not_required'
