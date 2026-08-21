@@ -2,8 +2,8 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.payments.virtualpay import VirtualPaymentConfigurationError, validate_configuration
+from apps.wallet.coin_recharge import reconcile_coin_recharge_order
 from apps.wallet.models import RechargeOrder
-from apps.wallet.services import reconcile_recharge_order
 
 
 class Command(BaseCommand):
@@ -11,7 +11,6 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         now = timezone.now()
-        # mock 通道孤儿单：本地直接关闭，无需微信配置或远程查单。
         mock_closed = (
             RechargeOrder.objects
             .filter(
@@ -41,7 +40,7 @@ class Command(BaseCommand):
             .order_by('id')
         )
         for recharge in queryset.iterator():
-            outcome = reconcile_recharge_order(recharge)
+            outcome = reconcile_coin_recharge_order(recharge)
             if outcome == 'credited':
                 credited += 1
             elif outcome == 'closed':
