@@ -40,7 +40,7 @@ class DiamondConversionTests(TestCase):
     def test_recharge_product_only_accepts_fixed_tiers(self):
         valid = RechargeProduct(
             amount=Decimal('10.00'),
-            product_id='test_fixed_recharge_10',
+            product_id='test_fixed_10',
             goods_price_fen=1000,
         )
         valid.full_clean()
@@ -48,7 +48,7 @@ class DiamondConversionTests(TestCase):
 
         invalid = RechargeProduct(
             amount=Decimal('20.00'),
-            product_id='test_invalid_recharge_20',
+            product_id='test_invalid_20',
             goods_price_fen=2000,
         )
         with self.assertRaises(DjangoValidationError):
@@ -99,7 +99,7 @@ class DiamondWalletApiTests(TestCase):
 
     def test_recharge_packages_only_expose_active_fixed_tiers(self):
         RechargeProduct.objects.update_or_create(
-            product_id='test_api_recharge_10',
+            product_id='test_api_10',
             defaults={
                 'amount': Decimal('10.00'),
                 'goods_price_fen': 1000,
@@ -109,7 +109,7 @@ class DiamondWalletApiTests(TestCase):
         )
         # 直接写入模拟历史非标准档位；API仍不得向用户展示。
         RechargeProduct.objects.create(
-            product_id='test_api_recharge_20',
+            product_id='test_api_20',
             amount=Decimal('20.00'),
             goods_price_fen=2000,
             is_active=True,
@@ -138,7 +138,7 @@ class DiamondWalletApiTests(TestCase):
     @override_settings(ENABLE_MOCK_PAYMENT=True, WECHAT_VIRTUALPAY_ENABLED=False)
     def test_new_recharge_product_id_request_field_is_supported(self):
         product = RechargeProduct.objects.create(
-            product_id='test_new_request_field_30',
+            product_id='test_req_30',
             amount=Decimal('30.00'),
             goods_price_fen=3000,
             is_active=True,
