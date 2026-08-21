@@ -6,6 +6,7 @@ from apps.common.purchase_guard import require_purchase_available
 from . import (
     batch_views,
     boss_replacement_views,
+    boss_timer_views,
     boss_views,
     catalog_navigation_views,
     designation_views,
@@ -38,8 +39,9 @@ urlpatterns = [
     path('orders/batch', require_purchase_available(require_operational(batch_views.create_cart_order_batch))),
     path('orders/<str:boss_wechat>', boss_views.boss_orders),
     path('order/<str:order_no>/cancel', boss_views.cancel_order),
-    path('order/<str:order_no>/pause', boss_views.pause),
-    path('order/<str:order_no>/resume', boss_views.resume),
+    # 计时会直接影响剩余服务时长和按比例退款，必须使用服务端鉴权后的老板/管理员身份。
+    path('order/<str:order_no>/pause', boss_timer_views.pause),
+    path('order/<str:order_no>/resume', boss_timer_views.resume),
     path('order/<str:order_no>/self-confirm-payment', require_operational(boss_views.self_confirm_payment)),
     # 旧 /rate 地址继续兼容，但统一进入带内容安全检测的新评价处理器。
     path('order/<str:order_no>/rate', rating_views.order_ratings),
