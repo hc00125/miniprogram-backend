@@ -14,17 +14,18 @@ from .settlements import create_order_earnings
 def remember_virtual_payment_platform(sender, instance, created, **kwargs):
     """Persist device platform on a new virtual payment for later async settlement.
 
-    The create endpoint is wrapped in capture_client_platform.  Persisting the
-    platform means a later query/webhook still knows whether Apple channel cost
-    applies, even if the completion request comes from another device/context.
+    Other Payment post-save receivers may already have enriched notify_payload
+    (for example the unified diamond settlement signal).  Reload the latest DB
+    payload before merging so this receiver never overwrites those fields.
     """
     if not created or instance.channel != 'wechat_virtual':
         return
-    payload = dict(instance.notify_payload or {})
+    latest = Payment.objects.filter(pk=instance.pk).values_list('notify_payload', flat=True).first()
+    payload = dict(latest or instance.notify_payload or {})
     if payload.get('client_platform'):
+        instance.notify_payload = payload
         return
-    platform = current_client_platform()
-    payload['client_platform'] = platform
+    payload['client_platform'] = current_client_platform()
     Payment.objects.filter(pk=instance.pk).update(notify_payload=payload)
     instance.notify_payload = payload
 
