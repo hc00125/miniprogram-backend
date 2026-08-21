@@ -156,7 +156,7 @@ class CoinBackedBalanceTests(TestCase):
             status=Order.STATUS_PENDING_PAYMENT,
         )
 
-        def xpay(endpoint, payload, _session_key):
+        def xpay(endpoint, payload, _session_key, **_kwargs):
             if endpoint == '/xpay/cancel_currency_pay':
                 # First partial local refund restores the complete original
                 # currency_pay remotely because WeChat only permits one cancel.
