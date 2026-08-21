@@ -20,18 +20,24 @@ from .coin_recharge import (
     query_coin_recharge,
     recharge_limits,
 )
-from .diamonds import DIAMONDS_PER_YUAN, format_diamonds, qyuan, yuan_to_coin_units
+from .diamonds import (
+    DIAMONDS_PER_YUAN,
+    coin_units_per_yuan,
+    format_diamonds,
+    qyuan,
+    yuan_to_coin_units,
+)
 from .models import RechargeProduct
 
 
 class CoinRechargeCreateSerializer(serializers.Serializer):
-    # New clients send an arbitrary RMB amount. Keep the legacy product fields
-    # for one compatibility window so an older published mini-program can use
-    # the same endpoint after the backend is upgraded.
+    # New clients send RMB amounts; old fixed-tier clients remain compatible.
+    # The published WeChat coin ratio is 1 RMB = 10 integer coins, therefore a
+    # cash recharge itself can only be expressed in ¥0.10 increments.
     amount_yuan = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
-        min_value=Decimal('0.01'),
+        min_value=Decimal('0.10'),
         required=False,
     )
     recharge_product_id = serializers.IntegerField(min_value=1, required=False)
@@ -55,9 +61,6 @@ class CoinRechargeCreateSerializer(serializers.Serializer):
             attrs['amount_yuan'] = amount
             attrs['legacy_recharge_product_id'] = product.id
 
-        # RMB is the accounting truth and remains cent-precise. XPay still
-        # receives an integer settlement quantity, independent of displayed
-        # diamonds (e.g. ¥12.35 = 123.5 diamonds = 1235 settlement units).
         try:
             yuan_to_coin_units(amount)
         except Exception as exc:
@@ -96,10 +99,11 @@ def recharge_config(request):
 
     return Response({
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+        'wechat_coin_units_per_yuan': coin_units_per_yuan(),
         'min_amount_yuan': str(minimum),
         'max_amount_yuan': str(maximum),
-        'amount_step_yuan': '0.01',
-        'diamond_step': '0.1',
+        'amount_step_yuan': '0.10',
+        'diamond_step': '1.0',
         'client_platform': platform,
         'platform_fee_percent': str(platform_fee_percent(platform)),
         'target_net_margin_percent': str(target_net_margin_percent()),
