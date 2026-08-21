@@ -14,9 +14,10 @@ from apps.payments.virtualpay import (
     VirtualPaymentError,
 )
 
+from .coin_recharge import VIRTUAL_MODE_COIN, query_coin_recharge
 from .diamonds import DIAMONDS_PER_YUAN, qyuan, yuan_to_diamonds
 from .models import RechargeOrder
-from .services import query_recharge
+from .services import query_recharge as query_legacy_recharge
 
 
 RECHARGE_CANCEL_FALLBACK_MINUTES = 10
@@ -30,13 +31,25 @@ def _is_expired(recharge, now=None):
     return expires_at <= now
 
 
+def _is_coin(recharge):
+    return dict(recharge.notify_payload or {}).get('mode') == VIRTUAL_MODE_COIN
+
+
+def _query_current_status(recharge, user):
+    if _is_coin(recharge):
+        return query_coin_recharge(recharge.recharge_no, user)
+    return query_legacy_recharge(recharge.recharge_no, user)
+
+
 def _payload(recharge):
+    stored = dict(recharge.notify_payload or {})
     return {
         'recharge_no': recharge.recharge_no,
         'status': recharge.status,
         'pay_amount_yuan': str(qyuan(recharge.amount)),
         'diamonds': yuan_to_diamonds(recharge.amount),
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+        'checkout_order_no': stored.get('checkout_order_no'),
         'created_at': timezone.localtime(recharge.created_at).isoformat(),
         'expires_at': timezone.localtime(recharge.expires_at).isoformat() if recharge.expires_at else None,
     }
@@ -47,10 +60,8 @@ def _payload(recharge):
 def cancel_recharge(request, recharge_no):
     """Close an unpaid recharge order owned by the current user.
 
-    We query WeChat before changing local state so a paid recharge cannot be hidden as
-    cancelled.  For an already-expired local order, a temporary query failure does not
-    leave the user blocked forever: the stale local order may still be closed and the
-    scheduled reconciliation/logs remain available for manual investigation.
+    Coin recharges are queried through the coin-specific path, so cancellation
+    can never accidentally invoke notify_provide_goods (cash-goods delivery).
     """
     recharge = (
         RechargeOrder.objects
@@ -72,7 +83,7 @@ def cancel_recharge(request, recharge_no):
     expired = _is_expired(recharge)
     if recharge.channel == RechargeOrder.CHANNEL_WECHAT_VIRTUAL:
         try:
-            recharge = query_recharge(recharge.recharge_no, request.user)
+            recharge = _query_current_status(recharge, request.user)
         except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
             if not expired:
                 return virtual_payment_error_response(exc)
