@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from decimal import Decimal
 
 from rest_framework.exceptions import ValidationError
@@ -11,6 +12,7 @@ from .diamonds import diamonds_to_yuan, qyuan, yuan_to_diamonds
 from .models import ClientWalletLedger, RechargeOrder
 
 
+logger = logging.getLogger(__name__)
 ZERO = Decimal('0.00')
 COIN_MODE = 'short_series_coin'
 
@@ -119,7 +121,7 @@ def _request_session(profile, code):
 
 
 def query_remote_coin_balance(profile, session_key, user_ip='127.0.0.1'):
-    """查询微信官方 coin 余额，用于本地账本扣款前的双账校验。"""
+    """查询微信官方 coin 余额，用于支付前审计和双账异常诊断。"""
     response = user_xpay_post('/xpay/query_user_balance', {
         'openid': profile.openid,
         'env': virtual_env(),
@@ -214,7 +216,13 @@ def allocate_refund_coin_amount(refund):
 
 
 def prepare_coin_spend(profile, amount, code, user_ip='127.0.0.1'):
-    """先同步 pending coin 退款，再准备本次官方 coin 扣减。"""
+    """先同步 pending coin 退款，再准备本次官方 coin 扣减。
+
+    官方余额查询是审计信号，不作为“余额不足就禁止重放”的硬门槛：
+    currency_pay 使用确定性 order_id，若上一次远端已成功但本地事务失败，
+    重试必须继续用同一 order_id 让微信返回幂等成功，才能补齐本地账。
+    真正余额不足且从未成功过的请求会由 currency_pay 自身拒绝。
+    """
     amount = qyuan(amount)
     backed = coin_backed_wallet_amount(profile)
     pending_refunds = has_pending_coin_refunds(profile)
@@ -243,23 +251,23 @@ def prepare_coin_spend(profile, amount, code, user_ip='127.0.0.1'):
     diamonds = yuan_to_diamonds(spend_yuan)
     remote_balance, balance_response = query_remote_coin_balance(profile, session_key, user_ip)
     if remote_balance < diamonds:
-        raise ValidationError({
-            'detail': (
-                f'钻石账本需要扣除{diamonds}钻石，但微信官方余额仅有{remote_balance}钻石；'
-                '已停止本次支付，请刷新钱包或联系客服核对'
-            )
-        })
+        logger.warning(
+            '[官方钻石] 本地coin支撑额高于微信当前余额，继续用确定性order_id重放以区分幂等恢复与真实不足 '
+            'user_id=%s required=%s remote=%s',
+            profile.user_id,
+            diamonds,
+            remote_balance,
+        )
 
-    order_id = _coin_payment_order_id(profile.user_id, diamonds)
     return {
         '_session_key': session_key,
         '_user_ip': user_ip or '127.0.0.1',
         'wechat_coin_diamonds': diamonds,
         'wechat_coin_amount_yuan': str(spend_yuan),
         'wechat_coin_status': 'prepared',
-        'wechat_coin_order_id': order_id,
         'wechat_coin_balance_before': remote_balance,
         'wechat_coin_balance_query': balance_response,
+        'wechat_coin_balance_mismatch': remote_balance < diamonds,
     }
 
 
