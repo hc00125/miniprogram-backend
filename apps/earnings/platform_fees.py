@@ -26,8 +26,7 @@ def _env_percent(name, default):
 def platform_fee_percent(platform):
     platform = str(platform or '').strip().lower()
     if platform in {'ios', 'iphone', 'ipad', 'ipod'}:
-        # 2026-02 微信公告口径按 15% 优惠费率做保守默认值；
-        # 若后台实际执行 12% 激励费率，只需改环境变量，无需改代码。
+        # 费率政策可能调整，因此只给保守默认值，不把政策数字写死进业务公式。
         return _env_percent('WECHAT_VIRTUALPAY_IOS_FEE_PERCENT', '15.00')
     return _env_percent('WECHAT_VIRTUALPAY_OTHER_FEE_PERCENT', '1.00')
 
@@ -83,11 +82,10 @@ def _refund_restore_map(profile):
 def wallet_fee_allocation_for_payment(profile, payment):
     """Replay the wallet ledger and allocate remaining channel cost proportionally.
 
-    No schema change is required: every recharge carries its channel fee in
-    RechargeOrder.notify_payload, and each new balance payment stores the
-    allocated fee in Payment.notify_payload.  Mixed iOS/non-iOS recharges are
-    therefore handled as one weighted funding pool and changing devices does
-    not remove the original channel cost.
+    Every recharge stores its acquisition-channel fee in RechargeOrder.notify_payload.
+    A later balance payment consumes the weighted fee reserve in the same proportion
+    as it consumes wallet value.  Mixed iOS/non-iOS recharges therefore keep their
+    original economic cost even if the customer changes device before spending.
     """
     wallet = ClientWallet.objects.filter(profile=profile).first()
     if not wallet:
@@ -134,12 +132,10 @@ def wallet_fee_allocation_for_payment(profile, payment):
             fee_reserve = _qmoney(max(ZERO, fee_reserve - allocated))
             continue
 
-        # Positive non-recharge adjustments/refunds without a mapped source add
-        # spendable balance but no new payment-channel cost.
+        # Positive non-recharge adjustments add spendable value but no payment fee.
         running_balance = _qmoney(running_balance + amount)
 
     if current_allocated is None:
-        # Defensive fallback for legacy ledgers: use the weighted remaining rate.
         actual_balance = _qmoney(wallet.balance)
         if actual_balance > ZERO and fee_reserve > ZERO:
             current_allocated = _qmoney(fee_reserve * min(current_spend, actual_balance) / actual_balance)
@@ -190,12 +186,11 @@ def protect_order_margin(order):
     if payment.channel == 'wechat_virtual' and not payload.get('client_platform'):
         payload['client_platform'] = current_client_platform()
     payment.notify_payload = payload
-    payment.save(update_fields=['notify_payload', 'updated_at'])
+    payment.save(update_fields=['notify_payload'])
 
     existing = OrderCommissionOverride.objects.filter(order=order).first()
     if existing and not str(existing.reason or '').startswith(AUTO_REASON_PREFIX):
-        # A human override is considered an explicit business decision.  Do not
-        # silently replace it; admin can still choose a lower/higher special rate.
+        # 人工覆盖属于显式经营决策，自动利润保护不越权覆盖。
         return existing
 
     reason = (
