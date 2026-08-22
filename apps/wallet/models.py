@@ -144,6 +144,9 @@ class RechargeOrder(models.Model):
     amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='实际支付金额(元)')
     channel = models.CharField(max_length=20, choices=CHANNEL_CHOICES, default=CHANNEL_WECHAT_VIRTUAL)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_CREATED, db_index=True)
+    # 订单即时支付必须有可索引的强关联，不能只藏在 JSON 里。超时取消、恢复和对账
+    # 都以此字段为准；历史行由迁移从 notify_payload.checkout_order_no 回填。
+    checkout_order_no = models.CharField(max_length=40, blank=True, default='', db_index=True)
     third_trade_no = models.CharField(max_length=80, blank=True, default='')
     notify_payload = models.JSONField(blank=True, null=True)
     paid_at = models.DateTimeField(blank=True, null=True)
