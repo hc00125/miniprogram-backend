@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -14,7 +15,7 @@ from apps.payments.services import (
 from apps.payments.virtualpay import VIRTUAL_CHANNEL, VIRTUAL_MODE_GOODS, query_virtual_payment
 
 from .coin_sync import execute_coin_spend, prepare_coin_spend
-from .models import ClientWalletLedger
+from .models import ClientWalletLedger, RechargeOrder
 from .services import (
     BALANCE_CHANNEL,
     BALANCE_SCENE,
@@ -25,12 +26,44 @@ from .services import (
 )
 
 
+def _reserved_checkout_amount(profile, *, exclude_order_no=''):
+    """Return wallet value already paid by WeChat and reserved for other orders.
+
+    A short_series_coin checkout credits the wallet before finalize consumes the
+    same amount. Until that business order is paid or cancelled, the credited
+    value is not generic spendable balance and must not be moved to another
+    order.
+    """
+    pending_order_nos = (
+        Order.objects
+        .filter(
+            boss_user=profile.user,
+            paid=False,
+            status=Order.STATUS_PENDING_PAYMENT,
+        )
+        .exclude(order_no=str(exclude_order_no or ''))
+        .values_list('order_no', flat=True)
+    )
+    total = (
+        RechargeOrder.objects
+        .filter(
+            profile=profile,
+            status=RechargeOrder.STATUS_CREDITED,
+            checkout_order_no__in=pending_order_nos,
+        )
+        .aggregate(total=Sum('amount'))
+        .get('total')
+    )
+    return qmoney(total or ZERO)
+
+
 def pay_order_with_coin_aware_balance(order_no, user, code='', user_ip='127.0.0.1'):
     """Pay an order with the local wallet and mirror coin-backed spend to XPay.
 
     Historical/manual wallet value remains fully compatible and does not require
-    a wx.login code.  Only the share traceable to successful short_series_coin
-    recharges is deducted through /xpay/currency_pay.
+    a wx.login code. Only the share traceable to successful short_series_coin
+    recharges is deducted through /xpay/currency_pay. Order-linked credited
+    recharges stay reserved for their original order until finalize completes.
     """
     order = ensure_payment_window_open(order_no, user)
     ensure_order_owner(order, user)
@@ -97,12 +130,21 @@ def pay_order_with_coin_aware_balance(order_no, user, code='', user_ip='127.0.0.
             ).update(status='closed', updated_at=timezone.now())
 
         wallet = get_or_lock_wallet(profile)
-        if qmoney(wallet.balance) < amount:
+        reserved_for_other_orders = _reserved_checkout_amount(
+            profile,
+            exclude_order_no=order.order_no,
+        )
+        available_for_this_order = qmoney(wallet.balance - reserved_for_other_orders)
+        if available_for_this_order < amount:
+            if reserved_for_other_orders > ZERO:
+                raise ValidationError({
+                    'detail': '部分钻石正在等待另一笔已付款订单确认，暂不可用于本订单，请先完成原订单确认',
+                })
             raise ValidationError({'detail': '余额不足'})
 
-        # The wallet row is locked while XPay is called.  This is intentionally
+        # The wallet row is locked while XPay is called. This is intentionally
         # conservative: it prevents two concurrent balance payments from using
-        # the same coin-backed share.  The XPay order_id is deterministic, so a
+        # the same coin-backed share. The XPay order_id is deterministic, so a
         # rare DB rollback after remote success is safely retryable.
         coin_metadata = prepare_coin_spend(profile, amount, code, user_ip)
         coin_metadata = execute_coin_spend(profile, order, coin_metadata)
