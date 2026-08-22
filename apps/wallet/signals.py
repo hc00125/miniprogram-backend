@@ -1,7 +1,7 @@
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 
 from apps.accounts.models import ClientProfile
@@ -28,6 +28,23 @@ def create_wallet_for_new_client(sender, instance, created, using, **kwargs):
         ClientWallet.objects.using(using).get_or_create(profile_id=profile_id)
 
     transaction.on_commit(ensure_wallet, using=using)
+
+
+@receiver(pre_save, sender=RechargeOrder)
+def persist_checkout_order_relation(sender, instance, **kwargs):
+    """订单即时支付的充值单必须把业务订单号落到可索引字段。
+
+    兼容旧调用方仍只写 notify_payload.checkout_order_no，避免滚动部署时再次
+    出现“充值已到账但超时任务找不到关联订单”的资金断链。
+    """
+    if instance.checkout_order_no:
+        return
+    payload = instance.notify_payload or {}
+    if not isinstance(payload, dict):
+        return
+    order_no = str(payload.get('checkout_order_no') or '').strip()
+    if order_no:
+        instance.checkout_order_no = order_no[:40]
 
 
 @receiver(post_save, sender=RechargeOrder)
