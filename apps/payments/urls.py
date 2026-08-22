@@ -6,6 +6,7 @@ from apps.common.purchase_guard import require_ios_balance_only, require_purchas
 from apps.wallet import views as wallet_views
 
 from . import views
+from .coin_checkout_recovery import query_wechat_virtual_by_order_indexed
 
 urlpatterns = [
     path('create', require_purchase_available(views.create)),
@@ -33,7 +34,7 @@ urlpatterns = [
     path('wechat/virtual/close/<str:payment_no>', views.close_wechat_virtual),
     path(
         'wechat/virtual/query-order/<str:order_no>',
-        capture_client_platform(views.query_wechat_virtual_by_order),
+        capture_client_platform(query_wechat_virtual_by_order_indexed),
     ),
     path('mock/<str:payment_no>/success', views.mock_success),
     path('wechat/callback', views.wechat_callback),
