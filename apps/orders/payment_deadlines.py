@@ -2,6 +2,7 @@ import logging
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -107,6 +108,47 @@ def payment_confirmation_deadline_at(order):
     return window.confirmation_deadline_at if window else None
 
 
+def _linked_coin_recharge(order):
+    """Return the newest coin recharge created specifically for this order.
+
+    checkout_order_no used to live only in JSON.  The indexed column is now
+    authoritative, while the JSON fallback keeps rows created immediately
+    before the migration safely discoverable during rolling deploys.
+    """
+    if not order or not order.pk or not order.boss_user_id:
+        return None
+    from apps.wallet.models import RechargeOrder
+
+    return (
+        RechargeOrder.objects
+        .select_related('profile', 'profile__user')
+        .filter(
+            profile__user_id=order.boss_user_id,
+            channel__in=[RechargeOrder.CHANNEL_WECHAT_VIRTUAL, RechargeOrder.CHANNEL_MOCK],
+        )
+        .filter(
+            Q(checkout_order_no=order.order_no)
+            | Q(notify_payload__checkout_order_no=order.order_no)
+        )
+        .order_by('-created_at', '-id')
+        .first()
+    )
+
+
+def _local_coin_checkout_needs_confirmation(order):
+    recharge = _linked_coin_recharge(order)
+    if not recharge:
+        return False
+    from apps.wallet.models import RechargeOrder
+
+    return recharge.status in {
+        RechargeOrder.STATUS_CREATED,
+        RechargeOrder.STATUS_PAYING,
+        RechargeOrder.STATUS_PAID,
+        RechargeOrder.STATUS_CREDITED,
+    }
+
+
 def payment_deadline_payload(order, now=None):
     now = now or timezone.now()
     window = payment_window_for_order(order, create_if_active=True)
@@ -133,6 +175,12 @@ def payment_deadline_payload(order, now=None):
         phase = 'open'
     elif now < stored_confirmation_deadline:
         phase = 'confirming'
+    elif _local_coin_checkout_needs_confirmation(order):
+        # A coin checkout may already have cash captured by WeChat while the
+        # final currency_pay step still needs a fresh client session key. Keep
+        # the UI/server in confirmation mode instead of presenting it as an
+        # ordinary overdue unpaid order.
+        phase = 'confirming'
     else:
         phase = 'overdue'
 
@@ -149,20 +197,62 @@ def payment_deadline_payload(order, now=None):
     }
 
 
-def _refresh_active_remote_payment(order):
-    """Confirm remote payment state before cancellation.
+def _refresh_linked_coin_checkout(order):
+    """Reconcile an order-linked coin recharge before any timeout cancellation.
 
-    A callback can arrive slightly later than the client result. Querying
-    WeChat first prevents a paid order from being cancelled. If WeChat cannot
-    be queried, return ``unknown`` so the cancellation job retries later.
+    A credited recharge proves WeChat already captured money even if the local
+    Payment row has not been created yet. Such an order must never be treated as
+    unpaid. A still-active or unverifiable recharge is also protected until a
+    successful remote query proves it unpaid and closes it.
+    """
+    recharge = _linked_coin_recharge(order)
+    if not recharge:
+        return REMOTE_UNPAID
+
+    from apps.wallet.coin_recharge import reconcile_coin_recharge_order
+    from apps.wallet.models import RechargeOrder
+
+    if recharge.status in {RechargeOrder.STATUS_PAID, RechargeOrder.STATUS_CREDITED}:
+        return REMOTE_PAID
+    if recharge.status in {RechargeOrder.STATUS_CLOSED, RechargeOrder.STATUS_FAILED}:
+        return REMOTE_UNPAID
+
+    # Do not cancel while the recharge itself is still inside its own payment
+    # window. The order timeout and recharge creation times are not identical.
+    if not recharge.expires_at or recharge.expires_at > timezone.now():
+        return REMOTE_UNKNOWN
+
+    try:
+        result = reconcile_coin_recharge_order(recharge)
+    except Exception:
+        logger.exception(
+            '订单超时取消前核验coin充值失败，暂缓取消 order_no=%s recharge_no=%s',
+            order.order_no,
+            recharge.recharge_no,
+        )
+        return REMOTE_UNKNOWN
+
+    recharge.refresh_from_db()
+    if result == 'credited' or recharge.status in {RechargeOrder.STATUS_PAID, RechargeOrder.STATUS_CREDITED}:
+        return REMOTE_PAID
+    if result == 'closed' or recharge.status in {RechargeOrder.STATUS_CLOSED, RechargeOrder.STATUS_FAILED}:
+        return REMOTE_UNPAID
+    return REMOTE_UNKNOWN
+
+
+def _refresh_active_remote_payment(order):
+    """Confirm all remote payment state before cancellation.
+
+    Both legacy Payment rows and the newer order-linked RechargeOrder are
+    authoritative money-state evidence. Unknown remote state always defers
+    cancellation; a confirmed/credited coin recharge counts as paid even before
+    finalize creates the business Payment row.
     """
     active = list(
         Payment.objects
         .filter(order=order, status__in=ACTIVE_PAYMENT_STATUSES)
         .order_by('-created_at')
     )
-    if not active:
-        return REMOTE_UNPAID
 
     for payment in active:
         try:
@@ -187,6 +277,9 @@ def _refresh_active_remote_payment(order):
         if synced.status == 'paid' or getattr(synced.order, 'paid', False):
             return REMOTE_PAID
 
+    coin_state = _refresh_linked_coin_checkout(order)
+    if coin_state in {REMOTE_PAID, REMOTE_UNKNOWN}:
+        return coin_state
     return REMOTE_UNPAID
 
 
@@ -201,11 +294,12 @@ def mark_payment_window_expired(order, expired_at=None, reason=PAYMENT_TIMEOUT_R
 
 
 def expire_due_unpaid_order(order, now=None, verify_remote=True):
-    """Cancel one unpaid order after its payment and confirmation windows.
+    """Cancel one unpaid order only after every money source proves unpaid.
 
     The first 10 minutes are the actual payment window. The following 90
-    seconds are only for server-side WeChat reconciliation; the client cannot
-    create another payment during this phase.
+    seconds are a minimum confirmation grace. Order-linked coin recharges may
+    keep the order in confirmation longer when WeChat has captured money or the
+    remote state is still uncertain.
     """
     now = now or timezone.now()
     if order.status != Order.STATUS_PENDING_PAYMENT or order.paid:
@@ -230,6 +324,12 @@ def expire_due_unpaid_order(order, now=None, verify_remote=True):
             return False
         locked_confirmation_deadline = payment_confirmation_deadline_at(locked)
         if not locked_confirmation_deadline or locked_confirmation_deadline > now:
+            return False
+
+        # Recheck the local coin state under the final order lock. This closes
+        # the race where WeChat crediting lands between the earlier remote check
+        # and the cancellation transaction.
+        if _local_coin_checkout_needs_confirmation(locked):
             return False
 
         from apps.payments.services import close_unpaid_payments_for_order
