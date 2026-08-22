@@ -4,6 +4,7 @@ from urllib.parse import quote
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
@@ -78,8 +79,8 @@ def validate_recharge_amount(value, platform):
         raise ValidationError({'amount_yuan': f'单笔最低充值金额为{minimum:.2f}元'})
     if amount > maximum:
         raise ValidationError({'amount_yuan': f'单笔充值不能超过{maximum:.2f}元'})
-    # Validate against the integer XPay settlement scale.  At 100 units/RMB
-    # every RMB cent is exact, while the user still sees 1 RMB = 10 diamonds.
+    # 微信已发布为1元=10官方代币，因此只有能被该整数单位精确表达的金额
+    # 才能进入XPay；绝不在资金路径中静默四舍五入。
     yuan_to_coin_units(amount)
     return amount
 
@@ -101,11 +102,35 @@ def _is_coin_recharge(recharge):
 
 
 def _checkout_order_no(recharge):
-    return str(dict(recharge.notify_payload or {}).get('checkout_order_no') or '')
+    return str(
+        getattr(recharge, 'checkout_order_no', '')
+        or dict(recharge.notify_payload or {}).get('checkout_order_no')
+        or ''
+    )
 
 
 def _same_recharge_purpose(recharge, checkout_order_no=''):
     return _checkout_order_no(recharge) == str(checkout_order_no or '')
+
+
+def latest_checkout_coin_recharge(profile, checkout_order_no):
+    checkout_order_no = str(checkout_order_no or '').strip()
+    if not profile or not checkout_order_no:
+        return None
+    return (
+        RechargeOrder.objects
+        .filter(
+            profile=profile,
+            product__isnull=True,
+            channel__in=[RechargeOrder.CHANNEL_WECHAT_VIRTUAL, RechargeOrder.CHANNEL_MOCK],
+        )
+        .filter(
+            Q(checkout_order_no=checkout_order_no)
+            | Q(notify_payload__checkout_order_no=checkout_order_no)
+        )
+        .order_by('-created_at', '-id')
+        .first()
+    )
 
 
 def _recharge_coin_scale(recharge):
@@ -113,8 +138,7 @@ def _recharge_coin_scale(recharge):
     raw = stored.get('wechat_coin_units_per_yuan')
     if raw is not None:
         return coin_units_per_yuan(raw)
-    # Rows created before the split between display diamonds and settlement
-    # units used one XPay coin per displayed diamond (10 units/RMB).
+    # 历史代码本来就是1个XPay整数代币对应1个展示钻石，即10单位/元。
     return LEGACY_COIN_UNITS_PER_YUAN
 
 
@@ -123,6 +147,7 @@ def _build_coin_payment_payload(recharge, env, session_key):
     scale = _recharge_coin_scale(recharge)
     coin_units = yuan_to_coin_units(recharge.amount, units_per_yuan=scale)
     diamonds = format_diamonds(recharge.amount)
+    checkout_order_no = _checkout_order_no(recharge)
     sign_data = compact_json({
         'offerId': str(settings.WECHAT_VIRTUALPAY_OFFER_ID),
         'buyQuantity': coin_units,
@@ -158,8 +183,8 @@ def _build_coin_payment_payload(recharge, env, session_key):
         'paySign': pay_sig,
         'payment_no': recharge.recharge_no,
         'recharge_no': recharge.recharge_no,
-        'order_no': stored.get('checkout_order_no') or None,
-        'checkout_order_no': stored.get('checkout_order_no') or None,
+        'order_no': checkout_order_no or None,
+        'checkout_order_no': checkout_order_no or None,
         'amount': str(qyuan(recharge.amount)),
         'pay_amount_yuan': str(qyuan(recharge.amount)),
         'diamonds': diamonds,
@@ -179,6 +204,7 @@ def _build_coin_payment_payload(recharge, env, session_key):
 def _build_mock_payload(recharge):
     stored = dict(recharge.notify_payload or {})
     scale = _recharge_coin_scale(recharge)
+    checkout_order_no = _checkout_order_no(recharge)
     return {
         'timeStamp': str(int(timezone.now().timestamp())),
         'nonceStr': recharge.recharge_no,
@@ -187,8 +213,8 @@ def _build_mock_payload(recharge):
         'paySign': recharge.recharge_no,
         'payment_no': recharge.recharge_no,
         'recharge_no': recharge.recharge_no,
-        'order_no': stored.get('checkout_order_no') or None,
-        'checkout_order_no': stored.get('checkout_order_no') or None,
+        'order_no': checkout_order_no or None,
+        'checkout_order_no': checkout_order_no or None,
         'amount': str(qyuan(recharge.amount)),
         'pay_amount_yuan': str(qyuan(recharge.amount)),
         'diamonds': format_diamonds(recharge.amount),
@@ -238,6 +264,7 @@ def _create_mock_recharge(profile, amount, platform, checkout_order_no=''):
         amount=amount,
         channel=RechargeOrder.CHANNEL_MOCK,
         status=RechargeOrder.STATUS_PAYING,
+        checkout_order_no=str(checkout_order_no or ''),
         expires_at=now + timedelta(minutes=RECHARGE_EXPIRE_MINUTES),
         notify_payload=payload,
     )
@@ -251,7 +278,17 @@ def create_coin_recharge(user, amount_yuan, code, platform, checkout_order_no=''
 
     platform = normalize_platform(platform)
     amount = validate_recharge_amount(amount_yuan, platform)
-    checkout_order_no = str(checkout_order_no or '')
+    checkout_order_no = str(checkout_order_no or '').strip()
+
+    # 订单即时支付一旦已经被微信扣款并入账，后续只允许恢复/finalize，绝不能
+    # 再创建第二笔充值。这样即使客户端重启或网络抖动，也不会造成重复扣款。
+    if checkout_order_no:
+        prior = latest_checkout_coin_recharge(profile, checkout_order_no)
+        if prior and prior.status in {RechargeOrder.STATUS_PAID, RechargeOrder.STATUS_CREDITED}:
+            raise ValidationError({
+                'detail': '该订单的微信付款已经成功，正在确认订单状态，请勿重复支付',
+                'payment_no': prior.recharge_no,
+            })
 
     if settings.ENABLE_MOCK_PAYMENT and not settings.WECHAT_VIRTUALPAY_ENABLED:
         return _create_mock_recharge(profile, amount, platform, checkout_order_no)
@@ -286,7 +323,10 @@ def create_coin_recharge(user, amount_yuan, code, platform, checkout_order_no=''
             # block can only close after a successful query proved it unpaid.
             synced = query_coin_recharge(existing.recharge_no, user)
             if synced.status in {RechargeOrder.STATUS_PAID, RechargeOrder.STATUS_CREDITED}:
-                raise ValidationError({'detail': '该充值单已支付并入账，请勿重复充值'})
+                raise ValidationError({
+                    'detail': '该订单的微信付款已经成功，正在确认订单状态，请勿重复支付',
+                    'payment_no': synced.recharge_no,
+                })
             RechargeOrder.objects.filter(pk=existing.pk, status=RechargeOrder.STATUS_PAYING).update(
                 status=RechargeOrder.STATUS_CLOSED,
                 updated_at=timezone.now(),
@@ -309,6 +349,7 @@ def create_coin_recharge(user, amount_yuan, code, platform, checkout_order_no=''
             amount=amount,
             channel=RechargeOrder.CHANNEL_WECHAT_VIRTUAL,
             status=RechargeOrder.STATUS_PAYING,
+            checkout_order_no=checkout_order_no,
             expires_at=now + timedelta(minutes=RECHARGE_EXPIRE_MINUTES),
             notify_payload=payload,
         )
@@ -419,6 +460,7 @@ def reconcile_coin_recharge_order(recharge):
 def coin_recharge_payload(recharge):
     stored = dict(recharge.notify_payload or {})
     scale = _recharge_coin_scale(recharge)
+    checkout_order_no = _checkout_order_no(recharge)
     payload = {
         'recharge_no': recharge.recharge_no,
         'payment_no': recharge.recharge_no,
@@ -430,8 +472,8 @@ def coin_recharge_payload(recharge):
         'wechat_coin_units': yuan_to_coin_units(recharge.amount, units_per_yuan=scale),
         'wechat_coin_units_per_yuan': scale,
         'recharge_product_id': recharge.product_id,
-        'order_no': stored.get('checkout_order_no') or None,
-        'checkout_order_no': stored.get('checkout_order_no') or None,
+        'order_no': checkout_order_no or None,
+        'checkout_order_no': checkout_order_no or None,
         'client_platform': stored.get('client_platform', 'other'),
         'platform_fee_percent': stored.get('platform_fee_percent'),
         'estimated_platform_fee_yuan': stored.get('estimated_platform_fee_yuan'),
