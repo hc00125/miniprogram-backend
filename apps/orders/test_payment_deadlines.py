@@ -1,12 +1,16 @@
 from datetime import timedelta
+from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from apps.accounts.models import ClientProfile
 from apps.catalog.models import Package, PackageSpec, PlayerType
 from apps.players.models import Player
+from apps.wallet.models import RechargeOrder
 
 from .cancel_signals import ORDER_PLAYER_CANCELLED_STATUS
 from .models import Order, OrderStatusLog
@@ -61,6 +65,37 @@ class PaymentDeadlineTests(TestCase):
             'booked_hours': 1,
         }, self.boss)
         return grab_order(order.order_no, self.player, self.player_user)
+
+    def boss_profile(self):
+        profile, _ = ClientProfile.objects.get_or_create(
+            user=self.boss,
+            defaults={
+                'openid': 'payment-deadline-openid',
+                'nickname': '支付时限老板',
+            },
+        )
+        if not profile.openid:
+            profile.openid = 'payment-deadline-openid'
+            profile.save(update_fields=['openid'])
+        return profile
+
+    def create_linked_coin_recharge(self, order, status=RechargeOrder.STATUS_CREDITED, *, expired=True):
+        now = timezone.now()
+        return RechargeOrder.objects.create(
+            recharge_no=f'RCG-{order.order_no}',
+            profile=self.boss_profile(),
+            product=None,
+            amount=Decimal('15.00'),
+            channel=RechargeOrder.CHANNEL_WECHAT_VIRTUAL,
+            status=status,
+            checkout_order_no=order.order_no,
+            expires_at=now - timedelta(minutes=1) if expired else now + timedelta(minutes=5),
+            notify_payload={
+                'mode': 'short_series_coin',
+                'checkout_order_no': order.order_no,
+                'wechat_coin_units_per_yuan': 10,
+            },
+        )
 
     def backdate_payment_window(self, order, minutes=0, seconds=0):
         started_at = timezone.now() - timedelta(minutes=minutes, seconds=seconds)
@@ -137,6 +172,76 @@ class PaymentDeadlineTests(TestCase):
         self.assertEqual(self.player.total_orders, 0)
         self.assertIsNotNone(window.expired_at)
         self.assertEqual(window.expire_reason, PAYMENT_TIMEOUT_REASON)
+
+    def test_credited_order_linked_coin_recharge_never_times_out_as_unpaid(self):
+        order = self.create_pending_payment_order()
+        self.backdate_payment_window(order, minutes=12)
+        self.create_linked_coin_recharge(order, RechargeOrder.STATUS_CREDITED)
+
+        expired = expire_due_unpaid_order(order, now=timezone.now())
+
+        self.assertFalse(expired)
+        order.refresh_from_db()
+        self.assertFalse(order.paid)
+        self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
+        self.assertFalse(OrderPaymentWindow.objects.get(order=order).expired_at)
+
+    def test_credited_coin_checkout_stays_in_confirmation_ui_after_grace(self):
+        order = self.create_pending_payment_order()
+        started_at = self.backdate_payment_window(order, minutes=12)
+        self.create_linked_coin_recharge(order, RechargeOrder.STATUS_CREDITED)
+
+        payload = payment_deadline_payload(order, now=started_at + timedelta(minutes=12))
+
+        self.assertEqual(payload['payment_phase'], 'confirming')
+        self.assertFalse(payload['can_start_payment'])
+
+    def test_remote_paid_coin_recharge_is_credited_before_timeout_decision(self):
+        order = self.create_pending_payment_order()
+        self.backdate_payment_window(order, minutes=12)
+        recharge = self.create_linked_coin_recharge(order, RechargeOrder.STATUS_PAYING)
+        paid = {
+            'errcode': 0,
+            'errmsg': 'OK',
+            'order': {
+                'status': 3,
+                'order_fee': 1500,
+                'paid_fee': 1500,
+                'wx_order_id': 'WX_TIMEOUT_COIN_PAID',
+            },
+        }
+
+        with patch('apps.wallet.coin_recharge.xpay_post', return_value=paid):
+            expired = expire_due_unpaid_order(order, now=timezone.now())
+
+        self.assertFalse(expired)
+        recharge.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(recharge.status, RechargeOrder.STATUS_CREDITED)
+        self.assertEqual(order.status, Order.STATUS_PENDING_PAYMENT)
+
+    def test_remote_unpaid_expired_coin_recharge_allows_normal_timeout_cancel(self):
+        order = self.create_pending_payment_order()
+        self.backdate_payment_window(order, minutes=12)
+        recharge = self.create_linked_coin_recharge(order, RechargeOrder.STATUS_PAYING)
+        unpaid = {
+            'errcode': 0,
+            'errmsg': 'OK',
+            'order': {
+                'status': 6,
+                'order_fee': 0,
+                'paid_fee': 0,
+            },
+        }
+
+        with patch('apps.wallet.coin_recharge.xpay_post', return_value=unpaid):
+            expired = expire_due_unpaid_order(order, now=timezone.now())
+
+        self.assertTrue(expired)
+        recharge.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(recharge.status, RechargeOrder.STATUS_CLOSED)
+        self.assertEqual(order.status, Order.STATUS_CANCELLED)
 
     def test_order_inside_window_is_not_cancelled(self):
         order = self.create_pending_payment_order()
