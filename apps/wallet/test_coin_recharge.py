@@ -59,6 +59,53 @@ class CoinRechargeTests(TestCase):
         self.assertNotIn('productId', sign_data)
         self.assertNotIn('goodsPrice', sign_data)
 
+    def test_order_checkout_relation_is_persisted_in_indexed_field(self):
+        with patch(
+            'apps.wallet.coin_recharge.exchange_code_for_session',
+            return_value=(self.profile.openid, 'session-key'),
+        ):
+            recharge, payload = create_coin_recharge(
+                self.user,
+                '6.00',
+                'wx-code',
+                'android',
+                checkout_order_no='ORDER-CHECKOUT-001',
+            )
+
+        self.assertEqual(recharge.checkout_order_no, 'ORDER-CHECKOUT-001')
+        self.assertEqual(payload['checkout_order_no'], 'ORDER-CHECKOUT-001')
+
+    def test_credited_checkout_cannot_create_second_recharge(self):
+        RechargeOrder.objects.create(
+            recharge_no='RCG-PAID-CHECKOUT-001',
+            profile=self.profile,
+            product=None,
+            amount=Decimal('6.00'),
+            channel=RechargeOrder.CHANNEL_WECHAT_VIRTUAL,
+            status=RechargeOrder.STATUS_CREDITED,
+            checkout_order_no='ORDER-CHECKOUT-PAID',
+            notify_payload={
+                'mode': VIRTUAL_MODE_COIN,
+                'checkout_order_no': 'ORDER-CHECKOUT-PAID',
+                'wechat_coin_units_per_yuan': 10,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as context:
+            create_coin_recharge(
+                self.user,
+                '6.00',
+                'new-code',
+                'android',
+                checkout_order_no='ORDER-CHECKOUT-PAID',
+            )
+
+        self.assertIn('请勿重复支付', str(context.exception.detail))
+        self.assertEqual(
+            RechargeOrder.objects.filter(checkout_order_no='ORDER-CHECKOUT-PAID').count(),
+            1,
+        )
+
     def test_unrepresentable_cent_amount_is_rejected_without_rounding(self):
         with patch(
             'apps.wallet.coin_recharge.exchange_code_for_session',
