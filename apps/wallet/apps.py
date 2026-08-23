@@ -7,4 +7,4 @@ class WalletConfig(AppConfig):
     verbose_name = '老板余额钱包'
 
     def ready(self):
-        from . import signals  # noqa: F401
+        from . import ios_credit, signals  # noqa: F401
