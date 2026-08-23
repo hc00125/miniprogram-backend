@@ -1,8 +1,10 @@
 from decimal import Decimal
 
-from rest_framework import serializers
+from django.conf import settings
+from django.utils import timezone
+from rest_framework import serializers, status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -27,7 +29,9 @@ from .diamonds import (
     qyuan,
     yuan_to_coin_units,
 )
-from .models import RechargeProduct
+from .ios_credit import configured_wallet_credit, decorate_wallet_recharge_payload
+from .models import ClientWallet, RechargeOrder, RechargeProduct
+from .services import mark_recharge_paid
 
 
 class CoinRechargeCreateSerializer(serializers.Serializer):
@@ -68,12 +72,18 @@ class CoinRechargeCreateSerializer(serializers.Serializer):
         return attrs
 
 
+def _wallet_recharge_payload(recharge):
+    return decorate_wallet_recharge_payload(coin_recharge_payload(recharge), recharge)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def recharge_config(request):
     platform = request_client_platform(request)
     minimum, maximum = recharge_limits(platform)
     from apps.earnings.platform_fees import platform_fee_percent, target_net_margin_percent
+
+    fee_percent = platform_fee_percent(platform)
 
     # These are UI shortcuts only. When a matching legacy RechargeProduct is
     # present, expose its real id so old published clients can still submit it.
@@ -88,25 +98,30 @@ def recharge_config(request):
         if amount < minimum or amount > maximum:
             continue
         legacy_product = legacy_products.get(amount)
+        credited = configured_wallet_credit(amount, platform, fee_percent)
         results.append({
             'id': legacy_product.id if legacy_product else raw_amount,
             'amount': f'{amount:.2f}',
             'pay_amount_yuan': f'{amount:.2f}',
-            'diamonds': format_diamonds(amount),
+            'diamonds': format_diamonds(credited),
+            'credited_amount_yuan': str(credited),
             'quick_amount': True,
             'legacy_recharge_product_id': legacy_product.id if legacy_product else None,
         })
 
+    one_yuan_credit = configured_wallet_credit(Decimal('1.00'), platform, fee_percent)
     return Response({
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+        'effective_diamonds_per_yuan': format_diamonds(one_yuan_credit),
         'wechat_coin_units_per_yuan': coin_units_per_yuan(),
         'min_amount_yuan': str(minimum),
         'max_amount_yuan': str(maximum),
         'amount_step_yuan': '0.10',
         'diamond_step': '1.0',
         'client_platform': platform,
-        'platform_fee_percent': str(platform_fee_percent(platform)),
+        'platform_fee_percent': str(fee_percent),
         'target_net_margin_percent': str(target_net_margin_percent()),
+        'fee_deducted_from_credit': platform == 'ios',
         'results': results,
     })
 
@@ -118,7 +133,7 @@ def recharge_create(request):
     serializer.is_valid(raise_exception=True)
     platform = request_client_platform(request)
     try:
-        _recharge, payload = create_coin_recharge(
+        recharge, payload = create_coin_recharge(
             request.user,
             serializer.validated_data['amount_yuan'],
             serializer.validated_data.get('code') or '',
@@ -134,7 +149,7 @@ def recharge_create(request):
             action='coin_recharge_create',
             request=request,
         )
-    return Response(payload)
+    return Response(decorate_wallet_recharge_payload(payload, recharge))
 
 
 @api_view(['POST'])
@@ -153,4 +168,56 @@ def recharge_query(request, recharge_no):
             request=request,
             payment_no=recharge_no,
         )
-    return Response(coin_recharge_payload(recharge))
+    return Response(_wallet_recharge_payload(recharge))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def recharge_orders(request):
+    profile = getattr(request.user, 'client_profile', None)
+    if not profile:
+        return Response({'detail': '请先微信登录'}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        page = max(1, int(request.query_params.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = min(100, max(1, int(request.query_params.get('page_size', 20))))
+    except (TypeError, ValueError):
+        page_size = 20
+
+    queryset = RechargeOrder.objects.filter(profile=profile).select_related('profile').order_by('-created_at', '-id')
+    count = queryset.count()
+    start = (page - 1) * page_size
+    results = []
+    for recharge in queryset[start:start + page_size]:
+        payload = _wallet_recharge_payload(recharge)
+        if recharge.status == RechargeOrder.STATUS_CREDITED:
+            wallet = ClientWallet.objects.filter(profile_id=recharge.profile_id).first()
+            if wallet:
+                payload['balance_diamonds'] = format_diamonds(wallet.balance)
+        results.append(payload)
+    return Response({'count': count, 'results': results})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def recharge_mock_success(request, recharge_no):
+    if not settings.ENABLE_MOCK_PAYMENT or settings.WECHAT_VIRTUALPAY_ENABLED:
+        return Response({'detail': '模拟支付未启用'}, status=status.HTTP_404_NOT_FOUND)
+    recharge = (
+        RechargeOrder.objects
+        .select_related('profile')
+        .filter(recharge_no=recharge_no, profile__user=request.user)
+        .first()
+    )
+    if not recharge:
+        raise ValidationError({'detail': '充值单不存在'})
+    if recharge.channel != RechargeOrder.CHANNEL_MOCK:
+        raise ValidationError({'detail': '该充值单不支持模拟支付'})
+
+    payload = dict(recharge.notify_payload or {})
+    payload['mock'] = True
+    payload['mock_paid_at'] = timezone.now().isoformat()
+    recharge = mark_recharge_paid(recharge, 'mock_paid', payload)
+    return Response(_wallet_recharge_payload(recharge))
