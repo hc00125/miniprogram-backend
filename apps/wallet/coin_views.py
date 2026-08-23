@@ -17,6 +17,7 @@ from apps.payments.virtualpay import (
 )
 
 from .coin_recharge import (
+    VIRTUAL_MODE_COIN,
     coin_recharge_payload,
     create_coin_recharge,
     query_coin_recharge,
@@ -72,8 +73,41 @@ class CoinRechargeCreateSerializer(serializers.Serializer):
         return attrs
 
 
+def _local_iso(value):
+    return timezone.localtime(value).isoformat() if value else None
+
+
 def _wallet_recharge_payload(recharge):
-    return decorate_wallet_recharge_payload(coin_recharge_payload(recharge), recharge)
+    stored = dict(recharge.notify_payload or {})
+    if stored.get('mode') == VIRTUAL_MODE_COIN:
+        base = coin_recharge_payload(recharge)
+    else:
+        # Historical fixed-product rows may contain cent-level amounts that cannot
+        # be represented by today's 10 XPay units/RMB scale. They still need to
+        # remain readable in recharge history without being reinterpreted as a
+        # modern coin recharge.
+        amount = qyuan(recharge.amount)
+        base = {
+            'recharge_no': recharge.recharge_no,
+            'payment_no': recharge.recharge_no,
+            'status': recharge.status,
+            'amount': str(amount),
+            'pay_amount_yuan': str(amount),
+            'diamonds': format_diamonds(amount),
+            'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+            'recharge_product_id': recharge.product_id,
+            'order_no': getattr(recharge, 'checkout_order_no', '') or None,
+            'checkout_order_no': getattr(recharge, 'checkout_order_no', '') or None,
+            'client_platform': stored.get('client_platform', 'other'),
+            'platform_fee_percent': stored.get('platform_fee_percent'),
+            'estimated_platform_fee_yuan': stored.get('estimated_platform_fee_yuan'),
+            'estimated_settlement_yuan': stored.get('estimated_settlement_yuan'),
+            'expires_at': _local_iso(recharge.expires_at),
+            'created_at': _local_iso(recharge.created_at),
+            'paid_at': _local_iso(recharge.paid_at),
+            'credited_at': _local_iso(recharge.credited_at),
+        }
+    return decorate_wallet_recharge_payload(base, recharge)
 
 
 @api_view(['GET'])
