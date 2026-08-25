@@ -57,7 +57,14 @@ def _reserved_checkout_amount(profile, *, exclude_order_no=''):
     return qmoney(total or ZERO)
 
 
-def pay_order_with_coin_aware_balance(order_no, user, code='', user_ip='127.0.0.1'):
+def pay_order_with_coin_aware_balance(
+    order_no,
+    user,
+    code='',
+    user_ip='127.0.0.1',
+    *,
+    allow_credited_checkout_recovery=False,
+):
     """Pay an order with the local wallet and mirror coin-backed spend to XPay.
 
     Historical/manual wallet value remains fully compatible and does not require
@@ -65,7 +72,11 @@ def pay_order_with_coin_aware_balance(order_no, user, code='', user_ip='127.0.0.
     recharges is deducted through /xpay/currency_pay. Order-linked credited
     recharges stay reserved for their original order until finalize completes.
     """
-    order = ensure_payment_window_open(order_no, user)
+    order = ensure_payment_window_open(
+        order_no,
+        user,
+        allow_credited_checkout_recovery=allow_credited_checkout_recovery,
+    )
     ensure_order_owner(order, user)
 
     profile = getattr(user, 'client_profile', None)
