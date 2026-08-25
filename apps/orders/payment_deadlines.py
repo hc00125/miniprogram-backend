@@ -149,6 +149,16 @@ def _local_coin_checkout_needs_confirmation(order):
     }
 
 
+def _local_coin_checkout_is_credited(order):
+    """Return True only when the order-linked WeChat recharge is fully credited."""
+    recharge = _linked_coin_recharge(order)
+    if not recharge:
+        return False
+    from apps.wallet.models import RechargeOrder
+
+    return recharge.status == RechargeOrder.STATUS_CREDITED
+
+
 def payment_deadline_payload(order, now=None):
     now = now or timezone.now()
     window = payment_window_for_order(order, create_if_active=True)
@@ -361,7 +371,7 @@ def expire_due_unpaid_orders(now=None):
     return expired
 
 
-def ensure_payment_window_open(order_no, user=None):
+def ensure_payment_window_open(order_no, user=None, *, allow_credited_checkout_recovery=False):
     order = (
         Order.objects
         .filter(order_no=order_no)
@@ -380,5 +390,7 @@ def ensure_payment_window_open(order_no, user=None):
             order.refresh_from_db()
             if order.status == Order.STATUS_CANCELLED:
                 raise ValidationError({'detail': '支付时间已超过10分钟，订单已自动取消'})
+            if allow_credited_checkout_recovery and _local_coin_checkout_is_credited(order):
+                return order
             raise ValidationError({'detail': '10分钟支付窗口已结束，系统正在核验微信支付结果，请勿重复支付'})
     return order
