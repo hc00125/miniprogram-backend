@@ -287,6 +287,7 @@ def finalize_checkout_coin(request, recharge_no):
             request.user,
             code=code,
             user_ip=_request_ip(request),
+            allow_credited_checkout_recovery=True,
         )
     except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
         return virtual_payment_error_response(exc)
