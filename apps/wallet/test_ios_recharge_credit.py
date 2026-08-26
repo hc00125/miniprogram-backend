@@ -19,7 +19,7 @@ class IOSRechargeCreditTests(TestCase):
             nickname='iOS充值测试用户',
         )
 
-    def create_recharge(self, *, checkout_order_no=''):
+    def create_recharge(self, *, checkout_order_no='', fixed_ratio=True):
         payload = {
             'recharge': True,
             'mode': 'short_series_coin',
@@ -30,6 +30,9 @@ class IOSRechargeCreditTests(TestCase):
             'checkout_order_no': checkout_order_no,
             'wechat_coin_units_per_yuan': 10,
         }
+        if fixed_ratio and not checkout_order_no:
+            payload['ios_credit_diamonds_per_yuan'] = '7.00'
+            payload['ios_fixed_credit'] = True
         return RechargeOrder.objects.create(
             recharge_no=f'IOS-{checkout_order_no or "WALLET"}',
             profile=self.profile,
@@ -41,7 +44,7 @@ class IOSRechargeCreditTests(TestCase):
             notify_payload=payload,
         )
 
-    def test_standalone_ios_recharge_credits_net_diamonds(self):
+    def test_standalone_ios_recharge_credits_seven_diamonds_per_yuan(self):
         recharge = self.create_recharge()
         recharge = mark_recharge_paid(recharge, 'mock-ios', dict(recharge.notify_payload))
 
@@ -53,17 +56,26 @@ class IOSRechargeCreditTests(TestCase):
             reference_id=recharge.recharge_no,
         )
 
-        self.assertEqual(wallet.balance, Decimal('85.00'))
-        self.assertEqual(wallet.recharged_total, Decimal('85.00'))
-        self.assertEqual(ledger.amount, Decimal('85.00'))
-        self.assertEqual(ledger.balance_after, Decimal('85.00'))
+        self.assertEqual(wallet.balance, Decimal('70.00'))
+        self.assertEqual(wallet.recharged_total, Decimal('70.00'))
+        self.assertEqual(ledger.amount, Decimal('70.00'))
+        self.assertEqual(ledger.balance_after, Decimal('70.00'))
         self.assertTrue(recharge.notify_payload['fee_deducted_from_credit'])
         self.assertEqual(recharge.notify_payload['charged_platform_fee_percent'], '15.00')
         self.assertEqual(recharge.notify_payload['platform_fee_percent'], '0.00')
-        self.assertEqual(recharge.notify_payload['credited_amount_yuan'], '85.00')
+        self.assertEqual(recharge.notify_payload['credited_amount_yuan'], '70.00')
 
         payload = decorate_wallet_recharge_payload({}, recharge)
-        self.assertEqual(Decimal(str(payload['diamonds'])), Decimal('850'))
+        self.assertEqual(Decimal(str(payload['diamonds'])), Decimal('700'))
+
+    def test_historical_ios_recharge_without_fixed_marker_keeps_old_settlement(self):
+        recharge = self.create_recharge(fixed_ratio=False)
+        recharge = mark_recharge_paid(recharge, 'mock-ios-legacy', dict(recharge.notify_payload))
+
+        recharge.refresh_from_db()
+        wallet = ClientWallet.objects.get(profile=self.profile)
+        self.assertEqual(wallet.balance, Decimal('85.00'))
+        self.assertEqual(recharge.notify_payload['credited_amount_yuan'], '85.00')
 
     def test_order_linked_ios_coin_checkout_keeps_full_credit(self):
         recharge = self.create_recharge(checkout_order_no='ORDER-1')
