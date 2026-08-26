@@ -169,9 +169,53 @@ class CoinRechargeTests(TestCase):
         self.assertEqual(item['id'], product.id)
         self.assertEqual(item['legacy_recharge_product_id'], product.id)
 
-    def test_ios_minimum_is_one_yuan(self):
+    def test_ios_minimum_is_one_yuan_for_core_xpay_path(self):
         with self.assertRaises(ValidationError):
             self._create('0.90', platform='ios')
+
+    def test_ios_config_only_exposes_10_and_30_at_seven_diamonds_per_yuan(self):
+        response = self.client.get(
+            '/api/client/wallet/recharge/packages',
+            HTTP_X_CLIENT_PLATFORM='ios',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['effective_diamonds_per_yuan'], '7.0')
+        self.assertFalse(response.data['custom_amount_enabled'])
+        self.assertEqual(response.data['allowed_amounts_yuan'], ['10.00', '30.00'])
+        self.assertEqual(
+            [(item['pay_amount_yuan'], item['diamonds']) for item in response.data['results']],
+            [('10.00', '70.0'), ('30.00', '210.0')],
+        )
+
+    def test_ios_standalone_recharge_rejects_custom_amount(self):
+        response = self.client.post(
+            '/api/client/wallet/recharge/create',
+            {'amount_yuan': '20.00', 'code': 'wx-code'},
+            format='json',
+            HTTP_X_CLIENT_PLATFORM='ios',
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('仅支持10元或30元', str(response.data))
+
+    def test_ios_30_yuan_recharge_returns_210_diamonds(self):
+        with patch(
+            'apps.wallet.coin_recharge.exchange_code_for_session',
+            return_value=(self.profile.openid, 'session-key'),
+        ):
+            response = self.client.post(
+                '/api/client/wallet/recharge/create',
+                {'amount_yuan': '30.00', 'code': 'wx-code'},
+                format='json',
+                HTTP_X_CLIENT_PLATFORM='ios',
+            )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['pay_amount_yuan'], '30.00')
+        self.assertEqual(response.data['diamonds'], '210.0')
+        recharge = RechargeOrder.objects.get(recharge_no=response.data['recharge_no'])
+        self.assertEqual(recharge.notify_payload['ios_credit_diamonds_per_yuan'], '7.00')
+        self.assertTrue(recharge.notify_payload['ios_fixed_credit'])
 
     @override_settings(WECHAT_VIRTUALPAY_ENV=1)
     def test_ios_rejects_sandbox(self):
