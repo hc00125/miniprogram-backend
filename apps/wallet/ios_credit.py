@@ -11,6 +11,8 @@ from .models import ClientWallet, ClientWalletLedger, RechargeOrder
 ZERO = Decimal('0.00')
 HUNDRED = Decimal('100.00')
 CENT = Decimal('0.01')
+STANDARD_DIAMONDS_PER_YUAN = Decimal('10.00')
+IOS_DIAMONDS_PER_YUAN = Decimal('7.00')
 COIN_MODE = 'short_series_coin'
 
 
@@ -45,20 +47,16 @@ def standalone_ios_coin_recharge(recharge):
 def configured_wallet_credit(amount, platform, fee_percent=None):
     """Return wallet value credited for a standalone recharge.
 
-    Android/other platforms keep the published 1 RMB = 10 diamonds rule. Standalone
-    iOS wallet recharge passes the configured virtual-payment fee to the customer by
-    reducing credited diamonds. Order-linked instant checkout is intentionally not
-    handled here because it must still credit exactly the order amount.
+    Android/other platforms keep the published 1 RMB = 10 diamonds rule.
+    Standalone iOS wallet recharge uses a simple customer-facing fixed ratio of
+    1 RMB = 7 diamonds. The actual channel fee is still recorded separately for
+    finance/audit. Order-linked instant checkout is intentionally not handled
+    here because it must still credit exactly the order amount before spending.
     """
     amount = qmoney(amount)
     if normalize_platform(platform) != 'ios':
         return amount
-    if fee_percent is None:
-        from apps.earnings.platform_fees import platform_fee_percent
-
-        fee_percent = platform_fee_percent('ios')
-    fee = _percent(fee_percent)
-    return qmoney(amount * (HUNDRED - fee) / HUNDRED)
+    return qmoney(amount * IOS_DIAMONDS_PER_YUAN / STANDARD_DIAMONDS_PER_YUAN)
 
 
 def recharge_credit_amount(recharge):
@@ -71,6 +69,19 @@ def recharge_credit_amount(recharge):
             pass
     if not standalone_ios_coin_recharge(recharge):
         return qmoney(recharge.amount)
+
+    # New iOS wallet recharges carry an explicit fixed credit ratio. Historical
+    # rows without this marker keep their original fee-based settlement meaning
+    # so already-credited recharge history is never silently reinterpreted.
+    fixed_ratio = payload.get('ios_credit_diamonds_per_yuan')
+    if fixed_ratio is not None:
+        try:
+            ratio = Decimal(str(fixed_ratio))
+            if ratio > ZERO:
+                return qmoney(qmoney(recharge.amount) * ratio / STANDARD_DIAMONDS_PER_YUAN)
+        except (InvalidOperation, TypeError, ValueError):
+            pass
+
     settlement = payload.get('estimated_settlement_yuan')
     if settlement is not None:
         try:
@@ -78,7 +89,8 @@ def recharge_credit_amount(recharge):
         except (InvalidOperation, TypeError, ValueError):
             pass
     fee = payload.get('charged_platform_fee_percent', payload.get('platform_fee_percent'))
-    return configured_wallet_credit(recharge.amount, 'ios', fee)
+    fee = _percent(fee)
+    return qmoney(qmoney(recharge.amount) * (HUNDRED - fee) / HUNDRED)
 
 
 def recharge_display_fee_percent(recharge):
@@ -106,12 +118,13 @@ def decorate_wallet_recharge_payload(payload, recharge):
 
 @receiver(post_save, sender=RechargeOrder, dispatch_uid='wallet_apply_ios_net_recharge_credit')
 def apply_ios_net_recharge_credit(sender, instance, **kwargs):
-    """Convert a newly credited standalone iOS recharge from gross to net credit.
+    """Convert a newly credited standalone iOS recharge from gross to fixed credit.
 
     The core recharge service first records the gross paid amount. This signal runs
     immediately after that credit, rewrites the same recharge ledger entry to the
-    net amount and adjusts wallet totals in the same transaction. No extra visible
-    debit line is created. Existing historical credited recharges are untouched.
+    configured iOS fixed ratio and adjusts wallet totals in the same transaction.
+    No extra visible debit line is created. Existing historical credited recharges
+    are untouched because they already carry an explicit credited amount.
     """
     if instance.status != RechargeOrder.STATUS_CREDITED or not instance.credited_at:
         return
@@ -161,7 +174,7 @@ def apply_ios_net_recharge_credit(sender, instance, **kwargs):
             ledger.balance_after = qmoney(ledger.balance_after - deduction)
             ledger.note = (
                 f'iOS充值单 {recharge.recharge_no} 实付¥{gross:.2f}，'
-                f'扣除渠道费¥{qmoney(gross - net):.2f}，实际到账💎{format_diamonds(net)}'
+                f'按1元=7钻石折算，实际到账💎{format_diamonds(net)}'
             )[:500]
             ledger.save(update_fields=['amount', 'balance_after', 'note'])
 
@@ -171,9 +184,8 @@ def apply_ios_net_recharge_credit(sender, instance, **kwargs):
 
         charged_fee = str(payload.get('charged_platform_fee_percent') or payload.get('platform_fee_percent') or '0.00')
         payload['charged_platform_fee_percent'] = charged_fee
-        # Downstream order-margin protection replays this field. The iOS fee has
-        # already been borne by reduced recharge credit, so set the remaining fee
-        # reserve to zero to avoid charging the same channel cost a second time.
+        # The customer-facing iOS recharge haircut already covers the channel
+        # cost. Downstream order-margin protection must not charge it again.
         payload['platform_fee_percent'] = '0.00'
         payload['credited_amount_yuan'] = str(net)
         payload['credited_diamonds'] = format_diamonds(net)
