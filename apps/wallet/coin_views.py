@@ -30,9 +30,12 @@ from .diamonds import (
     qyuan,
     yuan_to_coin_units,
 )
-from .ios_credit import configured_wallet_credit, decorate_wallet_recharge_payload
+from .ios_credit import IOS_DIAMONDS_PER_YUAN, configured_wallet_credit, decorate_wallet_recharge_payload
 from .models import ClientWallet, RechargeOrder, RechargeProduct
 from .services import mark_recharge_paid
+
+
+IOS_RECHARGE_AMOUNTS = {Decimal('10.00'), Decimal('30.00')}
 
 
 class CoinRechargeCreateSerializer(serializers.Serializer):
@@ -119,9 +122,14 @@ def recharge_config(request):
 
     fee_percent = platform_fee_percent(platform)
 
-    # These are UI shortcuts only. When a matching legacy RechargeProduct is
-    # present, expose its real id so old published clients can still submit it.
-    quick_amounts = [10, 30, 50, 100, 200, 500, 1000]
+    # iOS keeps only two simple fixed tiers and does not expose free-form recharge.
+    # Android/other platforms retain the existing shortcut list and custom amount.
+    if platform == 'ios':
+        quick_amounts = [10, 30]
+        minimum, maximum = Decimal('10.00'), Decimal('30.00')
+    else:
+        quick_amounts = [10, 30, 50, 100, 200, 500, 1000]
+
     legacy_products = {
         qyuan(product.amount): product
         for product in RechargeProduct.objects.filter(is_active=True)
@@ -150,12 +158,15 @@ def recharge_config(request):
         'wechat_coin_units_per_yuan': coin_units_per_yuan(),
         'min_amount_yuan': str(minimum),
         'max_amount_yuan': str(maximum),
-        'amount_step_yuan': '0.10',
+        'amount_step_yuan': '10.00' if platform == 'ios' else '0.10',
         'diamond_step': '1.0',
         'client_platform': platform,
         'platform_fee_percent': str(fee_percent),
         'target_net_margin_percent': str(target_net_margin_percent()),
         'fee_deducted_from_credit': platform == 'ios',
+        'custom_amount_enabled': platform != 'ios',
+        'allowed_amounts_yuan': ['10.00', '30.00'] if platform == 'ios' else None,
+        'ios_diamonds_per_yuan': str(IOS_DIAMONDS_PER_YUAN) if platform == 'ios' else None,
         'results': results,
     })
 
@@ -166,13 +177,24 @@ def recharge_create(request):
     serializer = CoinRechargeCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     platform = request_client_platform(request)
+    amount = qyuan(serializer.validated_data['amount_yuan'])
+
+    if platform == 'ios' and amount not in IOS_RECHARGE_AMOUNTS:
+        raise ValidationError({'amount_yuan': 'iOS仅支持10元或30元固定充值档位，不支持自定义金额'})
+
     try:
         recharge, payload = create_coin_recharge(
             request.user,
-            serializer.validated_data['amount_yuan'],
+            amount,
             serializer.validated_data.get('code') or '',
             platform,
         )
+        if platform == 'ios':
+            stored = dict(recharge.notify_payload or {})
+            stored['ios_credit_diamonds_per_yuan'] = str(IOS_DIAMONDS_PER_YUAN)
+            stored['ios_fixed_credit'] = True
+            recharge.notify_payload = stored
+            recharge.save(update_fields=['notify_payload', 'updated_at'])
     except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
         return virtual_payment_error_response(exc)
     except APIException:
