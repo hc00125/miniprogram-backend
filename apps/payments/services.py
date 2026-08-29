@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -7,9 +8,12 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from apps.orders.models import Order
+from apps.orders.models import Order, OrderStatusLog
+from apps.orders.renewals import finalize_paid_renewal
 from .models import Payment, PaymentCallbackLog, Refund
 from .wechatpay import WechatPayClient, WechatPayError
+
+logger = logging.getLogger(__name__)
 
 PAYMENT_EXPIRE_MINUTES = 10
 CLOSABLE_PAYMENT_STATUSES = {'created', 'paying'}
@@ -59,7 +63,7 @@ def create_payment(order_no, channel):
     order = Order.objects.filter(order_no=order_no).first()
     if not order:
         raise ValidationError({'detail': '订单不存在'})
-    if order.paid or order.status == Order.STATUS_COMPLETED:
+    if order.paid or order.status in {Order.STATUS_READY_TO_START, Order.STATUS_IN_PROGRESS, Order.STATUS_COMPLETED}:
         raise ValidationError({'detail': '订单已支付'})
     if order.status != Order.STATUS_PENDING_PAYMENT:
         raise ValidationError({'detail': '当前订单状态不可支付'})
@@ -128,7 +132,7 @@ def create_miniprogram_payment(order_no, user=None, code=None, openid=None):
     if not order:
         raise ValidationError({'detail': '订单不存在'})
     ensure_order_owner(order, user)
-    if order.paid or order.status == Order.STATUS_COMPLETED:
+    if order.paid or order.status in {Order.STATUS_READY_TO_START, Order.STATUS_IN_PROGRESS, Order.STATUS_COMPLETED}:
         raise ValidationError({'detail': '订单已支付'})
     if order.status != Order.STATUS_PENDING_PAYMENT:
         raise ValidationError({'detail': '当前订单状态不可支付'})
@@ -174,7 +178,6 @@ def create_miniprogram_payment(order_no, user=None, code=None, openid=None):
         if not existing.third_order_no:
             raise ValidationError({'detail': '支付单正在生成，请稍后重试'})
         return existing, _build_real_request_payment(client, existing)
-
     payment = Payment.objects.create(
         payment_no=generate_payment_no(),
         order=order,
@@ -216,13 +219,58 @@ def create_miniprogram_payment(order_no, user=None, code=None, openid=None):
 
 @transaction.atomic
 def mark_payment_paid(payment, third_trade_no='', payload=None):
+    """把支付单标记为已支付并推进订单状态流转。
+
+    锁序说明（防死锁分析）：全项目统一“先锁 order、再锁 payment”。本函数、
+    virtualpay.query_virtual_payment、wallet.pay_order_with_balance 都遵守该
+    顺序，因此不存在跨事务循环等待。pay_order_with_balance 在同一事务内新建
+    balance Payment 后调用本函数：order 行锁已由同一事务持有（可重入），新建
+    的 Payment 行在提交前对其他事务不可见，这里的 select_for_update 只是同
+    事务重入，同样安全。
+    """
+    # 注意：Payment.order 是 to_field='order_no' 的外键，payment.order_id 的值
+    # 是订单号字符串，必须按 order_no 查找。
+    order = Order.objects.select_for_update().get(order_no=payment.order_id)
     payment = (
         Payment.objects
         .select_for_update()
-        .select_related('order')
         .get(pk=payment.pk)
     )
+    payment.order = order
     if payment.status == 'paid':
+        return payment
+
+    # 在 order 行锁保护下判定，防止迟到支付双扣：已 closed 的支付单（例如订单
+    # 改用余额支付时被关闭的虚拟支付单）在订单已支付后又收到远端“已支付”结果
+    # 时，绝不能重新标记本单、覆盖 order.payment_method 或重发下游通知。
+    if order.paid:
+        now = timezone.now()
+        current_payload = payment.notify_payload if isinstance(payment.notify_payload, dict) else {}
+        payment.notify_payload = {
+            **current_payload,
+            'late_capture': {
+                'third_trade_no': third_trade_no or payment.third_trade_no,
+                'detected_at': now.isoformat(),
+                'reason': '订单已由其他支付单支付，拒绝重复标记本支付单',
+                'order_payment_method': order.payment_method,
+            },
+        }
+        update_fields = ['notify_payload', 'updated_at']
+        if payment.status == 'paying':
+            payment.status = 'closed'
+            update_fields.append('status')
+        payment.updated_at = now
+        payment.save(update_fields=update_fields)
+        logger.critical(
+            '[支付] 捕获迟到支付：订单已由其他支付单支付，拒绝重复标记 '
+            'payment_no=%s channel=%s order_no=%s order_payment_method=%s third_trade_no=%s；'
+            '本单不 ack 发货，微信将对未发货虚拟单自动退款',
+            payment.payment_no,
+            payment.channel,
+            order.order_no,
+            order.payment_method,
+            third_trade_no or payment.third_trade_no,
+        )
         return payment
 
     paid_at = timezone.now()
@@ -240,14 +288,41 @@ def mark_payment_paid(payment, third_trade_no='', payload=None):
     ])
 
     order = payment.order
+    old_status = order.status
     order.paid = True
     order.payment_method = payment.channel
     order.payment_confirmed_at = paid_at
     order_update_fields = ['paid', 'payment_method', 'payment_confirmed_at']
-    if order.status == Order.STATUS_PENDING_PAYMENT:
-        order.status = Order.STATUS_COMPLETED
-        order_update_fields.append('status')
-    order.save(update_fields=order_update_fields)
+
+    if order.order_type == Order.ORDER_TYPE_RENEWAL:
+        order.save(update_fields=order_update_fields)
+        finalize_paid_renewal(order, paid_at=paid_at)
+    else:
+        if order.status == Order.STATUS_PENDING_PAYMENT:
+            order.status = (
+                Order.STATUS_WAITING
+                if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
+                else Order.STATUS_READY_TO_START
+            )
+            order_update_fields.append('status')
+        order.save(update_fields=order_update_fields)
+        if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+            from apps.orders.designations import create_targeted_designation
+            from apps.orders.targeted_notifications import notify_paid_targeted_order
+
+            create_targeted_designation(order)
+            transaction.on_commit(lambda order_id=order.id: notify_paid_targeted_order(order_id))
+        if old_status != order.status:
+            OrderStatusLog.objects.create(
+                order=order,
+                from_status=old_status,
+                to_status=order.status,
+                reason=(
+                    '老板付款成功，等待指定陪玩师确认服务'
+                    if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
+                    else '老板付款成功，等待陪玩开打'
+                ),
+            )
     return payment
 
 

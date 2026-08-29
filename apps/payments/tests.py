@@ -18,7 +18,7 @@ from apps.orders.boss_views import cancel_order as cancel_order_view
 from apps.orders.boss_views import self_confirm_payment
 from apps.orders.models import Order, OrderStatusLog
 from .models import Payment
-from .services import close_payment, close_unpaid_payments_for_order
+from .services import close_payment, close_unpaid_payments_for_order, mark_payment_paid
 from .wechatpay import WechatPayClient, WechatPaySignatureError
 
 
@@ -219,7 +219,7 @@ class PaymentCloseFlowTests(TestCase):
         self.assertEqual(paid.status, 'paid')
 
     @override_settings(ENABLE_MOCK_PAYMENT=True)
-    def test_manual_payment_confirmation_marks_order_completed_and_logs_status(self):
+    def test_manual_payment_confirmation_marks_order_ready_to_start(self):
         order = self.create_order(status=Order.STATUS_PENDING_PAYMENT)
         request = self.factory.post('/api/boss/orders/ORDER001/self-confirm-payment', {'actual_amount': 120}, format='json')
         force_authenticate(request, user=self.user)
@@ -229,14 +229,26 @@ class PaymentCloseFlowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         order.refresh_from_db()
         self.assertTrue(order.paid)
-        self.assertEqual(order.status, Order.STATUS_COMPLETED)
+        self.assertEqual(order.status, Order.STATUS_READY_TO_START)
         self.assertEqual(order.payment_method, 'self_confirm')
         self.assertEqual(order.total_amount, 120)
         self.assertTrue(
             OrderStatusLog.objects.filter(
                 order=order,
                 from_status=Order.STATUS_PENDING_PAYMENT,
-                to_status=Order.STATUS_COMPLETED,
-                reason='手动确认支付',
+                to_status=Order.STATUS_READY_TO_START,
+                reason__contains='等待陪玩开打',
             ).exists()
         )
+
+    def test_mark_payment_paid_moves_order_to_ready_to_start(self):
+        order = self.create_order(status=Order.STATUS_PENDING_PAYMENT)
+        payment = self.create_payment(order)
+
+        mark_payment_paid(payment, third_trade_no='WX001', payload={'ok': True})
+
+        order.refresh_from_db()
+        payment.refresh_from_db()
+        self.assertTrue(order.paid)
+        self.assertEqual(order.status, Order.STATUS_READY_TO_START)
+        self.assertEqual(payment.status, 'paid')

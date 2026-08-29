@@ -14,6 +14,17 @@
 {% block content %}
 <div id="content-main">
   {% include "admin/app_list.html" with app_list=app_list show_changelinks=True %}
+
+  {# ── 数据报表快捷入口 ── #}
+  <div class="module" style="margin-top:18px;">
+    <h2>📊 数据报表</h2>
+    <div style="padding:14px 18px;display:flex;flex-wrap:wrap;gap:12px;">
+      <a href="{% url 'admin:accounts_clientprofile_boss_consumption' %}"
+         style="display:inline-flex;align-items:center;gap:8px;padding:10px 22px;border-radius:999px;background:#1a5f7a;color:#fff;font-weight:700;font-size:14px;text-decoration:none;">
+        👑 老板消费查询
+      </a>
+    </div>
+  </div>
 </div>
 {% endblock %}
 

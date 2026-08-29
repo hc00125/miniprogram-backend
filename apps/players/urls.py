@@ -1,18 +1,38 @@
 from django.urls import path
 
-from . import views
+from apps.common.account_guard import require_operational
+
+from . import application_views, cancellation_views, designation_views, escort_views, order_summary_views, payment_order_views, permission_views, profile_views, public_input_views, room_views, service_listing_views, views
 
 urlpatterns = [
-    path('list', views.list),
-    path('online-status', views.update_online_status),
+    path('list', profile_views.public_list),
+    path('ratings/me', views.my_ratings),
+    path('<int:player_id>/ratings', views.player_ratings),
+    path('online-status', require_operational(permission_views.update_online_status)),
     path('logout', views.logout),
     path('me', views.me),
-    path('apply', views.apply),
+    path('order-notice-config', views.order_notice_config),
+    path('order-notice-subscription', views.confirm_order_notice_subscription),
+    path('profile-settings', require_operational(profile_views.profile_settings)),
+    path('service-listings', require_operational(service_listing_views.service_listings)),
+    path('service-listings/<int:listing_id>', require_operational(service_listing_views.service_listing_detail)),
+    path('escort-qualification', require_operational(escort_views.escort_qualification)),
+    path('apply', require_operational(application_views.apply)),
+    path('apply/audio', require_operational(public_input_views.upload_application_audio)),
+    path('apply/audio/security-status', public_input_views.application_audio_security_status),
     path('apply/status', views.apply_status),
-    path('available-orders', views.available_orders),
-    path('grab', views.grab),
-    path('my-orders', views.my_orders),
-    path('order/<str:order_no>', views.order_detail),
+    path('available-orders', permission_views.available_orders),
+    path('available-orders-summary', permission_views.available_orders_summary),
+    path('designation-invitations', designation_views.invitations),
+    path('order/<str:order_no>/designation/accept', require_operational(designation_views.accept)),
+    path('order/<str:order_no>/designation/decline', designation_views.decline),
+    path('grab', require_operational(permission_views.grab)),
+    path('my-orders', order_summary_views.my_orders),
+    path('order/<str:order_no>', payment_order_views.order_detail),
+    path('order/<str:order_no>/kook-room', public_input_views.set_kook_room),
+    path('order/<str:order_no>/room-entry/confirm', room_views.confirm_room_entry),
+    path('order/<str:order_no>/cancel-preview', cancellation_views.cancel_preview),
+    path('order/<str:order_no>/cancel', cancellation_views.cancel_order),
     path('start-timer', views.start_timer_view),
     path('complete', views.complete),
     path('order/<str:order_no>/pause', views.pause),

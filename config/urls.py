@@ -6,6 +6,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
+from apps.common.wechat_callbacks import content_security_callback
+
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -16,10 +18,15 @@ def health(_request):
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/health', health),
+    path('api/wechat/content-security-callback', content_security_callback),
     path('api/client/', include('apps.accounts.urls')),
+    path('api/client/wallet/', include('apps.wallet.urls')),
+    path('api/catalog/', include('apps.catalog.urls')),
     path('api/boss/', include('apps.orders.boss_urls')),
     path('api/player/', include('apps.players.urls')),
+    path('api/player/earnings/', include('apps.earnings.urls')),
     path('api/pay/', include('apps.payments.urls')),
+    path('api/support/', include('apps.support.urls')),
     path('api/chat/', include('apps.chat.urls')),
     path('api/admin/', include('apps.admin_api.urls')),
 ]

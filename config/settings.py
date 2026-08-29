@@ -37,6 +37,19 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-produ
 DEBUG = env_bool('DJANGO_DEBUG', 'true')
 ALLOWED_HOSTS = [host.strip() for host in os.environ.get('DJANGO_ALLOWED_HOSTS', '*').split(',') if host.strip()]
 
+# 微信 UGC 内容安全：生产默认开启；本地开发/CI 可显式关闭。
+WECHAT_CONTENT_SECURITY_ENABLED = env_bool('WECHAT_CONTENT_SECURITY_ENABLED', 'false' if DEBUG else 'true')
+WECHAT_CONTENT_SECURITY_HTTP_TIMEOUT = env_int('WECHAT_CONTENT_SECURITY_HTTP_TIMEOUT', '8')
+
+# 维护模式 — 开启后所有 API 返回 503（除健康检查外）
+MAINTENANCE_MODE = env_bool('MAINTENANCE_MODE', 'false')
+
+# 功能开关 — 停用指定打手功能（加入阵容按钮变灰）
+FEATURE_DESIGNATE_DISABLED = env_bool('FEATURE_DESIGNATE_DISABLED', 'false')
+
+# 陪玩共享服务上架审核：默认人工审核；开启后仅符合等级/权限规则的普通服务自动上架。
+PLAYER_SERVICE_LISTING_AUTO_APPROVE = env_bool('PLAYER_SERVICE_LISTING_AUTO_APPROVE', 'false')
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -52,6 +65,10 @@ INSTALLED_APPS = [
     'apps.players',
     'apps.orders',
     'apps.payments',
+    'apps.refunds.apps.RefundsConfig',
+    'apps.earnings.apps.EarningsConfig',
+    'apps.wallet.apps.WalletConfig',
+    'apps.support.apps.SupportConfig',
     'apps.chat',
     'apps.admin_api',
 ]
@@ -69,6 +86,7 @@ except ImportError:
     pass
 
 MIDDLEWARE = [
+    'apps.common.maintenance.MaintenanceModeMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -104,7 +122,8 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
 if DATABASE_URL:
-    from urllib.parse import urlparse, unquote
+    from urllib.parse import unquote, urlparse
+
     u = urlparse(DATABASE_URL)
     engine_map = {
         'postgres': 'django.db.backends.postgresql',
@@ -162,21 +181,13 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if env_bool('SECUR
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'apps.accounts.authentication.LegacyPlayerTokenAuthentication',
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'apps.accounts.authentication.LenientJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.AllowAny',
     ),
     'DEFAULT_PAGINATION_CLASS': 'apps.common.pagination.OptionalPageNumberPagination',
     'PAGE_SIZE': env_int('DRF_PAGE_SIZE', '20'),
-    # 'DEFAULT_THROTTLE_CLASSES': (
-    #     'rest_framework.throttling.AnonRateThrottle',
-    #     'rest_framework.throttling.UserRateThrottle',
-    # ),
-    # 'DEFAULT_THROTTLE_RATES': {
-    #     'anon': os.environ.get('DRF_THROTTLE_ANON', '300/min'),
-    #     'user': os.environ.get('DRF_THROTTLE_USER', '600/min'),
-    # },
     'COERCE_DECIMAL_TO_STRING': False,
     'EXCEPTION_HANDLER': 'apps.common.exceptions.compat_exception_handler',
 }
@@ -199,6 +210,7 @@ SPECTACULAR_SETTINGS = {
 WECHAT_APP_ID = os.environ.get('WECHAT_APP_ID', '')
 WECHAT_APP_SECRET = os.environ.get('WECHAT_APP_SECRET', '')
 ENABLE_DEV_OPENID_LOGIN = env_bool('ENABLE_DEV_OPENID_LOGIN', 'false')
+WECHAT_PHONE_NUMBER_HTTP_TIMEOUT = float(os.environ.get('WECHAT_PHONE_NUMBER_HTTP_TIMEOUT', '8'))
 
 # Local development can keep mock payment enabled. Production must explicitly set it to false.
 ENABLE_MOCK_PAYMENT = env_bool('ENABLE_MOCK_PAYMENT', 'true')
@@ -214,3 +226,53 @@ WECHATPAY_NOTIFY_URL = os.environ.get('WECHATPAY_NOTIFY_URL', '')
 WECHATPAY_DESCRIPTION_PREFIX = os.environ.get('WECHATPAY_DESCRIPTION_PREFIX', '偷吃俱乐部-')
 WECHATPAY_HTTP_TIMEOUT = float(os.environ.get('WECHATPAY_HTTP_TIMEOUT', '10'))
 WECHATPAY_TIMESTAMP_TOLERANCE_SECONDS = int(os.environ.get('WECHATPAY_TIMESTAMP_TOLERANCE_SECONDS', '300'))
+
+# WeChat Mini Program Virtual Payment / XPay.
+# env: 1=sandbox, 0=production. AppKey must only exist on the backend.
+WECHAT_VIRTUALPAY_ENABLED = env_bool('WECHAT_VIRTUALPAY_ENABLED', 'false')
+WECHAT_VIRTUALPAY_ENV = env_int('WECHAT_VIRTUALPAY_ENV', '1')
+WECHAT_VIRTUALPAY_OFFER_ID = os.environ.get('WECHAT_VIRTUALPAY_OFFER_ID', '')
+WECHAT_VIRTUALPAY_APP_KEY = os.environ.get('WECHAT_VIRTUALPAY_APP_KEY', '')
+WECHAT_VIRTUALPAY_HTTP_TIMEOUT = float(os.environ.get('WECHAT_VIRTUALPAY_HTTP_TIMEOUT', '10'))
+WECHAT_VIRTUALPAY_RECHARGE_MIN_YUAN = os.environ.get('WECHAT_VIRTUALPAY_RECHARGE_MIN_YUAN', '0.10')
+WECHAT_VIRTUALPAY_RECHARGE_MAX_YUAN = os.environ.get('WECHAT_VIRTUALPAY_RECHARGE_MAX_YUAN', '5000.00')
+
+# Sandbox-only fallback for legacy short_series_goods test items. New checkout uses short_series_coin.
+WECHAT_VIRTUALPAY_SANDBOX_PRODUCT_ID = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX_PRODUCT_ID', 'escort_15')
+WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN = env_int('WECHAT_VIRTUALPAY_SANDBOX_PRICE_FEN', '1500')
+WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD = os.environ.get('WECHAT_VIRTUALPAY_SANDBOX_PACKAGE_KEYWORD', '四套四弹')
+
+# WeChat one-time subscription message for designated-player invitations.
+DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_ID = 'AhMjmuvib1HCABMK48XFaIUNWI2vKfjTSUFX-hXHNlw'
+DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS = (
+    '{"amount1":"{total_amount}","thing2":"{notification_note}",'
+    '"time3":"{created_at}","character_string4":"{order_no}",'
+    '"thing5":"{package_name}"}'
+)
+WECHAT_PLAYER_ORDER_TEMPLATE_ID = (
+    os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_ID', '').strip()
+    or DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_ID
+)
+WECHAT_PLAYER_ORDER_TEMPLATE_PAGE = (
+    os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_PAGE', '').strip()
+    or 'pages/player/grab/index'
+)
+WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS = (
+    os.environ.get('WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS', '').strip()
+    or DEFAULT_WECHAT_PLAYER_ORDER_TEMPLATE_FIELDS
+)
+WECHAT_SUBSCRIBE_MESSAGE_MINIPROGRAM_STATE = os.environ.get('WECHAT_SUBSCRIBE_MESSAGE_MINIPROGRAM_STATE', 'formal')
+
+# Tencent Cloud SMS. Disabled by default until the SMS app/sign/template are approved.
+TENCENT_SMS_ENABLED = env_bool('TENCENT_SMS_ENABLED', 'false')
+TENCENT_SMS_SECRET_ID = os.environ.get('TENCENT_SMS_SECRET_ID', '')
+TENCENT_SMS_SECRET_KEY = os.environ.get('TENCENT_SMS_SECRET_KEY', '')
+TENCENT_SMS_SDK_APP_ID = os.environ.get('TENCENT_SMS_SDK_APP_ID', '')
+TENCENT_SMS_SIGN_NAME = os.environ.get('TENCENT_SMS_SIGN_NAME', '')
+TENCENT_SMS_TEMPLATE_ID = os.environ.get('TENCENT_SMS_TEMPLATE_ID', '')
+TENCENT_SMS_TEMPLATE_PARAMS = os.environ.get('TENCENT_SMS_TEMPLATE_PARAMS', '[]')
+TENCENT_SMS_REGION = os.environ.get('TENCENT_SMS_REGION', 'ap-guangzhou')
+TENCENT_SMS_HTTP_TIMEOUT = env_int('TENCENT_SMS_HTTP_TIMEOUT', '8')
+
+# 人民币 → 鱼干兑换比例：每 1 元 RMB = ? 鱼干
+FISH_CRACKER_EXCHANGE_RATE = env_int('FISH_CRACKER_EXCHANGE_RATE', '10')

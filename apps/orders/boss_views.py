@@ -10,6 +10,7 @@ from apps.catalog.models import Addon, Package, PackageGroup, PackageImage, Pack
 from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PlayerTypeSerializer
 from apps.common.money import money
 from apps.orders.models import CartItem, Order, OrderItem, OrderStatusLog, Rating
+from apps.orders.renewals import create_renewal_order, finalize_paid_renewal
 from apps.orders.serializers import (
     BossOrderDetailSerializer,
     BossOrderListSerializer,
@@ -17,6 +18,7 @@ from apps.orders.serializers import (
     CartItemQuantitySerializer,
     CartItemSerializer,
     OrderCreateSerializer,
+    OrderRenewalCreateSerializer,
     RatingCreateSerializer,
 )
 from apps.orders.services import cancel_order as cancel_order_service, create_order as create_order_service, pause_order, resume_order
@@ -29,6 +31,14 @@ def order_items_prefetch():
         'items',
         queryset=OrderItem.objects.select_related('package', 'spec').order_by('sort_order', 'id'),
         to_attr='prefetched_items',
+    )
+
+
+def renewal_orders_prefetch():
+    return Prefetch(
+        'renewal_orders',
+        queryset=Order.objects.select_related('parent_order').order_by('renewal_index', 'id'),
+        to_attr='prefetched_renewal_orders',
     )
 
 
@@ -47,10 +57,17 @@ def forbidden_response():
 
 
 def get_order_or_response(order_no):
-    order = Order.objects.filter(order_no=order_no).select_related('package', 'addon', 'boss_user').prefetch_related(
-        'order_players__player__player_type',
-        order_items_prefetch(),
-    ).first()
+    order = (
+        Order.objects
+        .filter(order_no=order_no)
+        .select_related('package', 'addon', 'boss_user', 'parent_order')
+        .prefetch_related(
+            'order_players__player__player_type',
+            order_items_prefetch(),
+            renewal_orders_prefetch(),
+        )
+        .first()
+    )
     if not order:
         return None, Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
     return order, None
@@ -59,7 +76,10 @@ def get_order_or_response(order_no):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def packages(request):
-    qs = Package.objects.filter(is_active=True).select_related('group').prefetch_related(
+    qs = Package.objects.filter(
+        is_active=True,
+        selling_mode=Package.SELLING_MODE_PUBLIC,
+    ).select_related('group', 'group__game_service').prefetch_related(
         Prefetch(
             'specs',
             queryset=PackageSpec.objects.filter(is_active=True).order_by('sort_order', 'id'),
@@ -101,6 +121,7 @@ def online_players(request):
     active_orders = Order.objects.filter(
         order_players__player=OuterRef('pk'),
         status=Order.STATUS_IN_PROGRESS,
+        order_type=Order.ORDER_TYPE_NORMAL,
     )
     players = Player.objects.filter(is_online=True).select_related('player_type').annotate(
         has_active_order=Exists(active_orders),
@@ -130,8 +151,30 @@ def create_order(request):
         'order_no': order.order_no,
         'status': order.status,
         'total_price': order.total_amount,
-        'message': '订单创建成功，等待打手接单',
+        'message': '订单已自动派发到抢单大厅，等待陪玩接单',
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_renewal(request, order_no):
+    serializer = OrderRenewalCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    renewal, created = create_renewal_order(
+        order_no,
+        request.user,
+        serializer.validated_data['units'],
+    )
+    return Response({
+        'order_no': renewal.order_no,
+        'parent_order_no': renewal.parent_order.order_no,
+        'renewal_index': renewal.renewal_index,
+        'booked_hours': renewal.booked_hours,
+        'total_amount': renewal.total_amount,
+        'status': renewal.status,
+        'created': created,
+        'message': '续单已创建，请完成付款' if created else '已有待支付续单，请先完成付款',
+    }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -148,17 +191,31 @@ def order_detail(request, order_no):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def boss_orders(request, boss_wechat):
+    filters = {'order_type': Order.ORDER_TYPE_NORMAL}
     if is_admin_user(request.user):
-        qs = Order.objects.filter(boss_wechat=boss_wechat).select_related('package').prefetch_related(order_items_prefetch()).order_by('-created_at')[:20]
+        filters['boss_wechat'] = boss_wechat
     else:
-        qs = Order.objects.filter(boss_user=request.user).select_related('package').prefetch_related(order_items_prefetch()).order_by('-created_at')[:20]
+        filters['boss_user'] = request.user
+    qs = (
+        Order.objects
+        .filter(**filters)
+        .select_related('package')
+        .prefetch_related(order_items_prefetch(), renewal_orders_prefetch())
+        .order_by('-created_at')[:20]
+    )
     return Response(BossOrderListSerializer(qs, many=True).data)
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def my_orders(request):
-    qs = Order.objects.filter(boss_user=request.user).select_related('package').prefetch_related(order_items_prefetch()).order_by('-created_at')[:50]
+    qs = (
+        Order.objects
+        .filter(boss_user=request.user, order_type=Order.ORDER_TYPE_NORMAL)
+        .select_related('package')
+        .prefetch_related(order_items_prefetch(), renewal_orders_prefetch())
+        .order_by('-created_at')[:50]
+    )
     return Response(BossOrderListSerializer(qs, many=True).data)
 
 
@@ -170,9 +227,35 @@ def cancel_order(request, order_no):
         return error_response
     if not can_access_order(order, request.user):
         return forbidden_response()
-    if order.status not in {Order.STATUS_WAITING, Order.STATUS_IN_PROGRESS}:
-        return Response({'detail': '当前状态无法取消'}, status=status.HTTP_400_BAD_REQUEST)
+    if order.status not in {Order.STATUS_WAITING, Order.STATUS_PENDING_PAYMENT}:
+        return Response(
+            {'detail': '已付款或已开打订单请联系管理员处理退款，不能直接取消'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     reason = request.data.get('reason')
+
+    if order.paid:
+        from apps.orders.targeted_refund_fixes import cancel_targeted_order as targeted_cancel
+        from apps.payments.refund_integrity import ensure_payment_refund
+
+        if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+            targeted_cancel(order, reason or '订单取消', request.user)
+        else:
+            payment = order.payments.filter(status='paid').order_by('-paid_at').first()
+            if payment:
+                ensure_payment_refund(payment.payment_no, payment.amount,
+                                      reason=reason or '订单取消', operator=request.user)
+            order.status = Order.STATUS_CANCELLED
+            order.canceled_at = timezone.now()
+            order.cancel_reason = reason
+            order.save(update_fields=['status', 'canceled_at', 'cancel_reason'])
+            OrderStatusLog.objects.create(
+                order=order, from_status=order.STATUS_WAITING,
+                to_status=order.status, operator=request.user,
+                reason=reason or '订单取消',
+            )
+        return Response({'message': '订单已取消，已退款到钱包', 'order_no': order_no})
+
     close_unpaid_payments_for_order(order, reason=reason or '订单取消')
     cancel_order_service(order, reason, request.user)
     return Response({'message': '订单已取消', 'order_no': order_no})
@@ -186,6 +269,8 @@ def rate_player(request, order_no):
         return error_response
     if not can_access_order(order, request.user):
         return forbidden_response()
+    if order.order_type != Order.ORDER_TYPE_NORMAL:
+        return Response({'detail': '续单不单独评价，请在原订单完成后评价'}, status=status.HTTP_400_BAD_REQUEST)
     if order.status != Order.STATUS_COMPLETED or not order.paid:
         return Response({'detail': '只能评价已完成且已支付的订单'}, status=status.HTTP_400_BAD_REQUEST)
     serializer = RatingCreateSerializer(data=request.data)
@@ -217,19 +302,34 @@ def self_confirm_payment(request, order_no):
         return Response({'detail': '生产环境仅管理员可以手动确认支付'}, status=status.HTTP_403_FORBIDDEN)
     if order.status != Order.STATUS_PENDING_PAYMENT:
         return Response({'detail': '订单状态不正确'}, status=status.HTTP_400_BAD_REQUEST)
+
     old_status = order.status
     actual_amount = request.data.get('actual_amount')
     if actual_amount is not None and money(actual_amount) > 0:
-        order.total_amount = money(actual_amount)
+        order.total_amount = float(money(actual_amount))
     elif not order.total_amount:
         order.total_amount = order.total_price_per_hour
+
+    paid_at = timezone.now()
     order.paid = True
-    order.status = Order.STATUS_COMPLETED
     order.payment_method = 'self_confirm'
-    order.payment_confirmed_at = timezone.now()
-    order.save(update_fields=['total_amount', 'paid', 'status', 'payment_method', 'payment_confirmed_at'])
-    OrderStatusLog.objects.create(order=order, from_status=old_status, to_status=order.status, operator=request.user, reason='手动确认支付')
-    return Response({'message': '支付确认成功', 'order_no': order_no, 'status': order.status})
+    order.payment_confirmed_at = paid_at
+    if order.order_type == Order.ORDER_TYPE_RENEWAL:
+        order.save(update_fields=['total_amount', 'paid', 'payment_method', 'payment_confirmed_at'])
+        order = finalize_paid_renewal(order, paid_at=paid_at, operator=request.user)
+        message = '续单支付确认成功，时长已计入原订单'
+    else:
+        order.status = Order.STATUS_READY_TO_START
+        order.save(update_fields=['total_amount', 'paid', 'status', 'payment_method', 'payment_confirmed_at'])
+        OrderStatusLog.objects.create(
+            order=order,
+            from_status=old_status,
+            to_status=order.status,
+            operator=request.user,
+            reason='手动确认支付，等待陪玩开打',
+        )
+        message = '支付确认成功，等待陪玩开打'
+    return Response({'message': message, 'order_no': order_no, 'status': order.status})
 
 
 @api_view(['POST'])
@@ -263,7 +363,6 @@ def cart(request):
         ).order_by('-updated_at')
         return Response(CartItemSerializer(qs, many=True).data)
 
-    # POST — 加入购物车
     serializer = CartItemCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
@@ -271,6 +370,8 @@ def cart(request):
     package = Package.objects.filter(id=data['package_id'], is_active=True).first()
     if not package:
         return Response({'detail': '商品不存在或已下架'}, status=status.HTTP_404_NOT_FOUND)
+    if package.selling_mode == Package.SELLING_MODE_PLAYER_DESIGNATED:
+        return Response({'detail': '陪玩师专属商品请直接下单，不支持加入购物车'}, status=status.HTTP_400_BAD_REQUEST)
 
     spec = None
     spec_id = data.get('spec_id')
@@ -279,14 +380,11 @@ def cart(request):
         if not spec:
             return Response({'detail': '规格不存在或不属于该商品'}, status=status.HTTP_404_NOT_FOUND)
 
-    # 价格以后端的商品/规格价格为准
     actual_price = spec.price if spec else package.base_price
-
     spec_id_snapshot = str(spec.id) if spec else ''
     spec_name = data.get('spec_name') or (spec.name if spec else '')
     spec_display_name = data.get('spec_display_name') or ''
 
-    # 查找是否已有同商品+同规格的购物车项
     existing = CartItem.objects.filter(
         user=request.user,
         package=package,
@@ -326,7 +424,6 @@ def cart_item(request, item_id):
         item.delete()
         return Response({'message': '已删除'})
 
-    # PUT — 修改数量
     serializer = CartItemQuantitySerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     item.quantity = serializer.validated_data['quantity']
