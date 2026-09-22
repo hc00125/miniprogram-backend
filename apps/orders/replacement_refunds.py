@@ -1,6 +1,7 @@
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
+from .kook_notifications import order_event_boundary
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -175,6 +176,7 @@ def _cancel_designations(root, now):
 
 
 @transaction.atomic
+@order_event_boundary
 def cancel_remaining_and_refund(order, operator=None):
     """Cancel the active replacement flow and refund unfulfilled service to wallet.
 

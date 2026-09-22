@@ -1,5 +1,77 @@
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.conf import settings
+import uuid
+
+
+def complaint_number():
+    return 'CP' + uuid.uuid4().hex.upper()
+
+
+class Complaint(models.Model):
+    CATEGORY_CHOICES = [(x, x) for x in ('service', 'fee', 'account', 'other')]
+    STATUS_CHOICES = [(x, x) for x in ('pending', 'processing', 'awaiting_user', 'resolved', 'closed')]
+    number = models.CharField(max_length=34, default=complaint_number, unique=True, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='complaints')
+    order = models.ForeignKey('orders.Order', null=True, blank=True, on_delete=models.PROTECT, related_name='complaints')
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
+    description = models.TextField()
+    contact = models.CharField(max_length=100, blank=True, default='')
+    client_request_id = models.CharField(max_length=64)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
+    assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='assigned_complaints')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        constraints = [models.UniqueConstraint(fields=['user', 'client_request_id'], name='unique_complaint_request')]
+
+    def __str__(self):
+        return self.number
+
+
+
+class ComplaintMessage(models.Model):
+    complaint = models.ForeignKey(Complaint, on_delete=models.PROTECT, related_name='messages')
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    content = models.TextField()
+    is_internal = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at', 'pk']
+
+
+class ComplaintAttachment(models.Model):
+    uploader = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    complaint = models.ForeignKey(Complaint, null=True, blank=True, on_delete=models.PROTECT, related_name='attachments')
+    message = models.ForeignKey(ComplaintMessage, null=True, blank=True, on_delete=models.PROTECT, related_name='attachments')
+    name = models.CharField(max_length=150)
+    storage_name = models.CharField(max_length=100, unique=True, editable=False)
+    content_type = models.CharField(max_length=30)
+    size = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+
+class ComplaintStatusHistory(models.Model):
+    complaint = models.ForeignKey(Complaint, on_delete=models.PROTECT, related_name='status_history')
+    from_status = models.CharField(max_length=20, blank=True)
+    to_status = models.CharField(max_length=20, choices=Complaint.STATUS_CHOICES)
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    reason = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at', 'pk']
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('状态记录不可修改')
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('状态记录不可删除')
 
 
 class SupportChannel(models.Model):

@@ -6,6 +6,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
+from apps.admin_api.daily_billing import daily_billing_view
 from apps.common.wechat_callbacks import content_security_callback
 
 
@@ -16,8 +17,10 @@ def health(_request):
 
 
 urlpatterns = [
+    path('admin/daily-billing/', admin.site.admin_view(daily_billing_view), name='admin_daily_billing'),
     path('admin/', admin.site.urls),
     path('api/health', health),
+    path('', include('apps.kook_integration.urls')),
     path('api/wechat/content-security-callback', content_security_callback),
     path('api/client/', include('apps.accounts.urls')),
     path('api/client/wallet/', include('apps.wallet.urls')),

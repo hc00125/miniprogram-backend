@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
+from .kook_notifications import order_event_boundary
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -87,6 +88,7 @@ def get_cancel_preview(order, player):
 
 
 @transaction.atomic
+@order_event_boundary
 def cancel_player_order(order_no, player, reason, operator=None):
     reason = (reason or '').strip()
     if len(reason) < 2:

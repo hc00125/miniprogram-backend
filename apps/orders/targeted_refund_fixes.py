@@ -1,4 +1,5 @@
 from django.db import transaction
+from .kook_notifications import order_event_boundary
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -9,6 +10,7 @@ from .models import Order, OrderStatusLog
 
 
 @transaction.atomic
+@order_event_boundary
 def cancel_targeted_order(order, reason, operator=None):
     """Cancel a targeted paid order only after its refund is safely created.
 

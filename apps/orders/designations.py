@@ -1,3 +1,4 @@
+from .kook_notifications import order_event_boundary
 from datetime import timedelta
 from decimal import Decimal
 
@@ -135,6 +136,7 @@ def validate_designated_player_spec(order, players):
         })
 
 
+@order_event_boundary
 def create_designations(order, players):
     if not players:
         return []
@@ -165,6 +167,7 @@ def create_designations(order, players):
     ]
 
 
+@order_event_boundary
 def create_targeted_designation(order):
     """Create the invitation only after a designated-product order is paid."""
     if order.fulfillment_mode != Order.FULFILLMENT_MODE_TARGETED:
@@ -241,6 +244,7 @@ def sync_designated_players_snapshot(order):
     return active_ids
 
 
+@order_event_boundary
 def expire_due_designations(order=None, now=None):
     now = now or timezone.now()
     queryset = OrderDesignation.objects.filter(
@@ -313,6 +317,7 @@ def finalize_lineup_if_full(order, operator=None, reason='接单人数已满，�
 
 
 @transaction.atomic
+@order_event_boundary
 def accept_designation(order_no, player, operator=None):
     order = Order.objects.select_for_update().get(order_no=order_no)
     expire_due_designations(order=order)
@@ -376,6 +381,7 @@ def accept_designation(order_no, player, operator=None):
 
 
 @transaction.atomic
+@order_event_boundary
 def decline_designation(order_no, player, operator=None):
     order = Order.objects.select_for_update().get(order_no=order_no)
     designation = (
@@ -406,6 +412,7 @@ def decline_designation(order_no, player, operator=None):
 
 
 @transaction.atomic
+@order_event_boundary
 def release_designation(order, designation_id, operator=None):
     order = Order.objects.select_for_update().get(pk=order.pk)
     if order.status != Order.STATUS_WAITING:

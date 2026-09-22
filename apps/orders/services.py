@@ -2,6 +2,7 @@ import uuid
 from decimal import Decimal
 
 from django.db import transaction
+from .kook_notifications import order_event_boundary
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -142,6 +143,7 @@ def validate_targeted_product(package):
 
 
 @transaction.atomic
+@order_event_boundary
 def create_order(validated_data, user=None, allow_existing_active=False):
     order_items = normalize_order_items(validated_data)
     first_item = order_items[0]
@@ -285,6 +287,7 @@ def create_order(validated_data, user=None, allow_existing_active=False):
 
 
 @transaction.atomic
+@order_event_boundary
 def create_cart_orders(cart_item_ids, validated_data, user):
     """将购物车中的每一份商品发布为独立订单，整批成功后再删除购物车项。"""
     ordered_ids = []
@@ -366,6 +369,13 @@ def can_player_grab_order(order, player):
     if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
         return False
     expire_due_designations(order=order)
+    return can_player_grab_order_readonly(order, player)
+
+
+def can_player_grab_order_readonly(order, player):
+    """Same slot predicate without lazy expiry writes (navigation/outbox reads)."""
+    if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
+        return False
     if order.order_players.filter(player=player).exists():
         return False
     if pending_designation(order, player):
@@ -400,6 +410,7 @@ def assign_designated_slot(order, player):
 
 
 @transaction.atomic
+@order_event_boundary
 def grab_order(order_no, player, operator=None):
     order = Order.objects.select_for_update(of=('self',)).select_related('package', 'addon').get(order_no=order_no)
     expire_due_designations(order=order)
@@ -538,6 +549,7 @@ def complete_order(order, player, operator=None):
     return order
 
 
+@order_event_boundary
 def cancel_order(order, reason=None, operator=None):
     if order.status not in {Order.STATUS_WAITING, Order.STATUS_PENDING_PAYMENT}:
         raise ValidationError({'detail': '已付款或已开打订单请联系管理员处理退款，不能直接取消'})

@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
+from .kook_notifications import order_event_boundary
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -100,6 +101,7 @@ def finalize_replacement_if_full(order):
 
 
 @transaction.atomic
+@order_event_boundary
 def grab_order_with_replacement(original_grab, order_no, player, operator=None):
     ensure_player_can_accept(player)
     order = Order.objects.select_for_update().filter(order_no=order_no).first()
@@ -131,6 +133,7 @@ def grab_order_with_replacement(original_grab, order_no, player, operator=None):
 
 
 @transaction.atomic
+@order_event_boundary
 def publish_replacement_public(order, operator=None):
     state = OrderReplacementState.objects.select_for_update().filter(order=order).first()
     if not state or state.status != OrderReplacementState.STATUS_OPEN:
@@ -157,6 +160,7 @@ def publish_replacement_public(order, operator=None):
 
 
 @transaction.atomic
+@order_event_boundary
 def reassign_replacement(order, player_id, operator=None):
     state = OrderReplacementState.objects.select_for_update().filter(order=order).first()
     if not state or state.status != OrderReplacementState.STATUS_OPEN:
@@ -214,6 +218,7 @@ def reassign_replacement(order, player_id, operator=None):
 
 
 @transaction.atomic
+@order_event_boundary
 def accept_replacement_designation(order_no, player, operator=None):
     order = Order.objects.select_for_update().filter(order_no=order_no).first()
     if not order:
@@ -262,6 +267,7 @@ def accept_replacement_designation(order_no, player, operator=None):
 
 
 @transaction.atomic
+@order_event_boundary
 def decline_replacement_designation(order_no, player, operator=None):
     order = Order.objects.select_for_update().filter(order_no=order_no).first()
     if not order:
@@ -290,6 +296,7 @@ def decline_replacement_designation(order_no, player, operator=None):
     return order
 
 
+@order_event_boundary
 def expire_due_replacement_designations(original_expire, order=None, now=None):
     now = now or timezone.now()
     states = OrderReplacementState.objects.filter(
@@ -319,6 +326,7 @@ def expire_due_replacement_designations(original_expire, order=None, now=None):
 
 
 @transaction.atomic
+@order_event_boundary
 def request_cancel_remaining(order, operator=None):
     state = OrderReplacementState.objects.select_for_update().filter(order=order).first()
     if not state or state.status != OrderReplacementState.STATUS_OPEN:
@@ -337,6 +345,7 @@ def request_cancel_remaining(order, operator=None):
 
 
 @transaction.atomic
+@order_event_boundary
 def revoke_cancel_remaining(order, operator=None):
     """撤销「取消剩余服务」申请，恢复补位流程（cancel_requested -> open）。
 

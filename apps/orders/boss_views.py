@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db.models import Exists, OuterRef, Prefetch
 from django.utils import timezone
+from .kook_notifications import order_event_boundary
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -221,6 +222,7 @@ def my_orders(request):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@order_event_boundary
 def cancel_order(request, order_no):
     order, error_response = get_order_or_response(order_no)
     if error_response:

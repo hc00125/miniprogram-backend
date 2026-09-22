@@ -232,6 +232,10 @@ def create_wechat_virtual(request):
     serializer = VirtualPaymentCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     order_no = serializer.validated_data.get('order_no', '')
+    # 方案B：iOS 端禁用订单直接现金支付（微信虚拟支付）。
+    # 苹果税只在钱包充值入口承担（iOS 充值1元=7钻净入账），iOS 老板须先充值再用余额付款。
+    if request_client_platform(request) == 'ios':
+        raise ValidationError({'detail': 'iOS 端请先在钱包充值（1元=7钻石），再使用余额支付本订单'})
     try:
         order = ensure_payment_window_open(order_no, request.user)
         reconcile_closed_virtual_payment(order_no, request.user)

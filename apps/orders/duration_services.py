@@ -2,6 +2,7 @@ from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from .kook_notifications import order_event_boundary
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Package
@@ -115,6 +116,7 @@ def _moderate_order_text(validated_data, user=None):
 
 
 @transaction.atomic
+@order_event_boundary
 def create_order(validated_data, user=None, allow_existing_active=False, skip_content_security=False):
     """创建一张业务订单；小时制商品的 quantity 表示 booked_hours。"""
     if not skip_content_security:
@@ -145,6 +147,7 @@ def create_order(validated_data, user=None, allow_existing_active=False, skip_co
 
 
 @transaction.atomic
+@order_event_boundary
 def create_cart_orders(cart_item_ids, validated_data, user):
     """每个购物车条目创建一张订单；条目 quantity 作为该单服务时长。"""
     _moderate_order_text(validated_data, user)

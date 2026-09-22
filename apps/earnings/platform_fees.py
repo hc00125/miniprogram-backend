@@ -152,10 +152,12 @@ def _payment_fee(order, payment):
     payload = dict(payment.notify_payload or {})
 
     if payment.channel == 'balance':
-        profile = getattr(order.boss_user, 'client_profile', None)
-        if profile:
-            amount, percent = wallet_fee_allocation_for_payment(profile, payment)
-            return amount, percent, 'wallet-weighted'
+        # 方案B：苹果税只在充值入口承担（iOS 充值1元=7钻净入账）。
+        # 余额支付按标准渠道费率（1%）计算，不再按钱包里 iOS 余额比例加权分摊，
+        # 避免"充值打折 + 花钱加抽成"重复收费。
+        percent = platform_fee_percent('other')
+        amount = _qmoney(_qmoney(payment.amount) * percent / HUNDRED)
+        return amount, percent, 'balance-standard'
 
     if payment.channel == 'wechat_virtual':
         platform = payload.get('client_platform') or current_client_platform()

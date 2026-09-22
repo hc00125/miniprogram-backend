@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'apps.accounts',
     'apps.catalog',
     'apps.players',
+    'apps.kook_integration.apps.KookIntegrationConfig',
     'apps.orders',
     'apps.payments',
     'apps.refunds.apps.RefundsConfig',
@@ -166,8 +167,41 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = []
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+# Outside the web root and MEDIA_ROOT; provision writable access for the app user.
+COMPLAINT_PRIVATE_ROOT = os.environ.get('COMPLAINT_PRIVATE_ROOT', '/var/lib/touchi/complaint-attachments')
+COMPLAINT_ORPHAN_RETENTION_HOURS = env_int('COMPLAINT_ORPHAN_RETENTION_HOURS', '168')
+COMPLAINT_CREATE_LIMIT_PER_HOUR = env_int('COMPLAINT_CREATE_LIMIT_PER_HOUR', '10')
+COMPLAINT_MESSAGE_LIMIT_PER_HOUR = env_int('COMPLAINT_MESSAGE_LIMIT_PER_HOUR', '30')
+COMPLAINT_UPLOAD_LIMIT_PER_HOUR = env_int('COMPLAINT_UPLOAD_LIMIT_PER_HOUR', '30')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 APPEND_SLASH = False
+
+# KOOK remains disabled until isolated QA and explicit runtime provisioning.
+# Credentials are read ONLY via systemd CREDENTIALS_DIRECTORY, never here.
+KOOK_ENABLED = False
+KOOK_SEND_ENABLED = False
+KOOK_DM_SEND_ENABLED = False
+KOOK_CHANNEL_SEND_ENABLED = False
+KOOK_PRODUCTION_ENABLED = False
+KOOK_ENCRYPTION_ENABLED = False
+KOOK_BOT_KEY = 'default'
+KOOK_BINDING_USER_ALLOWLIST = []
+KOOK_DM_ALLOWLIST = []
+KOOK_PLAYER_ALLOWLIST = []
+KOOK_TEST_ORDER_IDS = []
+KOOK_CANDIDATE_GUILD_ID = ''
+KOOK_CANDIDATE_CHANNEL_ID = ''
+KOOK_VERIFIED_GUILD_ID = ''
+KOOK_VERIFIED_CHANNEL_ID = ''
+KOOK_VERIFIED_BOT_KEY = ''
+KOOK_TARGET_CONFIG_VERSION = ''
+KOOK_VERIFIED_CONFIG_VERSION = ''
+KOOK_MENTION_ALL_VERIFIED = False
+KOOK_ORDER_REVALIDATOR = 'apps.orders.kook_notifications.revalidate_order'
+KOOK_ENTRY_RESOLVER = 'apps.orders.kook_notifications.resolve_entry'
+KOOK_ORDER_EVENTS_ENABLED = False
+KOOK_WECHAT_URL_LINK_ENABLED = False
+# URL Link uses only systemd kook_wechat_access_token (server-side, rotated by operator).
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 
 SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', 'false' if DEBUG else 'true')

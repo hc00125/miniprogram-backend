@@ -91,6 +91,13 @@ class OrderAdmin(admin.ModelAdmin):
     )
     inlines = [OrderItemInline, OrderPricingLineInline, OrderPlayerInline, OrderDesignationInline]
 
+    def save_related(self, request, form, formsets, change):
+        # ModelAdmin.changeform_view wraps save_model + all inlines in one
+        # transaction. Publish only here, after m2m/inline final facts exist.
+        super().save_related(request, form, formsets, change)
+        from .kook_notifications import record_order_state
+        record_order_state(form.instance.pk, cause='admin.save_related')
+
     def has_delete_permission(self, request, obj=None):
         # 正式环境禁止物理删除订单；开发环境也只允许超级管理员在显式开关开启后删除。
         return can_delete_orders_in_admin(request)
