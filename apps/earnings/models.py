@@ -141,6 +141,13 @@ class PlayerEarning(models.Model):
         related_name='earnings',
         verbose_name='陪玩师',
     )
+    SOURCE_ORDER = 'order'
+    SOURCE_SURCHARGE = 'surcharge'
+    source = models.CharField(max_length=20, default=SOURCE_ORDER,
+        choices=[(SOURCE_ORDER, '原单工资'), (SOURCE_SURCHARGE, '整单加价')])
+    surcharge = models.ForeignKey('orders.OrderSurcharge', on_delete=models.PROTECT,
+        null=True, blank=True, related_name='earnings')
+    source_snapshot = models.JSONField(default=dict, blank=True)
     gross_amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='分配收入')
     commission_rate = models.DecimalField(max_digits=5, decimal_places=2, verbose_name='抽成比例(%)')
     commission_amount = models.DecimalField(max_digits=12, decimal_places=2, verbose_name='平台抽成')
@@ -163,7 +170,12 @@ class PlayerEarning(models.Model):
         verbose_name_plural = '订单工资'
         ordering = ['-created_at']
         constraints = [
-            models.UniqueConstraint(fields=['order', 'player'], name='uniq_order_player_earning'),
+            models.UniqueConstraint(fields=['order', 'player'], condition=models.Q(source='order'),
+                name='uniq_base_order_player_earning'),
+            models.UniqueConstraint(fields=['surcharge', 'player'], condition=models.Q(source='surcharge'),
+                name='uniq_surcharge_player_earning'),
+            models.CheckConstraint(check=(models.Q(source='order', surcharge__isnull=True)
+                | models.Q(source='surcharge', surcharge__isnull=False)), name='earning_source_consistent'),
             models.CheckConstraint(
                 check=models.Q(gross_amount__gte=ZERO)
                 & models.Q(commission_amount__gte=ZERO)
@@ -285,6 +297,7 @@ class WalletLedger(models.Model):
     TYPE_WITHDRAWAL_REFUNDED = 'withdrawal_refunded'
     TYPE_WITHDRAWAL_PAID = 'withdrawal_paid'
     TYPE_ADMIN_ADJUSTMENT = 'admin_adjustment'
+    TYPE_GIFT_INCOME = 'gift_income'
     ENTRY_TYPE_CHOICES = [
         (TYPE_EARNING_CREATED, '工资进入审核'),
         (TYPE_EARNING_RELEASED, '工资审核通过'),
@@ -294,6 +307,7 @@ class WalletLedger(models.Model):
         (TYPE_WITHDRAWAL_REFUNDED, '提现退回'),
         (TYPE_WITHDRAWAL_PAID, '提现完成'),
         (TYPE_ADMIN_ADJUSTMENT, '管理员调整'),
+        (TYPE_GIFT_INCOME, '礼物收益'),
     ]
 
     wallet = models.ForeignKey(PlayerWallet, on_delete=models.PROTECT, related_name='ledger_entries')

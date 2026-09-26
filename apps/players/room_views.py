@@ -36,7 +36,9 @@ def confirm_room_entry(request, order_no):
         if relation.room_join_status != OrderPlayer.ROOM_ENTRY_CONFIRMED or relation.room_join_deadline is not None:
             relation.room_join_status = OrderPlayer.ROOM_ENTRY_CONFIRMED
             relation.room_join_deadline = None
-            relation.save(update_fields=['room_join_status', 'room_join_deadline'])
+            from apps.orders.surcharge_lifecycle import lineup_write
+            with lineup_write(order):
+                relation.save(update_fields=['room_join_status', 'room_join_deadline'])
         return Response({
             'message': '已经确认进入房间',
             'room_join_status': relation.room_join_status,
@@ -50,7 +52,9 @@ def confirm_room_entry(request, order_no):
     relation.room_join_status = OrderPlayer.ROOM_ENTRY_CONFIRMED
     relation.room_join_confirmed_at = now
     relation.room_join_deadline = None
-    relation.save(update_fields=['room_join_status', 'room_join_confirmed_at', 'room_join_deadline'])
+    from apps.orders.surcharge_lifecycle import lineup_write
+    with lineup_write(order):
+        relation.save(update_fields=['room_join_status', 'room_join_confirmed_at', 'room_join_deadline'])
     OrderStatusLog.objects.create(
         order=order,
         from_status=order.status,

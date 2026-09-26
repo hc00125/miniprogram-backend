@@ -28,9 +28,21 @@ from .views import (
 @permission_classes([IsAuthenticated])
 def query_wechat_virtual_by_order_indexed(request, order_no):
     """Recover an interrupted checkout from its durable order/recharge link."""
+    from apps.wallet.order_spend import query_existing
+    durable = query_existing(order_no, request.user)
+    if durable is not None:
+        return Response({'found': True, **durable})
     paid = _idempotent_paid_checkout(order_no, request.user)
     if paid:
         return Response({'found': True, **paid})
+
+    from apps.orders.models import Order
+    if Order.objects.filter(order_no=order_no, boss_user=request.user, surcharge_guarded=True).exists():
+        from apps.orders.checkout_payment import query_coin_payment
+        try:
+            return Response(query_coin_payment(order_no, request.user))
+        except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
+            return virtual_payment_error_response(exc)
 
     profile = getattr(request.user, 'client_profile', None)
     recharge = latest_checkout_coin_recharge(profile, order_no) if profile else None

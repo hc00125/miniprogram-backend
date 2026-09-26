@@ -219,14 +219,18 @@ class DailyBillingReportTests(TestCase):
         player_ids = [row.pk for row in report['player_ledgers']]
         self.assertIn(self.client_ledger.pk, boss_ids)
         self.assertIn(self.player_ledger.pk, player_ids)
-        self.assertEqual(
-            set(boss_ids),
-            set(ClientWalletLedger.objects.filter(created_at__date=self.day).values_list('pk', flat=True)),
-        )
-        self.assertEqual(
-            set(player_ids),
-            set(WalletLedger.objects.filter(created_at__date=self.day).values_list('pk', flat=True)),
-        )
+        # The report's contract is a Shanghai calendar day, even when the
+        # isolated test settings use UTC. Do not make this assertion depend
+        # on whether the test happens to run before Shanghai midnight.
+        with timezone.override('Asia/Shanghai'):
+            self.assertEqual(
+                set(boss_ids),
+                set(ClientWalletLedger.objects.filter(created_at__date=self.day).values_list('pk', flat=True)),
+            )
+            self.assertEqual(
+                set(player_ids),
+                set(WalletLedger.objects.filter(created_at__date=self.day).values_list('pk', flat=True)),
+            )
 
 
 class DailyBillingAdminViewTests(TestCase):

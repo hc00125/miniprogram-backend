@@ -79,6 +79,7 @@ def write_wallet_ledger(
     reference_id='',
     note='',
     operator=None,
+    checkout_order_no='',
 ):
     """钱包余额变动唯一入口：更新余额并追加一条流水，入账恰好一次。
 
@@ -94,6 +95,18 @@ def write_wallet_ledger(
     existing = _existing_ledger_entry(wallet, entry_type, reference_id)
     if existing:
         return existing, False
+
+    if amount < ZERO and entry_type not in ClientWalletLedger.INTERNAL_ENTRY_TYPES:
+        from .spend_service import reserved
+        from .coin_balance_service import _reserved_checkout_amount
+        if reserved(wallet):
+            raise ValidationError({'code': 'PAYMENT_PENDING', 'detail': '钱包有待确认消费，暂不可支出'})
+        from .spend_models import OrderWalletSpend
+        if OrderWalletSpend.objects.filter(order__boss_user_id=wallet.profile.user_id).exclude(blocker='').exists():
+            raise ValidationError({'code': 'LEGACY_COIN_REVIEW_REQUIRED', 'detail': '历史消费待人工核验，暂不可支出'})
+        checkout_reserved = _reserved_checkout_amount(wallet.profile, exclude_order_no=checkout_order_no)
+        if qmoney(wallet.balance) + amount < checkout_reserved:
+            raise ValidationError({'code': 'INSUFFICIENT_BALANCE', 'detail': '余额已为原订单预留'})
 
     balance_after = qmoney(qmoney(wallet.balance) + amount)
     if balance_after < ZERO:
@@ -641,6 +654,21 @@ def pay_order_with_balance(order_no, user):
             ).update(status='closed', updated_at=timezone.now())
 
         wallet = get_or_lock_wallet(profile)
+        from .spend_service import reserved
+        from .coin_balance_service import _reserved_checkout_amount
+        from .coin_sync import coin_backed_wallet_amount, has_pending_coin_refunds
+        from .spend_models import OrderWalletSpend
+        if reserved(wallet):
+            raise ValidationError({'code': 'PAYMENT_PENDING', 'detail': '钱包有待确认消费'})
+        if OrderWalletSpend.objects.filter(order__boss_user=user).exclude(blocker='').exists():
+            raise ValidationError({'code': 'LEGACY_COIN_REVIEW_REQUIRED', 'detail': '历史消费待人工核验'})
+        # This internal legacy helper is CASH ONLY. It cannot relabel coin as
+        # cash, nor auto-refund remotely inside this payment transaction.
+        if coin_backed_wallet_amount(profile) or has_pending_coin_refunds(profile):
+            raise ValidationError({'code': 'COIN_USE_DURABLE_PAYMENT', 'detail': '请从余额支付接口确认微信钻石消费'})
+        checkout_reserved = _reserved_checkout_amount(profile, exclude_order_no=order.order_no)
+        if checkout_reserved and qmoney(wallet.balance) - checkout_reserved < amount:
+            raise ValidationError({'code': 'CHECKOUT_RECOVERY_PENDING', 'detail': '其他订单充值待确认，可用余额不足'})
         if qmoney(wallet.balance) < amount:
             raise ValidationError({'detail': '余额不足'})
 
@@ -653,6 +681,7 @@ def pay_order_with_balance(order_no, user):
             reference_id=payment_no,
             note=f'余额支付订单 {order.order_no}',
             operator=user,
+            checkout_order_no=order.order_no,
         )
         wallet.spent_total = qmoney(wallet.spent_total + amount)
         wallet.save(update_fields=['spent_total', 'updated_at'])

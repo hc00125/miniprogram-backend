@@ -178,7 +178,9 @@ def cancel_player_order(order_no, player, reason, operator=None):
         status__in=[OrderDesignation.STATUS_PENDING, OrderDesignation.STATUS_ACCEPTED],
     ).update(status=OrderDesignation.STATUS_CANCELLED, responded_at=now)
 
-    relation.delete()
+    from .surcharge_lifecycle import lineup_write
+    with lineup_write(order):
+        relation.delete()
     player.total_orders = max(0, int(player.total_orders or 0) - 1)
     update_player_fields = ['total_orders']
     if not preview['no_fault']:

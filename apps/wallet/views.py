@@ -276,4 +276,13 @@ def pay_balance_create(request):
         'balance_diamonds': format_diamonds(result.get('balance')),
         'diamonds_per_yuan': DIAMONDS_PER_YUAN,
     })
+    # The old no-surcharge frontend treats a resolved POST as a capture.
+    # Keep non-success an error, with auditable state for newer clients.
+    from apps.orders.surcharge_models import OrderCheckout
+    if result['status'] != 'paid' and not OrderCheckout.objects.filter(
+            order__order_no=order_no, surcharge__isnull=False).exists():
+        pending = result['status'] in ('unknown', 'processing')
+        return Response({**result,
+            'code': 'ORDER_PAYMENT_PENDING' if pending else 'ORDER_PAYMENT_FAILED',
+            'detail': '付款结果待核验，请查询原订单，不要重复付款' if pending else '本次付款未发出，请先取消原订单后重新下单'}, status=409)
     return Response(result)

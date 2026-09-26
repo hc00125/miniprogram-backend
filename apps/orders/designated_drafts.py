@@ -25,7 +25,7 @@ def _draft_for_user(draft_id, user, *, for_update=False):
         'submitted_order',
     )
     if for_update:
-        queryset = queryset.select_for_update()
+        queryset = queryset.select_for_update(of=('self',))
     draft = queryset.filter(pk=draft_id).first()
     if not draft:
         raise ValidationError({'draft_id': '指定陪玩草稿不存在'})

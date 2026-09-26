@@ -2,7 +2,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 
 from apps.wallet.diamonds import yuan_to_diamonds
 
@@ -36,6 +36,18 @@ class Payment(models.Model):
     @property
     def mock(self):
         return bool(self.qr_code and self.qr_code.startswith('mockpay://'))
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            # Payment is persisted before any external create call. Serialize
+            # every channel's admission against the original wallet capture.
+            from apps.orders.models import Order
+            from apps.wallet.order_spend import guard_order
+            with transaction.atomic():
+                order = Order.objects.select_for_update().get(order_no=self.order_id)
+                guard_order(order)
+                return super().save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
 
 class VirtualProductBinding(models.Model):

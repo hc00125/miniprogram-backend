@@ -32,6 +32,13 @@ def _qmoney(value):
         raise ValidationError({'detail': '退款金额不正确'}) from exc
 
 
+def require_independent_refund_safe(order):
+    # Marker is immutable; reject before any local credit or remote request.
+    if order.surcharge_guarded:
+        raise ValidationError({'code': 'SURCHARGE_REFUND_REQUIRES_REVIEW',
+            'detail': '加价订单此类售后请联系客服处理'})
+
+
 def _operator_or_none(operator):
     return operator if getattr(operator, 'is_authenticated', False) else None
 
@@ -82,6 +89,7 @@ def settle_balance_refund(refund_or_id, operator=None):
             .get(pk=refund.payment_id)
         )
         refund.payment = payment
+        require_independent_refund_safe(refund.order)
 
         if refund.status not in SETTLEABLE_REFUND_STATUSES:
             raise ValidationError({'detail': '当前退款状态不能自动退回钱包'})
@@ -125,6 +133,12 @@ def settle_balance_refund(refund_or_id, operator=None):
         if entry is None:
             raise ValidationError({'detail': '余额退款入账失败，请联系管理员处理'})
 
+        # QuerySet.update above does not emit post_save. Preserve the coin
+        # source here in the SAME local refund transaction, before it is
+        # spendable again. No remote refund is issued by cancellation.
+        from apps.wallet.coin_sync import allocate_refund_coin_amount
+        allocate_refund_coin_amount(refund)
+
         succeeded_total = (
             Refund.objects
             .filter(payment=payment, status=Refund.STATUS_SUCCEEDED)
@@ -158,6 +172,7 @@ def create_refund(payment_no, amount, reason='', operator=None):
         )
         if not payment:
             raise ValidationError({'detail': '支付单不存在'})
+        require_independent_refund_safe(payment.order)
         if payment.status != 'paid':
             raise ValidationError({'detail': '只有已支付订单可以退款'})
 
@@ -206,6 +221,7 @@ def ensure_payment_refund(payment_no, target_amount, reason='', operator=None):
         )
         if not payment:
             raise ValidationError({'detail': '支付单不存在'})
+        require_independent_refund_safe(payment.order)
 
         target = _qmoney(target_amount)
         if target <= 0:

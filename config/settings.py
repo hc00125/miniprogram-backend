@@ -50,7 +50,10 @@ FEATURE_DESIGNATE_DISABLED = env_bool('FEATURE_DESIGNATE_DISABLED', 'false')
 # 陪玩共享服务上架审核：默认人工审核；开启后仅符合等级/权限规则的普通服务自动上架。
 PLAYER_SERVICE_LISTING_AUTO_APPROVE = env_bool('PLAYER_SERVICE_LISTING_AUTO_APPROVE', 'false')
 
+DISPATCH_REQUIRE_HTTPS = env_bool('DISPATCH_REQUIRE_HTTPS', 'true')
+
 INSTALLED_APPS = [
+    'apps.dispatch',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -62,6 +65,7 @@ INSTALLED_APPS = [
     'apps.common',
     'apps.accounts',
     'apps.catalog',
+    'apps.gifts.apps.GiftsConfig',
     'apps.players',
     'apps.kook_integration.apps.KookIntegrationConfig',
     'apps.orders',
@@ -87,6 +91,7 @@ except ImportError:
     pass
 
 MIDDLEWARE = [
+    'apps.dispatch.middleware.ConsoleCookieSecurity',
     'apps.common.maintenance.MaintenanceModeMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -211,6 +216,15 @@ SECURE_HSTS_SECONDS = env_int('SECURE_HSTS_SECONDS', '0' if DEBUG else '31536000
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'false' if DEBUG else 'true')
 SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', 'false')
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if env_bool('SECURE_PROXY_SSL_HEADER', 'true') else None
+
+# Foundation release: no transaction endpoints, no payment or settlement activation.
+GIFT_CATALOG_ENABLED = env_bool('GIFT_CATALOG_ENABLED', 'true')
+GIFT_PURCHASE_ENABLED = False
+GIFT_INVENTORY_SEND_ENABLED = False
+GIFT_EARNINGS_RELEASE_ENABLED = False
+GIFT_REFUND_ENABLED = False
+GIFT_ADMIN_FREE_GRANT_ENABLED = False
+ORDER_SURCHARGE_ENABLED = False
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

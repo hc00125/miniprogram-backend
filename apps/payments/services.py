@@ -28,7 +28,14 @@ def generate_refund_no():
     return f"REF{timezone.localtime().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:8].upper()}"
 
 
-def get_order_amount(order):
+def get_order_amount(order, *, wallet_attempt=None):
+    from apps.wallet.order_spend import guard_order
+    guard_order(order, wallet_attempt=wallet_attempt)
+    # Every old cash/goods/instant-checkout path calls this before an external
+    # request. A v2 bundle must not accidentally charge just its base amount.
+    if order.surcharge_guarded:
+        raise ValidationError({'code': 'SURCHARGE_USE_COMBINED_CHECKOUT',
+            'detail': '请使用原单与加价合计的余额结算，其他支付通道暂未接入'})
     raw_amount = order.total_amount if order.total_amount is not None else order.total_price_per_hour
     try:
         return Decimal(str(raw_amount or 0)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -288,6 +295,8 @@ def mark_payment_paid(payment, third_trade_no='', payload=None):
     ])
 
     order = payment.order
+    from apps.orders.surcharge_models import OrderCheckout
+    OrderCheckout.objects.filter(order=order, surcharge__isnull=True).update(status='paid')
     old_status = order.status
     order.paid = True
     order.payment_method = payment.channel
@@ -301,7 +310,8 @@ def mark_payment_paid(payment, third_trade_no='', payload=None):
         if order.status == Order.STATUS_PENDING_PAYMENT:
             order.status = (
                 Order.STATUS_WAITING
-                if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
+                if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED or (
+                    hasattr(order, 'checkout') and order.checkout.surcharge_id)
                 else Order.STATUS_READY_TO_START
             )
             order_update_fields.append('status')

@@ -75,7 +75,7 @@ def create_order_earnings(order, completed_at=None):
     review_until = completed_at + timedelta(days=config.review_days)
     existing = {
         item.player_id: item
-        for item in PlayerEarning.objects.filter(order=order).select_related('player')
+        for item in PlayerEarning.objects.filter(order=order, source=PlayerEarning.SOURCE_ORDER).select_related('player')
     }
     results = []
 
@@ -110,6 +110,9 @@ def create_order_earnings(order, completed_at=None):
             note=f'订单 {order.order_no} 工资进入{config.review_days}天审核期',
         )
         results.append(earning)
+    if order.surcharge_guarded:
+        from apps.orders.surcharge_lifecycle import create_surcharge_earnings
+        create_surcharge_earnings(order, results)
     return results
 
 
@@ -205,7 +208,7 @@ def recalculate_pending_order_earnings(order, operator=None):
         PlayerEarning.objects
         .select_for_update()
         .select_related('player')
-        .filter(order=order)
+        .filter(order=order, source=PlayerEarning.SOURCE_ORDER)
         .order_by('id')
     )
     if not earnings:

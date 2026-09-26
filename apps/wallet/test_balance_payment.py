@@ -308,7 +308,7 @@ class BalanceRefundTests(TestCase):
         )
         self.package = Package.objects.create(name='余额退款测试套餐', player_count=1, base_price=30)
         self.order = Order.objects.create(
-            order_no='BALANCE_ORDER_REF_001',
+            order_no='BAL_ORDER_REF_001',
             boss_user=self.user,
             boss_wechat='refund_boss',
             package=self.package,

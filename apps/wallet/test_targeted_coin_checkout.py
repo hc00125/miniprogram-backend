@@ -2,7 +2,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase, override_settings
+from django.test import TransactionTestCase, override_settings
 
 from apps.accounts.models import ClientProfile
 from apps.catalog.models import Package, PlayerType
@@ -23,11 +23,13 @@ VIRTUAL_SETTINGS = {
     'WECHAT_VIRTUALPAY_HTTP_TIMEOUT': 10,
     'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN': 10,
     'ENABLE_MOCK_PAYMENT': False,
+    'WECHAT_PLAYER_ORDER_TEMPLATE_ID': '',
+    'SHARED_SPEND_PLATFORM_APPROVED': True,
 }
 
 
 @override_settings(**VIRTUAL_SETTINGS)
-class TargetedCoinCheckoutTests(TestCase):
+class TargetedCoinCheckoutTests(TransactionTestCase):
     def setUp(self):
         self.boss = User.objects.create_user(username='targeted-coin-boss')
         self.profile = ClientProfile.objects.create(
@@ -65,11 +67,8 @@ class TargetedCoinCheckoutTests(TestCase):
             target_player=self.player,
             target_player_name_snapshot=self.player.name,
         )
-        self.wallet = ClientWallet.objects.create(
-            profile=self.profile,
-            balance=Decimal('20.00'),
-            recharged_total=Decimal('20.00'),
-        )
+        self.wallet, _ = ClientWallet.objects.update_or_create(profile=self.profile,
+            defaults={'balance': Decimal('20.00'), 'recharged_total': Decimal('20.00')})
         self.recharge = RechargeOrder.objects.create(
             recharge_no='RCGTARGETCOIN001',
             profile=self.profile,
@@ -97,11 +96,8 @@ class TargetedCoinCheckoutTests(TestCase):
             'apps.wallet.coin_sync.exchange_code_for_session',
             return_value=(self.profile.openid, 'targeted-session'),
         ), patch(
-            'apps.wallet.coin_sync.user_xpay_post',
-            side_effect=[
-                {'errcode': 0, 'balance': 200},
-                {'errcode': 0, 'balance': 0},
-            ],
+            'apps.wallet.spend_adapter.user_xpay_post',
+            side_effect=lambda endpoint, payload, session, **kw: {'errcode': 0, 'order_id': payload['order_id']},
         ) as mocked_xpay:
             result = pay_order_with_coin_aware_balance(
                 self.order.order_no,
@@ -116,7 +112,7 @@ class TargetedCoinCheckoutTests(TestCase):
         self.assertEqual(result['wechat_coin_units_per_yuan'], 10)
         self.assertEqual(
             [call.args[0] for call in mocked_xpay.call_args_list],
-            ['/xpay/query_user_balance', '/xpay/currency_pay'],
+            ['/xpay/currency_pay'],
         )
 
         self.order.refresh_from_db()

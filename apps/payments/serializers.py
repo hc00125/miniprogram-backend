@@ -57,6 +57,7 @@ class MiniProgramPaymentCreateSerializer(serializers.Serializer):
 class VirtualPaymentCreateSerializer(serializers.Serializer):
     order_no = serializers.CharField()
     code = serializers.CharField(allow_blank=False)
+    retry_from_payment_no = serializers.CharField(required=False, allow_blank=True, max_length=80)
 
 
 class RefundSerializer(serializers.ModelSerializer):

@@ -2,7 +2,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TransactionTestCase, override_settings
 from rest_framework.exceptions import ValidationError
 
 from apps.accounts.models import ClientProfile
@@ -10,10 +10,12 @@ from apps.catalog.models import Package
 from apps.orders.models import Order
 
 from .coin_balance_service import pay_order_with_coin_aware_balance
-from .models import ClientWallet, RechargeOrder
+from .models import ClientWallet, ClientWalletLedger, RechargeOrder
 
 
-class CoinCheckoutReservationTests(TestCase):
+@override_settings(WECHAT_VIRTUALPAY_ENV=1, WECHAT_VIRTUALPAY_ENABLED=True, SHARED_SPEND_PLATFORM_APPROVED=True,
+                   WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN=10)
+class CoinCheckoutReservationTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='coin-reservation-boss')
         self.profile = ClientProfile.objects.create(
@@ -21,11 +23,8 @@ class CoinCheckoutReservationTests(TestCase):
             openid='openid_coin_reservation',
             nickname='Coin预约资金测试老板',
         )
-        self.wallet = ClientWallet.objects.create(
-            profile=self.profile,
-            balance=Decimal('20.00'),
-            recharged_total=Decimal('20.00'),
-        )
+        self.wallet, _ = ClientWallet.objects.update_or_create(profile=self.profile,
+            defaults={'balance': Decimal('20.00'), 'recharged_total': Decimal('20.00')})
         self.package = Package.objects.create(
             name='Coin预约资金测试商品',
             player_count=1,
@@ -66,6 +65,9 @@ class CoinCheckoutReservationTests(TestCase):
             },
         )
 
+        ClientWalletLedger.objects.create(wallet=self.wallet, entry_type='recharge', amount=Decimal('20'),
+            balance_after=Decimal('20'), reference_id=self.recharge.recharge_no)
+
     def test_credited_checkout_funds_cannot_be_spent_by_another_order(self):
         with self.assertRaises(ValidationError) as context:
             pay_order_with_coin_aware_balance(
@@ -73,37 +75,20 @@ class CoinCheckoutReservationTests(TestCase):
                 self.user,
             )
 
-        self.assertIn('另一笔已付款订单确认', str(context.exception.detail))
+        self.assertEqual(str(context.exception.detail['code']), 'CHECKOUT_RECOVERY_PENDING')
         self.wallet.refresh_from_db()
         self.other_order.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal('20.00'))
         self.assertFalse(self.other_order.paid)
 
     def test_original_order_can_consume_its_reserved_checkout_funds(self):
-        prepared = {
-            'wechat_coin_diamonds': '200.0',
-            'wechat_coin_units': 200,
-            'wechat_coin_units_per_yuan': 10,
-            '_session_key': 'session-key',
-            '_user_ip': '127.0.0.1',
-        }
-        executed = {
-            'wechat_coin_diamonds': '200.0',
-            'wechat_coin_units': 200,
-            'wechat_coin_units_per_yuan': 10,
-            'wechat_coin_status': 'succeeded',
-        }
-        with patch(
-            'apps.wallet.coin_balance_service.prepare_coin_spend',
-            return_value=prepared,
-        ), patch(
-            'apps.wallet.coin_balance_service.execute_coin_spend',
-            return_value=executed,
-        ):
-            result = pay_order_with_coin_aware_balance(
-                self.original_order.order_no,
-                self.user,
-            )
+        with patch('apps.wallet.coin_sync.exchange_code_for_session',
+                   return_value=(self.profile.openid, 'ephemeral')), \
+             patch('apps.wallet.spend_adapter.user_xpay_post',
+                   side_effect=lambda endpoint, payload, session, **kw: {'errcode': 0, 'order_id': payload['order_id']}) as external:
+            result = pay_order_with_coin_aware_balance(self.original_order.order_no, self.user, code='fresh')
+        self.assertEqual(external.call_count, 1)
+        self.assertEqual(external.call_args.args[1]['amount'], 200)
 
         self.assertEqual(result['status'], 'paid')
         self.original_order.refresh_from_db()

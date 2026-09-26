@@ -196,7 +196,10 @@ class ClientWalletLedger(models.Model):
         TYPE_VIRTUAL_ORDER_PAYMENT,
     )
 
+    TYPE_SHARED_SPEND = 'shared_spend'
+
     ENTRY_TYPE_CHOICES = [
+        (TYPE_SHARED_SPEND, '礼物/订单加价消费'),
         (TYPE_RECHARGE, '充值'),
         (TYPE_ORDER_PAYMENT, '订单支付'),
         (TYPE_REFUND_IN, '退款入账'),
@@ -254,3 +257,6 @@ class ClientWalletLedger(models.Model):
 
     def __str__(self):
         return f'{self.wallet.profile} {self.entry_type} {self.amount}'
+
+
+from .spend_models import WalletSpendAttempt, WalletSpendAudit  # noqa: E402,F401

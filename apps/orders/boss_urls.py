@@ -14,6 +14,7 @@ from . import (
     matching_views,
     payment_views,
     rating_views,
+    surcharge_views,
 )
 
 urlpatterns = [
@@ -23,6 +24,8 @@ urlpatterns = [
     path('addons', boss_views.addons),
     path('player-types', boss_views.player_types),
     path('online-players', boss_views.online_players),
+    path('order/by-key', boss_views.order_by_key),
+    path('order/quote', require_purchase_available(require_operational(boss_views.quote_order))),
     path('order', require_purchase_available(require_operational(boss_views.create_order))),
     path('listing-order', require_purchase_available(require_operational(listing_order_views.create_order))),
     path('order/<str:order_no>', payment_views.order_detail),
@@ -36,6 +39,9 @@ urlpatterns = [
     path('order/<str:order_no>/replacement/cancel-remaining', boss_replacement_views.cancel_remaining),
     path('order/<str:order_no>/replacement/revoke-cancel', boss_replacement_views.revoke_cancel_remaining),
     path('orders/me', boss_views.my_orders),
+    path('orders/<str:order_no>/surcharge/', surcharge_views.surcharge_overview),
+    path('orders/<str:order_no>/surcharge/by-key/', surcharge_views.surcharge_by_key),
+    path('orders/<str:order_no>/surcharge/<str:surcharge_no>/', surcharge_views.surcharge_detail),
     path('orders/batch', require_purchase_available(require_operational(batch_views.create_cart_order_batch))),
     path('orders/<str:boss_wechat>', boss_views.boss_orders),
     path('order/<str:order_no>/cancel', boss_views.cancel_order),

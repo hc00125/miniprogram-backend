@@ -258,6 +258,15 @@ def _refresh_active_remote_payment(order):
     cancellation; a confirmed/credited coin recharge counts as paid even before
     finalize creates the business Payment row.
     """
+    from apps.wallet.order_spend import recover_order
+    from apps.wallet.spend_models import OrderWalletSpend
+    result = recover_order(order)
+    if result and result.status == 'completed':
+        return REMOTE_PAID
+    binding = OrderWalletSpend.objects.select_related('attempt').filter(order=order).first()
+    if binding and (binding.blocker or (binding.attempt and binding.attempt.status in
+            ('prepared', 'dispatching', 'unknown', 'succeeded'))):
+        return REMOTE_UNKNOWN
     active = list(
         Payment.objects
         .filter(order=order, status__in=ACTIVE_PAYMENT_STATUSES)
@@ -332,6 +341,10 @@ def expire_due_unpaid_order(order, now=None, verify_remote=True):
         locked = Order.objects.select_for_update().get(pk=order.pk)
         if locked.status != Order.STATUS_PENDING_PAYMENT or locked.paid:
             return False
+        from apps.wallet.spend_models import OrderWalletSpend, WalletSpendAttempt
+        binding = OrderWalletSpend.objects.select_related('attempt').filter(order=locked).first()
+        if binding and (binding.blocker or (binding.attempt and binding.attempt.status in WalletSpendAttempt.ACTIVE)):
+            return False
         locked_confirmation_deadline = payment_confirmation_deadline_at(locked)
         if not locked_confirmation_deadline or locked_confirmation_deadline > now:
             return False
@@ -351,6 +364,13 @@ def expire_due_unpaid_order(order, now=None, verify_remote=True):
             logger.exception('关闭超时支付单失败，暂缓取消 order_no=%s', locked.order_no)
             return False
 
+        if locked.surcharge_guarded:
+            from .surcharge_refunds import cancel_unpaid_checkout
+            from rest_framework.exceptions import ValidationError
+            try:
+                cancel_unpaid_checkout(locked)
+            except ValidationError:
+                return False
         cancel_order(locked, PAYMENT_TIMEOUT_REASON)
         mark_payment_window_expired(locked, expired_at=now, reason=PAYMENT_TIMEOUT_REASON)
         return True

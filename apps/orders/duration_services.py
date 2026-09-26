@@ -115,13 +115,8 @@ def _moderate_order_text(validated_data, user=None):
     )
 
 
-@transaction.atomic
-@order_event_boundary
-def create_order(validated_data, user=None, allow_existing_active=False, skip_content_security=False):
-    """创建一张业务订单；小时制商品的 quantity 表示 booked_hours。"""
-    if not skip_content_security:
-        _moderate_order_text(validated_data, user)
-
+def prepare_duration_payload(validated_data):
+    """Pure validation/normalization shared by quotation and creation."""
     package, item = _resolve_package(validated_data)
     requested_quantity = normalize_service_hours(item.get('quantity') or 1)
     booked_hours_raw = validated_data.get('booked_hours')
@@ -132,7 +127,7 @@ def create_order(validated_data, user=None, allow_existing_active=False, skip_co
         if booked_hours_raw not in (None, 1, 1.0, '1'):
             raise ValidationError({'detail': '该商品按单收费，不支持选择服务时长'})
         prepared = _force_base_quantity(validated_data, 1)
-        return create_order_base(prepared, user, allow_existing_active=allow_existing_active)
+        return prepared, 1, False
 
     hours = requested_quantity
     if booked_hours_raw is not None:
@@ -142,8 +137,25 @@ def create_order(validated_data, user=None, allow_existing_active=False, skip_co
         hours = booked_hours
 
     prepared = _force_base_quantity(validated_data, hours)
-    order = create_order_base(prepared, user, allow_existing_active=allow_existing_active)
-    return _finalize_hourly_order(order, hours)
+    return prepared, hours, True
+
+
+@transaction.atomic
+@order_event_boundary
+def create_order(validated_data, user=None, allow_existing_active=False, skip_content_security=False, source_context=None):
+    """Existing duration entry; surcharge attaches after final base pricing."""
+    from .checkout import prepare_creation, persist_creation
+    previous, creation = prepare_creation(validated_data, user)
+    if previous is not None:
+        return previous
+    if not skip_content_security:
+        _moderate_order_text(validated_data, user)
+    prepared, hours, hourly = prepare_duration_payload(validated_data)
+    order = create_order_base(prepared, user, allow_existing_active=allow_existing_active, _defer_checkout=True, source_context=source_context)
+    if hourly:
+        order = _finalize_hourly_order(order, hours)
+    persist_creation(order, creation)
+    return order
 
 
 @transaction.atomic

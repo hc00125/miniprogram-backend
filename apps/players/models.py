@@ -35,6 +35,7 @@ class Player(models.Model):
     total_rating = models.FloatField(default=0)
     rating_count = models.IntegerField(default=0)
     is_online = models.BooleanField(default=False)
+    presence_seen_at = models.DateTimeField(blank=True, null=True, editable=False, verbose_name='小程序最近活跃时间')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_APPROVED)
     contact_wechat = models.CharField(max_length=100, blank=True, default='')
     bio = models.TextField(blank=True, default='')
@@ -54,6 +55,14 @@ class Player(models.Model):
         db_table = 'players'
         verbose_name = '陪玩师'
         verbose_name_plural = '陪玩师列表'
+
+    @property
+    def presence_online(self):
+        # Public activity indicator, NOT permission or willingness to accept orders.
+        if self.presence_seen_at is None:
+            return False
+        age = (timezone.now() - self.presence_seen_at).total_seconds()
+        return 0 <= age < 900
 
     @property
     def type_id(self):

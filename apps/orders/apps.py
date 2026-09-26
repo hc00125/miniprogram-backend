@@ -151,4 +151,4 @@ class OrdersConfig(AppConfig):
         boss_views.create_renewal_order = create_renewal_order
 
         # 独立后台模块只提供审计查看，不允许删除取消记录和补位记录。
-        from . import cancellation_admin, payment_window_admin  # noqa: F401
+        from . import cancellation_admin, payment_window_admin, surcharge_admin  # noqa: F401

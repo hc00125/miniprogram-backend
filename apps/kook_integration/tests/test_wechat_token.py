@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 
 
-@override_settings(KOOK_TEST_SECRETS={'wechat_app_id': 'offline-app', 'wechat_app_secret': 'offline-secret'})
+@override_settings(WECHAT_APP_ID='offline-app', KOOK_TEST_SECRETS={'wechat_app_id': 'offline-app', 'wechat_app_secret': 'offline-secret'})
 class TokenTests(SimpleTestCase):
     def setUp(self):
         cache.clear()

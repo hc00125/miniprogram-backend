@@ -23,6 +23,11 @@ def reconcile_pending_virtual_payment(order, user):
     if order.paid or order.status != Order.STATUS_PENDING_PAYMENT:
         return False
 
+    from apps.wallet.order_spend import recover_order
+    result = recover_order(order)
+    if result and result.status == 'completed':
+        return True
+
     payments = list(
         Payment.objects
         .filter(order=order, channel=VIRTUAL_CHANNEL)

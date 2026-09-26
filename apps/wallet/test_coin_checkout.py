@@ -2,7 +2,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase, override_settings
+from django.test import TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.accounts.models import ClientProfile
@@ -24,11 +24,12 @@ VIRTUAL_SETTINGS = {
     'WECHAT_VIRTUALPAY_HTTP_TIMEOUT': 10,
     'WECHAT_VIRTUALPAY_COIN_UNITS_PER_YUAN': 10,
     'ENABLE_MOCK_PAYMENT': False,
+    'SHARED_SPEND_PLATFORM_APPROVED': True,
 }
 
 
 @override_settings(**VIRTUAL_SETTINGS)
-class CoinBackedBalanceTests(TestCase):
+class CoinBackedBalanceTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='coin-balance-boss')
         self.profile = ClientProfile.objects.create(
@@ -47,11 +48,8 @@ class CoinBackedBalanceTests(TestCase):
             total_amount=30,
             status=Order.STATUS_PENDING_PAYMENT,
         )
-        self.wallet = ClientWallet.objects.create(
-            profile=self.profile,
-            balance=Decimal('30.00'),
-            recharged_total=Decimal('30.00'),
-        )
+        self.wallet, _ = ClientWallet.objects.update_or_create(profile=self.profile,
+            defaults={'balance': Decimal('30.00'), 'recharged_total': Decimal('30.00')})
         self.recharge = RechargeOrder.objects.create(
             recharge_no='RCGCOINBACKED001',
             profile=self.profile,
@@ -75,20 +73,21 @@ class CoinBackedBalanceTests(TestCase):
         )
 
     def test_coin_backed_balance_queries_then_deducts_remote_coin(self):
-        def xpay(endpoint, payload, session_key):
+        def xpay(endpoint, payload, session_key, **kwargs):
             self.assertEqual(session_key, 'session-key')
             if endpoint == '/xpay/query_user_balance':
                 return {'errcode': 0, 'balance': 300}
             if endpoint == '/xpay/currency_pay':
                 self.assertEqual(payload['amount'], 300)
                 self.assertEqual(payload['openid'], self.profile.openid)
-                return {'errcode': 0, 'balance': 0}
+                return {'errcode': 0, 'balance': 0, 'order_id': payload['order_id']}
             self.fail(f'unexpected XPay endpoint {endpoint}')
 
         with patch(
             'apps.wallet.coin_sync.exchange_code_for_session',
             return_value=(self.profile.openid, 'session-key'),
-        ), patch('apps.wallet.coin_sync.user_xpay_post', side_effect=xpay) as mocked_xpay:
+        ), patch('apps.wallet.coin_sync.user_xpay_post', side_effect=xpay) as mocked_xpay, \
+             patch('apps.wallet.spend_adapter.user_xpay_post', new=mocked_xpay):
             result = pay_order_with_coin_aware_balance(
                 self.order.order_no,
                 self.user,
@@ -101,14 +100,13 @@ class CoinBackedBalanceTests(TestCase):
         self.assertEqual(result['wechat_coin_units'], 300)
         self.assertEqual(result['wechat_coin_units_per_yuan'], 10)
         self.assertEqual([call.args[0] for call in mocked_xpay.call_args_list], [
-            '/xpay/query_user_balance',
             '/xpay/currency_pay',
         ])
         payment = Payment.objects.get(payment_no=result['payment_no'])
         self.assertEqual(payment.notify_payload['wechat_coin_status'], 'succeeded')
         self.assertEqual(payment.notify_payload['wechat_coin_diamonds'], '300.0')
         self.assertEqual(payment.notify_payload['wechat_coin_units'], 300)
-        self.assertEqual(payment.notify_payload['wechat_coin_balance_before'], 300)
+        self.assertEqual(payment.notify_payload['source_snapshot']['coin_units'], 300)
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal('0.00'))
 
@@ -117,11 +115,8 @@ class CoinBackedBalanceTests(TestCase):
             'apps.wallet.coin_sync.exchange_code_for_session',
             return_value=(self.profile.openid, 'session-key-1'),
         ), patch(
-            'apps.wallet.coin_sync.user_xpay_post',
-            side_effect=[
-                {'errcode': 0, 'balance': 300},
-                {'errcode': 0, 'balance': 0},
-            ],
+            'apps.wallet.spend_adapter.user_xpay_post',
+            side_effect=lambda endpoint, payload, session, **kw: {'errcode': 0, 'order_id': payload['order_id']},
         ):
             first = pay_order_with_coin_aware_balance(
                 self.order.order_no,
@@ -167,13 +162,14 @@ class CoinBackedBalanceTests(TestCase):
                 return {'errcode': 0, 'balance': 300}
             if endpoint == '/xpay/currency_pay':
                 self.assertEqual(payload['amount'], 100)
-                return {'errcode': 0, 'balance': 200}
+                return {'errcode': 0, 'balance': 200, 'order_id': payload['order_id']}
             self.fail(f'unexpected XPay endpoint {endpoint}')
 
         with patch(
             'apps.wallet.coin_sync.exchange_code_for_session',
             return_value=(self.profile.openid, 'session-key-2'),
-        ), patch('apps.wallet.coin_sync.user_xpay_post', side_effect=xpay) as mocked_xpay:
+        ), patch('apps.wallet.coin_sync.user_xpay_post', side_effect=xpay) as mocked_xpay, \
+             patch('apps.wallet.spend_adapter.user_xpay_post', new=mocked_xpay):
             second = pay_order_with_coin_aware_balance(
                 second_order.order_no,
                 self.user,
@@ -184,7 +180,6 @@ class CoinBackedBalanceTests(TestCase):
         self.assertEqual(second['wechat_coin_units'], 100)
         self.assertEqual([call.args[0] for call in mocked_xpay.call_args_list], [
             '/xpay/cancel_currency_pay',
-            '/xpay/query_user_balance',
             '/xpay/currency_pay',
         ])
         refund.refresh_from_db()
@@ -194,7 +189,7 @@ class CoinBackedBalanceTests(TestCase):
 
 
 @override_settings(**VIRTUAL_SETTINGS)
-class UnifiedCoinCheckoutApiTests(TestCase):
+class UnifiedCoinCheckoutApiTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='coin-checkout-boss')
         self.profile = ClientProfile.objects.create(
@@ -204,7 +199,7 @@ class UnifiedCoinCheckoutApiTests(TestCase):
         )
         self.package = Package.objects.create(name='无需微信道具绑定套餐', player_count=1, base_price=12.3)
         self.order = Order.objects.create(
-            order_no='COIN_CHECKOUT_ORDER_1',
+            order_no='COIN_CHECKOUT_1',
             boss_user=self.user,
             boss_wechat='checkout-boss',
             package=self.package,
@@ -213,9 +208,22 @@ class UnifiedCoinCheckoutApiTests(TestCase):
             total_amount=Decimal('12.30'),
             status=Order.STATUS_PENDING_PAYMENT,
         )
-        self.wallet = ClientWallet.objects.create(profile=self.profile)
+        self.wallet = ClientWallet.objects.get(profile=self.profile)
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+
+    def test_ios_instant_checkout_requires_wallet_first_without_writes(self):
+        with patch('apps.wallet.coin_recharge.exchange_code_for_session') as exchange:
+            response = self.client.post('/api/pay/wechat/virtual/create',
+                {'order_no': self.order.order_no, 'code': 'synthetic-only'},
+                format='json', HTTP_X_CLIENT_PLATFORM='ios')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('先在钱包充值', str(response.data['detail']))
+        exchange.assert_not_called()
+        self.wallet.refresh_from_db(); self.order.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal('0.00'))
+        self.assertFalse(self.order.paid)
+        self.assertFalse(RechargeOrder.objects.filter(profile=self.profile).exists())
 
     def test_instant_checkout_recharges_coin_then_finalizes_without_product_binding(self):
         with patch(
@@ -226,7 +234,7 @@ class UnifiedCoinCheckoutApiTests(TestCase):
                 '/api/pay/wechat/virtual/create',
                 {'order_no': self.order.order_no, 'code': 'create-code'},
                 format='json',
-                HTTP_X_CLIENT_PLATFORM='ios',
+                HTTP_X_CLIENT_PLATFORM='android',
             )
         self.assertEqual(created.status_code, 200, created.data)
         self.assertEqual(created.data['mode'], 'short_series_coin')
@@ -254,7 +262,7 @@ class UnifiedCoinCheckoutApiTests(TestCase):
                 f'/api/pay/wechat/virtual/query/{recharge_no}',
                 {},
                 format='json',
-                HTTP_X_CLIENT_PLATFORM='ios',
+                HTTP_X_CLIENT_PLATFORM='android',
             )
         self.assertEqual(queried.status_code, 200, queried.data)
         self.assertEqual(queried.data['status'], RechargeOrder.STATUS_CREDITED)
@@ -265,17 +273,14 @@ class UnifiedCoinCheckoutApiTests(TestCase):
             'apps.wallet.coin_sync.exchange_code_for_session',
             return_value=(self.profile.openid, 'spend-session'),
         ), patch(
-            'apps.wallet.coin_sync.user_xpay_post',
-            side_effect=[
-                {'errcode': 0, 'balance': 123},
-                {'errcode': 0, 'balance': 0},
-            ],
+            'apps.wallet.spend_adapter.user_xpay_post',
+            side_effect=lambda endpoint, payload, session, **kw: {'errcode': 0, 'order_id': payload['order_id']},
         ) as mocked_xpay:
             finalized = self.client.post(
                 f'/api/pay/wechat/virtual/finalize/{recharge_no}',
                 {'code': 'finalize-code'},
                 format='json',
-                HTTP_X_CLIENT_PLATFORM='ios',
+                HTTP_X_CLIENT_PLATFORM='android',
             )
 
         self.assertEqual(finalized.status_code, 200, finalized.data)
@@ -283,7 +288,6 @@ class UnifiedCoinCheckoutApiTests(TestCase):
         self.assertEqual(finalized.data['wechat_coin_diamonds'], '123.0')
         self.assertEqual(finalized.data['wechat_coin_units'], 123)
         self.assertEqual([call.args[0] for call in mocked_xpay.call_args_list], [
-            '/xpay/query_user_balance',
             '/xpay/currency_pay',
         ])
         self.order.refresh_from_db()

@@ -118,6 +118,7 @@ def public_list(request):
             'rating_count': player.rating_count or 0,
             'total_orders': player.total_orders or 0,
             'is_online': player.is_online,
+            'presence_online': player.presence_online,
             'can_be_designated': False if settings.FEATURE_DESIGNATE_DISABLED else player.can_be_designated,
             'status': '接单中' if player.has_active_order else ('在线' if player.is_online else '离线'),
             'created_at': player.created_at.isoformat() if player.created_at else None,

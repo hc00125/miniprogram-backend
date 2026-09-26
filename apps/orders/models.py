@@ -44,6 +44,11 @@ class Order(models.Model):
         (FULFILLMENT_MODE_TARGETED, '指定陪玩师商品'),
     ]
 
+    SOURCE_SELF = 'self'
+    SOURCE_STAFF = 'staff'
+    source = models.CharField(max_length=10, choices=[('self', '老板自助'), ('staff', '客服代派')], default='self', db_index=True, editable=False)
+    customer = models.ForeignKey('dispatch.Customer', on_delete=models.PROTECT, null=True, blank=True, related_name='orders', editable=False)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_service_orders', editable=False)
     order_no = models.CharField(max_length=20, unique=True, db_index=True)
     boss_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name='boss_orders')
     boss_wechat = models.CharField(max_length=50)
@@ -65,6 +70,7 @@ class Order(models.Model):
     end_time = models.DateTimeField(blank=True, null=True)
     duration_minutes = models.IntegerField(blank=True, null=True)
     total_amount = models.FloatField(blank=True, null=True)
+    surcharge_guarded = models.BooleanField(default=False, editable=False)
     paid = models.BooleanField(default=False)
     payment_method = models.CharField(max_length=20, blank=True, null=True)
     payment_confirmed_at = models.DateTimeField(blank=True, null=True)
@@ -457,3 +463,6 @@ class CartItem(models.Model):
 
     def __str__(self):
         return f'{self.user.username} - {self.package.name} x{self.quantity}'
+
+
+from .surcharge_models import OrderSurcharge  # noqa: E402,F401

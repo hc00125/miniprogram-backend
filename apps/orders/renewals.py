@@ -55,6 +55,8 @@ def ensure_owner(order, user):
 
 
 def validate_renewable_order(root):
+    if root.source == Order.SOURCE_STAFF:
+        raise ValidationError({'detail': '客服线下收款订单的续单请联系原客服'})
     if root.order_type != Order.ORDER_TYPE_NORMAL:
         raise ValidationError({'detail': '只能对原订单发起续单'})
     if root.status not in {Order.STATUS_READY_TO_START, Order.STATUS_IN_PROGRESS}:

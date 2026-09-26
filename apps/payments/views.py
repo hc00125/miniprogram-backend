@@ -180,12 +180,15 @@ def _idempotent_paid_checkout(order_no, user):
     if not order or not order.paid:
         return None
     payment = order.payments.filter(status='paid').order_by('-paid_at', '-id').first()
+    from apps.orders.checkout import checkout_data
+    checkout = checkout_data(order) if order.surcharge_guarded else None
     return {
         'payment_no': payment.payment_no if payment else '',
         'order_no': order.order_no,
         'status': 'paid',
         'order_status': order.status,
-        'amount': str(get_order_amount(order)),
+        'amount': checkout['total_amount_yuan'] if checkout else str(get_order_amount(order)),
+        **({'checkout': checkout} if checkout else {}),
     }
 
 
@@ -248,14 +251,20 @@ def create_wechat_virtual(request):
         if legacy_paying:
             raise ValidationError({'detail': '该订单存在迁移前的微信支付单，请取消旧支付后再重试'})
 
-        amount = get_order_amount(order)
-        _recharge, payload = create_coin_recharge(
-            request.user,
-            amount,
-            serializer.validated_data['code'],
-            request_client_platform(request),
-            checkout_order_no=order_no,
-        )
+        if order.surcharge_guarded:
+            from apps.orders.checkout_payment import create_coin_payment
+            _recharge, payload = create_coin_payment(order_no, request.user,
+                code=serializer.validated_data['code'], platform=request_client_platform(request),
+                retry_from_payment_no=serializer.validated_data.get('retry_from_payment_no', ''))
+        else:
+            amount = get_order_amount(order)
+            _recharge, payload = create_coin_recharge(
+                request.user,
+                amount,
+                serializer.validated_data['code'],
+                request_client_platform(request),
+                checkout_order_no=order_no,
+            )
     except (VirtualPaymentConfigurationError, VirtualPaymentAPIError, VirtualPaymentError) as exc:
         return virtual_payment_error_response(exc)
     except APIException:
@@ -272,6 +281,11 @@ def finalize_checkout_coin(request, recharge_no):
     if not recharge:
         raise ValidationError({'detail': '订单充值单不存在'})
     order_no = str(dict(recharge.notify_payload or {}).get('checkout_order_no') or '')
+    from apps.wallet.order_spend import query_existing
+    durable = query_existing(order_no, request.user, include_prepared=False)
+    if durable is not None:
+        durable['order_status'] = Order.objects.get(order_no=order_no).status
+        return Response(durable)
     already_paid = _idempotent_paid_checkout(order_no, request.user)
     if already_paid:
         return Response(already_paid)
@@ -361,6 +375,10 @@ def query_wechat_virtual(request, payment_no):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def query_wechat_virtual_by_order(request, order_no):
+    from apps.wallet.order_spend import query_existing
+    durable = query_existing(order_no, request.user)
+    if durable is not None:
+        return Response({'found': True, **durable})
     paid = _idempotent_paid_checkout(order_no, request.user)
     if paid:
         return Response({'found': True, **paid})

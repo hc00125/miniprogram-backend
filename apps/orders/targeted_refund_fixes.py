@@ -26,6 +26,8 @@ def cancel_targeted_order(order, reason, operator=None):
     )
     if locked.fulfillment_mode != Order.FULFILLMENT_MODE_TARGETED:
         return None
+    from apps.wallet.order_spend import guard_order
+    guard_order(locked, cancel=True)
 
     # Idempotent retry: an already-cancelled order may have been created by an
     # older buggy deployment.  Do not invent another refund here; historical

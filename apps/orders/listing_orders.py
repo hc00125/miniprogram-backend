@@ -16,6 +16,9 @@ from .services import build_order_note, generate_order_no, normalize_order_items
 @transaction.atomic
 def create_listing_order(validated_data, listing_id, user=None):
     """Create a targeted order without making the shared package player-owned."""
+    if validated_data.get('surcharge_diamonds', 0):
+        raise ValidationError({'code': 'SURCHARGE_DESIGNATED_FLOW_UNAVAILABLE',
+            'detail': '指定邀请流程尚未接入整单加价'})
     listing = (
         PlayerServiceListing.objects
         .select_for_update(of=('self',))

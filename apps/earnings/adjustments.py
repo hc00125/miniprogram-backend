@@ -151,7 +151,7 @@ def reverse_refund_earnings(refund, operator=None):
         PlayerEarning.objects
         .select_for_update()
         .select_related('player')
-        .filter(order=root_order)
+        .filter(order=root_order, source=PlayerEarning.SOURCE_ORDER)
         .order_by('id')
     )
     if not earnings:

@@ -276,4 +276,6 @@ def recharge_mock_success(request, recharge_no):
     payload['mock'] = True
     payload['mock_paid_at'] = timezone.now().isoformat()
     recharge = mark_recharge_paid(recharge, 'mock_paid', payload)
+    # Discard the profile/wallet relation cache populated before the credit.
+    recharge.refresh_from_db()
     return Response(_wallet_recharge_payload(recharge))

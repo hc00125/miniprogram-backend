@@ -2,7 +2,8 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase, override_settings
+from django.test import TransactionTestCase, override_settings
+from rest_framework.exceptions import ValidationError
 
 from apps.accounts.models import ClientProfile
 from apps.catalog.models import Package
@@ -26,7 +27,7 @@ VIRTUAL_SETTINGS = {
 
 
 @override_settings(**VIRTUAL_SETTINGS)
-class CoinRemoteSuccessRetryTests(TestCase):
+class CoinRemoteSuccessRetryTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='coin-idempotency-boss')
         self.profile = ClientProfile.objects.create(
@@ -45,11 +46,8 @@ class CoinRemoteSuccessRetryTests(TestCase):
             total_amount=20,
             status=Order.STATUS_PENDING_PAYMENT,
         )
-        self.wallet = ClientWallet.objects.create(
-            profile=self.profile,
-            balance=Decimal('20.00'),
-            recharged_total=Decimal('20.00'),
-        )
+        self.wallet, _ = ClientWallet.objects.update_or_create(profile=self.profile,
+            defaults={'balance': Decimal('20.00'), 'recharged_total': Decimal('20.00')})
         recharge = RechargeOrder.objects.create(
             recharge_no='RCGCOINIDEMPOTENT1',
             profile=self.profile,
@@ -71,38 +69,25 @@ class CoinRemoteSuccessRetryTests(TestCase):
             reference_id=recharge.recharge_no,
         )
 
-    def test_low_remote_balance_still_replays_deterministic_currency_pay(self):
-        """模拟上一次微信已扣币、本地事务却未落账后的重试。"""
-        def xpay(endpoint, payload, _session_key):
-            if endpoint == '/xpay/query_user_balance':
-                # 微信侧上次已经扣了200个官方代币，所以现在余额为0。
-                return {'errcode': 0, 'balance': 0}
-            if endpoint == '/xpay/currency_pay':
-                self.assertEqual(payload['amount'], 200)
-                return {'errcode': 268490004, 'errmsg': 'duplicate success'}
-            self.fail(f'unexpected endpoint {endpoint}')
-
-        with patch(
-            'apps.wallet.coin_sync.exchange_code_for_session',
-            return_value=(self.profile.openid, 'retry-session'),
-        ), patch('apps.wallet.coin_sync.user_xpay_post', side_effect=xpay) as mocked_xpay:
-            result = pay_order_with_coin_aware_balance(
-                self.order.order_no,
-                self.user,
-                code='fresh-retry-code',
-            )
-
-        self.assertEqual(result['status'], 'paid')
-        self.assertEqual(result['wechat_coin_diamonds'], '200.0')
-        self.assertEqual(result['wechat_coin_units'], 200)
-        self.assertEqual(result['wechat_coin_units_per_yuan'], 10)
-        self.assertEqual(
-            [call.args[0] for call in mocked_xpay.call_args_list],
-            ['/xpay/query_user_balance', '/xpay/currency_pay'],
-        )
-        payment = self.order.payments.get(status='paid')
-        self.assertTrue(payment.notify_payload['wechat_coin_balance_mismatch'])
-        self.assertEqual(payment.notify_payload['wechat_coin_order_id'][:2], 'CP')
-        self.assertEqual(payment.notify_payload['wechat_coin_units'], 200)
-        self.wallet.refresh_from_db()
-        self.assertEqual(self.wallet.balance, Decimal('0.00'))
+    def test_legacy_uncertain_capture_is_quarantined_never_replayed(self):
+        """Old low-balance/CP reconstruction is deliberately forbidden now."""
+        from django.apps import apps
+        from django.db import connection
+        from importlib import import_module
+        from .spend_models import OrderWalletSpend, WalletSpendAttempt
+        migration = import_module('apps.wallet.migrations.0014_original_order_admission_guards')
+        migration.quarantine_legacy(apps, connection.schema_editor())
+        with patch('apps.wallet.coin_sync.user_xpay_post') as old_remote, \
+             patch('apps.wallet.spend_adapter.user_xpay_post') as new_remote:
+            with self.assertRaises(ValidationError) as caught:
+                pay_order_with_coin_aware_balance(self.order.order_no, self.user, code='retry')
+        self.assertEqual(str(caught.exception.detail['code']), 'LEGACY_COIN_REVIEW_REQUIRED')
+        old_remote.assert_not_called(); new_remote.assert_not_called()
+        self.assertFalse(WalletSpendAttempt.objects.exists())
+        binding = OrderWalletSpend.objects.get(order=self.order)
+        self.assertIsNone(binding.attempt_id)
+        self.assertIn('RCGCOINIDEMPOTENT1', binding.intent['coin_recharge_nos'])
+        self.order.refresh_from_db(); self.wallet.refresh_from_db()
+        self.assertFalse(self.order.paid)
+        self.assertEqual(self.wallet.balance, Decimal('20.00'))
+        self.assertEqual(ClientWalletLedger.objects.count(), 1)

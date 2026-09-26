@@ -1,11 +1,13 @@
 from django.urls import path
 
 from apps.common.account_guard import require_operational
+from . import presence_views
 
 from . import application_views, cancellation_views, designation_views, escort_views, order_summary_views, payment_order_views, permission_views, profile_views, public_input_views, room_views, service_listing_views, views
 
 urlpatterns = [
     path('list', profile_views.public_list),
+    path('presence/heartbeat', presence_views.heartbeat),
     path('ratings/me', views.my_ratings),
     path('<int:player_id>/ratings', views.player_ratings),
     path('online-status', require_operational(permission_views.update_online_status)),

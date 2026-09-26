@@ -17,7 +17,17 @@ class OrderCreateItemSerializer(serializers.Serializer):
     description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
+class StrictSurchargeInteger(serializers.IntegerField):
+    def to_internal_value(self, data):
+        if type(data) is not int:
+            raise serializers.ValidationError('必须为JSON整数钻石，不能为字符串、小数或布尔值')
+        return super().to_internal_value(data)
+
+
 class OrderCreateSerializer(serializers.Serializer):
+    surcharge_diamonds = StrictSurchargeInteger(required=False, default=0, min_value=0, max_value=9999999999999)
+    quote_version = serializers.CharField(required=False, max_length=64)
+    idempotency_key = serializers.CharField(required=False, max_length=100)
     boss_wechat = serializers.CharField(max_length=50)
     game_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     package_id = serializers.IntegerField(required=False, allow_null=True)
@@ -40,6 +50,7 @@ class OrderCreateSerializer(serializers.Serializer):
 class DesignatedDraftSerializer(serializers.Serializer):
     """Input contract for server-side static designated-play drafts."""
 
+    surcharge_diamonds = StrictSurchargeInteger(required=False, min_value=0, max_value=0)
     draft_id = serializers.IntegerField(required=False, min_value=1)
     boss_wechat = serializers.CharField(required=False, allow_blank=True, max_length=50)
     game_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -233,13 +244,27 @@ class RenewalFieldsMixin(serializers.ModelSerializer):
         root = data['root']
         return bool(
             root.order_type == Order.ORDER_TYPE_NORMAL
+            and root.source != Order.SOURCE_STAFF
             and root.paid
             and root.status in {Order.STATUS_READY_TO_START, Order.STATUS_IN_PROGRESS}
             and data['pending'] is None
         )
 
 
-class BossOrderDetailSerializer(RenewalFieldsMixin):
+class SurchargeFieldsMixin(serializers.ModelSerializer):
+    surcharge = serializers.SerializerMethodField()
+    checkout = serializers.SerializerMethodField()
+
+    def get_surcharge(self, obj):
+        from .surcharges import surcharge_summary
+        return surcharge_summary(obj)
+
+    def get_checkout(self, obj):
+        from .checkout import checkout_data
+        return checkout_data(obj)
+
+
+class BossOrderDetailSerializer(SurchargeFieldsMixin, RenewalFieldsMixin):
     package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     target_player_id = serializers.IntegerField(read_only=True, allow_null=True)
@@ -251,7 +276,7 @@ class BossOrderDetailSerializer(RenewalFieldsMixin):
     class Meta:
         model = Order
         fields = [
-            'id', 'order_no', 'boss_wechat', 'game_id', 'package_name', 'addon_name', 'addon_details',
+            'source', 'payment_method', 'id', 'order_no', 'boss_wechat', 'game_id', 'package_name', 'addon_name', 'addon_details',
             'required_players', 'designated_types', 'designated_players', 'boss_note', 'total_price_per_hour',
             'status', 'start_time', 'end_time', 'duration_minutes', 'total_amount', 'paid', 'is_custom',
             'custom_price', 'created_at', 'booked_hours', 'timer_started_at', 'paused_duration', 'is_paused',
@@ -262,6 +287,7 @@ class BossOrderDetailSerializer(RenewalFieldsMixin):
             'fulfillment_mode', 'target_player_id', 'target_player_name_snapshot',
             'order_type', 'parent_order_no', 'renewal_index', 'renewal_count', 'renewal_booked_hours',
             'renewal_paid_amount', 'total_booked_hours', 'pending_renewal_order_no', 'can_renew', 'renewals',
+            'surcharge', 'checkout',
         ]
 
     def get_package_name(self, obj):
@@ -296,7 +322,7 @@ class BossOrderListSerializer(RenewalFieldsMixin):
     class Meta:
         model = Order
         fields = [
-            'order_no', 'package_name', 'item_count', 'status', 'total_price_per_hour',
+            'source', 'payment_method', 'order_no', 'package_name', 'item_count', 'status', 'total_price_per_hour',
             'total_amount', 'paid', 'created_at', 'kook_room_number', 'order_type',
             'fulfillment_mode', 'target_player_name_snapshot',
             'renewal_count', 'renewal_booked_hours', 'renewal_paid_amount', 'total_booked_hours',
@@ -314,6 +340,12 @@ class BossOrderListSerializer(RenewalFieldsMixin):
 
 
 class AvailableOrderSerializer(serializers.ModelSerializer):
+    surcharge = serializers.SerializerMethodField()
+
+    def get_surcharge(self, obj):
+        from .surcharges import surcharge_summary
+        return surcharge_summary(obj)
+
     package_name = serializers.SerializerMethodField()
     addon_name = serializers.CharField(source='addon.name', allow_null=True)
     current_players = serializers.SerializerMethodField()
@@ -327,7 +359,7 @@ class AvailableOrderSerializer(serializers.ModelSerializer):
             'order_no', 'package_name', 'addon_name', 'required_players', 'current_players',
             'total_price_per_hour', 'total_amount', 'booked_hours', 'boss_note', 'is_custom', 'can_grab',
             'fulfillment_mode', 'target_player_name_snapshot',
-            'is_designated', 'designated_type_ids', 'created_at', 'kook_room_number'
+            'is_designated', 'designated_type_ids', 'created_at', 'kook_room_number', 'surcharge'
         ]
 
     def get_package_name(self, obj):
@@ -420,6 +452,8 @@ class PlayerOrderDetailSerializer(BossOrderDetailSerializer):
         ]
 
     def get_boss_name(self, obj):
+        if obj.customer_id:
+            return obj.customer.nickname
         profile = getattr(obj.boss_user, 'client_profile', None)
         return profile.nickname if profile else None
 

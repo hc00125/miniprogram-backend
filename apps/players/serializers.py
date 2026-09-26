@@ -16,6 +16,7 @@ from .models import (
 
 
 class PlayerSerializer(serializers.ModelSerializer):
+    presence_online = serializers.BooleanField(read_only=True)
     type_id = serializers.IntegerField(source='player_type_id', read_only=True)
     type_name = serializers.CharField(source='player_type.name', read_only=True)
     avg_rating = serializers.FloatField(read_only=True)
@@ -32,7 +33,7 @@ class PlayerSerializer(serializers.ModelSerializer):
             'id', 'name', 'type_id', 'type_name',
             'designated_billing_type_id', 'designated_billing_type_name', 'designated_billing_type_priority',
             'contact_wechat', 'bio', 'audio_intro_url', 'audio_intro_title',
-            'is_online', 'total_orders', 'avg_rating', 'rating_count',
+            'is_online', 'presence_online', 'total_orders', 'avg_rating', 'rating_count',
             'can_accept_orders', 'can_be_designated', 'is_publicly_visible', 'can_withdraw',
             'escort_status', 'escort_status_text', 'has_escort_qualification',
         ]

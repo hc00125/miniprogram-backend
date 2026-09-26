@@ -117,7 +117,9 @@ def grab_order_with_replacement(original_grab, order_no, player, operator=None):
     if not can_player_take_replacement(order, player, state):
         raise ValidationError({'detail': '您不符合该补位名额要求，或名额已满'})
 
-    OrderPlayer.objects.create(order=order, player=player, is_designated=False)
+    from .surcharge_lifecycle import lineup_write
+    with lineup_write(order):
+        OrderPlayer.objects.create(order=order, player=player, is_designated=False)
     player.total_orders = int(player.total_orders or 0) + 1
     player.save(update_fields=['total_orders'])
     state.missing_slots = max(0, order.required_players - order.order_players.count())

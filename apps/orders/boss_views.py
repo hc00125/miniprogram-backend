@@ -1,11 +1,13 @@
 from django.conf import settings
-from django.db.models import Exists, OuterRef, Prefetch
+from django.db import transaction
+from django.db.models import Exists, OuterRef, Prefetch, F
 from django.utils import timezone
 from .kook_notifications import order_event_boundary
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Addon, Package, PackageGroup, PackageImage, PackageSpec, PlayerType
 from apps.catalog.serializers import AddonSerializer, PackageGroupSerializer, PackageSerializer, PlayerTypeSerializer
@@ -142,18 +144,44 @@ def online_players(request):
     return Response(result)
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def order_by_key(request):
+    from django.shortcuts import get_object_or_404
+    from .surcharge_models import OrderCheckout
+    from .checkout import checkout_data
+    item = get_object_or_404(OrderCheckout.objects.select_related('order'), boss=request.user,
+        idempotency_key=request.query_params.get('idempotency_key', ''))
+    return Response({'order_no': item.order.order_no, 'status': item.order.status,
+                     'checkout': checkout_data(item.order)})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def quote_order(request):
+    from .checkout import quote_order as quote
+    serializer = OrderCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    return Response(quote(serializer.validated_data))
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_order(request):
     serializer = OrderCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     order = create_order_service(serializer.validated_data, request.user)
-    return Response({
+    from .checkout import checkout_data
+    payload = {
         'order_no': order.order_no,
         'status': order.status,
         'total_price': order.total_amount,
-        'message': '订单已自动派发到抢单大厅，等待陪玩接单',
-    })
+        'message': '订单已创建，请确认原单与加价总额后付款' if hasattr(order, 'checkout') else '订单已自动派发到抢单大厅，等待陪玩接单',
+    }
+    checkout = checkout_data(order)
+    if checkout is not None:
+        payload['checkout'] = checkout
+    return Response(payload)
 
 
 @api_view(['POST'])
@@ -223,12 +251,39 @@ def my_orders(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @order_event_boundary
+@transaction.atomic
 def cancel_order(request, order_no):
-    order, error_response = get_order_or_response(order_no)
-    if error_response:
-        return error_response
+    # Funds safety never depends on notification settings. Lock parent first,
+    # matching surcharge prepare and lineup writers, before touching payments.
+    order = Order.objects.select_for_update().filter(order_no=order_no).first()
+    if order is None:
+        return Response({'detail': '订单不存在'}, status=404)
     if not can_access_order(order, request.user):
         return forbidden_response()
+    from .surcharge_models import OrderSurcharge
+    from apps.wallet.order_spend import guard_order
+    try:
+        guard_order(order, cancel=True)
+    except ValidationError as exc:
+        return Response(exc.detail, status=409)
+    if order.surcharge_guarded and not order.paid:
+        from .surcharge_refunds import cancel_unpaid_checkout
+        try:
+            cancel_unpaid_checkout(order)
+        except ValidationError as exc:
+            return Response(exc.detail, status=409)
+    if order.surcharge_guarded and order.paid:
+        from .surcharge_refunds import cancel_checkout
+        try:
+            cancel_checkout(order, reason=request.data.get('reason') or '', operator=request.user)
+        except ValidationError as exc:
+            return Response(exc.detail, status=409)
+        return Response({'message': '订单及整单加价已取消，已退款到钱包', 'order_no': order_no})
+    surcharges = OrderSurcharge.objects.filter(order=order)
+    if surcharges.filter(status__in=('processing', 'unknown')).exists():
+        return Response({'code': 'SURCHARGE_PAYMENT_PENDING', 'detail': '加价付款待确认，不能取消'}, status=409)
+    if surcharges.filter(status__in=('paid', 'partially_refunded'), amount_diamonds__gt=F('refunded_diamonds')).exists():
+        return Response({'code': 'SURCHARGE_REFUND_REQUIRES_REVIEW', 'detail': '加价订单此类售后请联系客服处理'}, status=409)
     if order.status not in {Order.STATUS_WAITING, Order.STATUS_PENDING_PAYMENT}:
         return Response(
             {'detail': '已付款或已开打订单请联系管理员处理退款，不能直接取消'},
@@ -305,6 +360,11 @@ def self_confirm_payment(request, order_no):
     if order.status != Order.STATUS_PENDING_PAYMENT:
         return Response({'detail': '订单状态不正确'}, status=status.HTTP_400_BAD_REQUEST)
 
+    from apps.wallet.order_spend import guard_order
+    guard_order(order)
+    if order.surcharge_guarded:
+        return Response({'code': 'SURCHARGE_USE_COMBINED_CHECKOUT',
+            'detail': '整单加价必须通过合计结算，不支持手动确认原单付款'}, status=409)
     old_status = order.status
     actual_amount = request.data.get('actual_amount')
     if actual_amount is not None and money(actual_amount) > 0:

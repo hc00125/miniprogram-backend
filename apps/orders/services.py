@@ -142,9 +142,7 @@ def validate_targeted_product(package):
     return player
 
 
-@transaction.atomic
-@order_event_boundary
-def create_order(validated_data, user=None, allow_existing_active=False):
+def build_order_plan(validated_data):
     order_items = normalize_order_items(validated_data)
     first_item = order_items[0]
     package = first_item['package']
@@ -226,7 +224,36 @@ def create_order(validated_data, user=None, allow_existing_active=False):
     booked_hours = first_item['quantity'] if targeted_order else (validated_data.get('booked_hours') or 1.0)
     display_name = package.name if len(order_items) == 1 else f'{package.name}等{len(order_items)}件商品'
 
+    return dict(order_items=order_items, first_item=first_item, package=package, spec=spec,
+        targeted_order=targeted_order, target_player=target_player, required_players=required_players,
+        designated_player_objects=designated_player_objects, designated_player_ids=designated_player_ids,
+        first_addon=first_addon, normalized_addons=normalized_addons, designated_types=designated_types,
+        total_price=total_price, booked_hours=booked_hours, display_name=display_name)
+
+
+@transaction.atomic
+@order_event_boundary
+def create_order(validated_data, user=None, allow_existing_active=False, _defer_checkout=False, source_context=None):
+    from .checkout import prepare_creation, persist_creation
+    previous, creation = (None, None) if _defer_checkout else prepare_creation(validated_data, user)
+    if previous is not None:
+        return previous
+    plan = build_order_plan(validated_data)
+    order_items, first_item, package, spec = (plan[k] for k in ('order_items', 'first_item', 'package', 'spec'))
+    targeted_order, target_player, required_players = (plan[k] for k in ('targeted_order', 'target_player', 'required_players'))
+    designated_player_objects, designated_player_ids = (plan[k] for k in ('designated_player_objects', 'designated_player_ids'))
+    first_addon, normalized_addons, designated_types = (plan[k] for k in ('first_addon', 'normalized_addons', 'designated_types'))
+    total_price, booked_hours, display_name = (plan[k] for k in ('total_price', 'booked_hours', 'display_name'))
+    from apps.dispatch.models import Customer
+    context = source_context or {}
+    customer = context.get('customer')
+    if customer is None and getattr(user, 'is_authenticated', False):
+        customer = Customer.objects.filter(user_id=user.pk).first()
     order = Order.objects.create(
+        source=context.get('source', Order.SOURCE_SELF),
+        customer=customer,
+        created_by=context.get('created_by', user if getattr(user, 'is_authenticated', False) else None),
+        surcharge_guarded=bool(validated_data.get('surcharge_diamonds', 0)),
         order_no=generate_order_no(),
         boss_user=user if getattr(user, 'is_authenticated', False) else None,
         boss_wechat=validated_data['boss_wechat'],
@@ -244,7 +271,7 @@ def create_order(validated_data, user=None, allow_existing_active=False):
         boss_note=build_order_note(validated_data.get('boss_note'), order_items),
         total_price_per_hour=first_item['unit_price'] if targeted_order else total_price,
         total_amount=total_price,
-        status=Order.STATUS_PENDING_PAYMENT if targeted_order else Order.STATUS_WAITING,
+        status=Order.STATUS_PENDING_PAYMENT if targeted_order or validated_data.get('surcharge_diamonds', 0) else Order.STATUS_WAITING,
         is_custom=package.is_custom,
         booked_hours=booked_hours,
         order_type=Order.ORDER_TYPE_NORMAL,
@@ -269,6 +296,7 @@ def create_order(validated_data, user=None, allow_existing_active=False):
             sort_order=item['sort_order'],
         )
 
+    persist_creation(order, creation)
     if designated_player_objects:
         create_designations(order, designated_player_objects)
         names = '、'.join(player.name for player in designated_player_objects)
@@ -413,6 +441,9 @@ def assign_designated_slot(order, player):
 @order_event_boundary
 def grab_order(order_no, player, operator=None):
     order = Order.objects.select_for_update(of=('self',)).select_related('package', 'addon').get(order_no=order_no)
+    if order.surcharge_guarded:
+        from .surcharge_lifecycle import paid_sources
+        paid_sources(order)
     expire_due_designations(order=order)
     if (
         order.status != Order.STATUS_WAITING
@@ -430,7 +461,9 @@ def grab_order(order_no, player, operator=None):
         raise ValidationError({'detail': '没有您可以抢的公开位置'})
 
     is_designated, designated_type_id = assign_designated_slot(order, player)
-    OrderPlayer.objects.create(order=order, player=player, is_designated=is_designated, designated_type_id=designated_type_id)
+    from .surcharge_lifecycle import lineup_write
+    with lineup_write(order):
+        OrderPlayer.objects.create(order=order, player=player, is_designated=is_designated, designated_type_id=designated_type_id)
     player.total_orders = (player.total_orders or 0) + 1
     player.save(update_fields=['total_orders'])
     return finalize_lineup_if_full(order, operator)
@@ -516,7 +549,9 @@ def complete_order(order, player, operator=None):
 
     op = order.order_players.get(player=player)
     op.status = '已完成'
-    op.save(update_fields=['status'])
+    from .surcharge_lifecycle import lineup_write
+    with lineup_write(order):
+        op.save(update_fields=['status'])
 
     all_completed = not order.order_players.exclude(status='已完成').exists()
     if all_completed:
@@ -535,10 +570,11 @@ def complete_order(order, player, operator=None):
             order.duration_minutes = max(1, ceil_div(effective_seconds, 60))
         elif order.start_time:
             order.duration_minutes = max(1, ceil_div(int((now - order.start_time).total_seconds()), 60))
-        order.save(update_fields=[
-            'status', 'end_time', 'duration_minutes', 'paused_duration',
-            'is_paused', 'last_paused_at',
-        ])
+        with lineup_write(order):
+            order.save(update_fields=[
+                'status', 'end_time', 'duration_minutes', 'paused_duration',
+                'is_paused', 'last_paused_at',
+            ])
         OrderStatusLog.objects.create(
             order=order,
             from_status=old_status,
@@ -550,7 +586,11 @@ def complete_order(order, player, operator=None):
 
 
 @order_event_boundary
+@transaction.atomic
 def cancel_order(order, reason=None, operator=None):
+    order = Order.objects.select_for_update().get(pk=order.pk)
+    from apps.wallet.order_spend import guard_order
+    guard_order(order, cancel=True)
     if order.status not in {Order.STATUS_WAITING, Order.STATUS_PENDING_PAYMENT}:
         raise ValidationError({'detail': '已付款或已开打订单请联系管理员处理退款，不能直接取消'})
     old_status = order.status
