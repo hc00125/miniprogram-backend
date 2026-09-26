@@ -1,17 +1,72 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
-from .models import ClientProfile
 from apps.players.models import PlayerApplication
-from apps.players.serializers import PlayerSerializer, PlayerApplicationSerializer
+from apps.players.serializers import PlayerApplicationSerializer, PlayerSerializer
+from apps.wallet.diamonds import DIAMONDS_PER_YUAN, yuan_to_diamonds
+
+from .access import refresh_expired_account_restriction
+from .models import ClientProfile
+from .vip import qmoney, vip_snapshot
 
 
 class ClientProfileSerializer(serializers.ModelSerializer):
     application = serializers.SerializerMethodField()
     player = serializers.SerializerMethodField()
+    vip = serializers.SerializerMethodField()
+    wallet = serializers.SerializerMethodField()
+    cumulative_consumption_diamonds = serializers.SerializerMethodField()
+    account_status_text = serializers.CharField(source='get_account_status_display', read_only=True)
+    phone_bound = serializers.SerializerMethodField()
+    phone_number_masked = serializers.SerializerMethodField()
+    phone_bound_at = serializers.SerializerMethodField()
 
     class Meta:
         model = ClientProfile
-        fields = ['id', 'openid', 'nickname', 'avatar_url', 'role', 'player_status', 'created_at', 'application', 'player']
+        fields = [
+            'id', 'openid', 'nickname', 'nickname_customized', 'avatar_url', 'role', 'player_status',
+            'account_status', 'account_status_text', 'account_suspended_until', 'account_restriction_reason',
+            'phone_bound', 'phone_number_masked', 'phone_bound_at',
+            'cumulative_consumption', 'cumulative_consumption_diamonds', 'vip', 'wallet',
+            'created_at', 'application', 'player',
+        ]
+
+    def to_representation(self, instance):
+        refresh_expired_account_restriction(instance)
+        return super().to_representation(instance)
+
+    def get_phone_binding(self, obj):
+        try:
+            return obj.phone_binding
+        except Exception:
+            return None
+
+    def get_phone_bound(self, obj):
+        return bool(self.get_phone_binding(obj))
+
+    def get_phone_number_masked(self, obj):
+        binding = self.get_phone_binding(obj)
+        return binding.masked_phone_number if binding else ''
+
+    def get_phone_bound_at(self, obj):
+        binding = self.get_phone_binding(obj)
+        return binding.updated_at if binding else None
+
+    def get_cumulative_consumption_diamonds(self, obj):
+        return yuan_to_diamonds(obj.cumulative_consumption)
+
+    def get_wallet(self, obj):
+        from apps.wallet.models import ClientWallet
+
+        wallet = ClientWallet.objects.filter(profile=obj).only('balance').first()
+        balance = wallet.balance if wallet else Decimal('0.00')
+        return {
+            'balance': str(qmoney(balance)),
+            'balance_yuan': str(qmoney(balance)),
+            'balance_diamonds': yuan_to_diamonds(balance),
+            'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+        }
 
     def get_application(self, obj):
         application = PlayerApplication.objects.filter(user=obj.user).order_by('-submitted_at').first()
@@ -24,6 +79,19 @@ class ClientProfileSerializer(serializers.ModelSerializer):
         if not player:
             return None
         return PlayerSerializer(player).data
+
+    def get_vip(self, obj):
+        snapshot = vip_snapshot(obj)
+        snapshot.update({
+            'growth_diamonds': yuan_to_diamonds(snapshot.get('cumulative_consumption')),
+            'remaining_growth_diamonds': yuan_to_diamonds(snapshot.get('remaining_to_next')),
+            'diamonds_per_yuan': DIAMONDS_PER_YUAN,
+        })
+        for key in ('current_tier', 'next_tier'):
+            tier = snapshot.get(key)
+            if tier:
+                tier['min_growth_diamonds'] = yuan_to_diamonds(tier.get('min_consumption'))
+        return snapshot
 
 
 class WechatLoginSerializer(serializers.Serializer):

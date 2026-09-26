@@ -13,7 +13,7 @@ class ChatSendSerializer(serializers.Serializer):
     sender_type = serializers.ChoiceField(choices=['boss', 'player', 'admin'])
     sender_id = serializers.CharField(max_length=50)
     sender_name = serializers.CharField(max_length=50)
-    content = serializers.CharField()
+    content = serializers.CharField(max_length=2000)
     message_type = serializers.CharField(required=False, default='text')
 
 

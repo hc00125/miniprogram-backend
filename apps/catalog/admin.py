@@ -1,9 +1,25 @@
+from collections import Counter
+from decimal import Decimal
+from itertools import combinations_with_replacement
+
 from django import forms
 from django.contrib import admin, messages
 from django.db import models
+from django.db import transaction
 from django.utils.html import format_html, format_html_join
 
-from .models import Addon, Package, PackageGroup, PackageImage, PackageSpec, PlayerType
+from .models import (
+    Addon,
+    CompositionSku,
+    Package,
+    PackageFamily,
+    PackageGroup,
+    PackageImage,
+    PackageSpec,
+    PlayerOffer,
+    PlayerType,
+)
+from .composition import calculate_static_composition
 
 
 IMAGE_HELP_TEXT = '填写完整图片 URL，例如：https://cdn.example.com/packages/cover.jpg。也可以填写后端可访问的 /media/... 或前端静态资源路径。'
@@ -396,14 +412,14 @@ class PackageGroupAdmin(admin.ModelAdmin):
 class PackageAdmin(admin.ModelAdmin):
     form = PackageAdminForm
     list_display = [
-        'id', 'cover_thumb', 'config_status', 'name', 'product_type', 'group',
-        'player_count', 'base_price', 'active_spec_count', 'image_summary',
+        'id', 'cover_thumb', 'config_status', 'name', 'product_type', 'selling_mode', 'owner_player', 'group',
+        'package_family', 'player_count', 'base_price', 'active_spec_count', 'image_summary',
         'sort_order', 'is_active', 'is_custom', 'sold_count', 'created_at',
     ]
-    list_filter = ['group', 'product_type', 'is_active', 'is_custom']
+    list_filter = ['group', 'package_family', 'product_type', 'selling_mode', 'is_active', 'is_custom']
     search_fields = ['name', 'description', 'rules_text', 'detail_text']
     list_editable = ['player_count', 'base_price', 'sort_order', 'is_active', 'is_custom']
-    list_select_related = ['group']
+    list_select_related = ['group', 'package_family', 'owner_player']
     ordering = ['sort_order', 'id']
     list_per_page = 30
     inlines = [PackageImageInline, PackageSpecInline]
@@ -414,7 +430,29 @@ class PackageAdmin(admin.ModelAdmin):
     actions = [
         mark_active, mark_inactive, 'duplicate_packages',
         'generate_guarantee_specs', 'mark_as_guarantee_product',
+        'export_unbound_virtual_items',
     ]
+
+    @admin.action(description='导出未绑定虚拟道具 Excel（选中商品）')
+    def export_unbound_virtual_items(self, request, queryset):
+        """为选中商品的未绑定规格生成微信虚拟支付批量导入 Excel。"""
+        try:
+            from apps.payments.virtual_item_admin import build_import_excel
+            file_path, count = build_import_excel(packages=queryset)
+            if count == 0:
+                self.message_user(request, '所选商品没有未绑定的规格（均已绑定或无法推导道具ID）', level='warning')
+                return
+            host = 'https://api.huc125.cn'
+            relative = file_path.split('/media/')[-1]
+            url = f'{host}/media/{relative}'
+            self.message_user(
+                request,
+                f'已生成 {count} 条道具导入清单。微信后台虚拟支付-道具配置-批量导入，使用该文件：{url}',
+            )
+        except Exception as exc:  # pragma: no cover - admin helper
+            import logging
+            logging.getLogger(__name__).exception('导出虚拟道具 Excel 失败')
+            self.message_user(request, f'导出失败：{exc}', level='error')
     formfield_overrides = {
         models.JSONField: {
             'widget': forms.Textarea(attrs={
@@ -433,8 +471,8 @@ class PackageAdmin(admin.ModelAdmin):
             'description': '保存商品后，这里会显示前端读取到的主图、价格、图片数量、规格数量和配置问题。',
         }),
         ('常用配置', {
-            'fields': ['name', 'product_type', 'group', 'player_count', 'base_price', 'original_price', 'description'],
-            'description': '日常上架主要填这里。保底单建议 product_type 选择“保底单”，然后用列表页操作“一键生成电视台保底九档规格”。',
+            'fields': ['name', 'product_type', 'selling_mode', 'owner_player', 'group', 'package_family', 'player_count', 'base_price', 'original_price', 'description'],
+            'description': '陪玩师专属商品：选择销售方式“陪玩师专属商品”和所属陪玩师，人数固定为 1；装备套餐维护在下方规格中，并为每个规格绑定微信虚拟商品。',
         }),
         ('旧图片 URL 字段（兼容旧数据，通常不用填）', {
             'classes': ['collapse'],
@@ -722,3 +760,232 @@ class PlayerTypeAdmin(admin.ModelAdmin):
     ordering = ['priority', 'id']
     list_per_page = 30
     actions = [mark_active, mark_inactive]
+
+
+@admin.register(PackageFamily)
+class PackageFamilyAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'name', 'code', 'game_service', 'package_summary',
+        'sort_order', 'is_active', 'updated_at',
+    ]
+    list_filter = ['is_active', 'game_service']
+    search_fields = ['name', 'code', 'description']
+    list_editable = ['sort_order', 'is_active']
+    list_select_related = ['game_service']
+    actions = ['generate_composition_skus']
+    readonly_fields = ['created_at', 'updated_at', 'package_summary_detail']
+    fieldsets = [
+        ('装备商品族', {
+            'fields': ['name', 'code', 'game_service', 'description'],
+            'description': '同一装备配置的 1/2/3 人套餐必须归入同一个商品族。',
+        }),
+        ('套餐矩阵', {
+            'fields': ['package_summary_detail'],
+            'description': '请到“商品”中给每个 1/2/3 人套餐选择本商品族。',
+        }),
+        ('状态', {'fields': ['sort_order', 'is_active']}),
+        ('记录信息', {'fields': ['created_at', 'updated_at']}),
+    ]
+
+    @admin.display(description='套餐矩阵')
+    def package_summary(self, obj):
+        matrix = obj.package_matrix(active_only=False)
+        return ' / '.join(
+            f'{count}人：{matrix[count].name}' if count in matrix else f'{count}人：缺失'
+            for count in (1, 2, 3)
+        )
+
+    @admin.display(description='套餐矩阵详情')
+    def package_summary_detail(self, obj):
+        if not obj or not obj.pk:
+            return '保存后可查看套餐矩阵。'
+        matrix = obj.package_matrix(active_only=False)
+        rows = []
+        for count in (1, 2, 3):
+            package = matrix.get(count)
+            if not package:
+                rows.append(f'<li>{count} 人套餐：<strong style="color:#dc2626;">缺失</strong></li>')
+            else:
+                state = '已上架' if package.is_active else '已下架'
+                rows.append(f'<li>{count} 人套餐：{package.name}（{state}）</li>')
+        return format_html('<ul>{}</ul>', format_html_join('', '{}', ((row,) for row in rows)))
+
+    @admin.action(description='批量生成/更新非启用组合 SKU（不自动绑定支付）')
+    def generate_composition_skus(self, request, queryset):
+        """Build every valid static composition but never publish it automatically."""
+        player_types = list(PlayerType.objects.filter(is_active=True).order_by('priority', 'id'))
+        if not player_types:
+            self.message_user(request, '没有启用的陪玩类型，无法生成组合 SKU。', level=messages.ERROR)
+            return
+
+        created = updated = unchanged = skipped_active = skipped_bound = 0
+        missing = Counter()
+        for family in queryset.select_related('game_service'):
+            for base_type in player_types:
+                eligible_types = [
+                    player_type for player_type in player_types
+                    if int(player_type.priority or 0) >= int(base_type.priority or 0)
+                ]
+                for required_players in (1, 2, 3):
+                    for designated_count in range(required_players + 1):
+                        for selection in combinations_with_replacement(eligible_types, designated_count):
+                            counts = Counter(player_type.id for player_type in selection)
+                            signature = [
+                                {'player_type_id': player_type_id, 'count': count}
+                                for player_type_id, count in sorted(counts.items())
+                            ]
+                            try:
+                                quote = calculate_static_composition(
+                                    package_family=family,
+                                    base_player_type=base_type,
+                                    required_players=required_players,
+                                    designated_type_signature=signature,
+                                    active_only=False,
+                                )
+                            except Exception as exc:  # 配置缺失时继续扫描其余组合，并汇总原因。
+                                missing[str(exc)] += 1
+                                continue
+
+                            sku = CompositionSku.objects.filter(
+                                composition_key=quote['composition_key'],
+                            ).select_related('virtual_package_spec').first()
+                            if sku and sku.is_active:
+                                skipped_active += 1
+                                continue
+
+                            price = quote['total_price_per_hour']
+                            if sku and sku.virtual_package_spec_id:
+                                virtual_price = Decimal(str(sku.virtual_package_spec.price or 0)).quantize(Decimal('0.01'))
+                                if virtual_price != price:
+                                    skipped_bound += 1
+                                    continue
+
+                            if not sku:
+                                try:
+                                    with transaction.atomic():
+                                        CompositionSku.objects.create(
+                                            package_family=family,
+                                            base_player_type=base_type,
+                                            required_players=required_players,
+                                            designated_type_signature=signature,
+                                            total_price_per_hour=price,
+                                            is_active=False,
+                                        )
+                                    created += 1
+                                except Exception as exc:
+                                    missing[str(exc)] += 1
+                                continue
+
+                            changed = (
+                                sku.total_price_per_hour != price
+                                or sku.designated_type_signature != signature
+                                or sku.required_players != required_players
+                                or sku.base_player_type_id != base_type.id
+                                or sku.package_family_id != family.id
+                            )
+                            if not changed:
+                                unchanged += 1
+                                continue
+                            try:
+                                with transaction.atomic():
+                                    sku.package_family = family
+                                    sku.base_player_type = base_type
+                                    sku.required_players = required_players
+                                    sku.designated_type_signature = signature
+                                    sku.total_price_per_hour = price
+                                    sku.is_active = False
+                                    sku.save()
+                                updated += 1
+                            except Exception as exc:
+                                missing[str(exc)] += 1
+
+        summary = (
+            f'组合 SKU 批量生成完成：新建 {created}，更新 {updated}，'
+            f'无需更新 {unchanged}，跳过已启用 {skipped_active}，'
+            f'跳过已绑定但价格不匹配 {skipped_bound}。'
+        )
+        if missing:
+            examples = '；'.join(
+                f'{reason}（{count} 个）'
+                for reason, count in missing.most_common(3)
+            )
+            summary += f' 缺失/异常配置 {sum(missing.values())} 个：{examples}'
+            self.message_user(request, summary, level=messages.WARNING)
+        else:
+            self.message_user(request, summary, level=messages.SUCCESS)
+
+
+@admin.register(PlayerOffer)
+class PlayerOfferAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'player', 'player_type', 'package_family', 'is_active',
+        'currently_available', 'sort_order', 'updated_at',
+    ]
+    list_filter = ['is_active', 'package_family', 'player__player_type']
+    search_fields = ['player__name', 'package_family__name', 'package_family__code']
+    list_editable = ['is_active', 'sort_order']
+    list_select_related = ['player', 'player__player_type', 'package_family']
+    ordering = ['package_family__sort_order', 'sort_order', 'id']
+
+    @admin.display(description='陪玩类型')
+    def player_type(self, obj):
+        return obj.player.player_type
+
+    @admin.display(description='当前可指定', boolean=True)
+    def currently_available(self, obj):
+        return obj in PlayerOffer.objects.available().filter(pk=obj.pk)
+
+
+@admin.register(CompositionSku)
+class CompositionSkuAdmin(admin.ModelAdmin):
+    list_display = [
+        'id', 'composition_key', 'package_family', 'base_player_type',
+        'required_players', 'signature_summary', 'total_price_per_hour',
+        'virtual_package_spec', 'virtual_payment_ready', 'is_active', 'updated_at',
+    ]
+    list_filter = ['is_active', 'package_family', 'base_player_type']
+    search_fields = ['composition_key', 'package_family__name', 'package_family__code']
+    list_editable = ['is_active']
+    list_select_related = [
+        'package_family', 'base_player_type', 'virtual_package_spec',
+        'virtual_package_spec__package',
+    ]
+    readonly_fields = ['composition_key', 'virtual_payment_status']
+    fieldsets = [
+        ('组合规则', {
+            'fields': [
+                'package_family', 'base_player_type', 'required_players',
+                'designated_type_signature', 'total_price_per_hour', 'composition_key',
+            ],
+            'description': '价格由装备商品族中的单人指定规格与剩余公开名额规格静态相加得出。',
+        }),
+        ('虚拟支付绑定', {
+            'fields': ['virtual_package_spec', 'virtual_payment_status'],
+            'description': '内部规格价格必须等于组合价格；再到“虚拟支付商品绑定”配置微信道具。',
+        }),
+        ('状态', {'fields': ['is_active']}),
+    ]
+
+    @admin.display(description='指定类型')
+    def signature_summary(self, obj):
+        signature = obj.designated_type_signature or []
+        return '，'.join(
+            f'类型#{item.get("player_type_id")} × {item.get("count")}'
+            for item in signature if isinstance(item, dict)
+        ) or '无指定名额'
+
+    @admin.display(description='微信虚拟支付')
+    def virtual_payment_ready(self, obj):
+        binding = obj.active_virtual_binding()
+        if binding:
+            return format_html('<span style="color:#14823b; font-weight:700;">已绑定 {}</span>', binding.product_id)
+        return format_html('<span style="color:#dc2626; font-weight:700;">未绑定或价格不匹配</span>')
+
+    @admin.display(description='微信虚拟支付状态')
+    def virtual_payment_status(self, obj):
+        if not obj or not obj.pk:
+            return '保存后可检查虚拟支付绑定。'
+        binding = obj.active_virtual_binding()
+        if binding:
+            return f'已绑定微信道具 {binding.product_id}，价格 {binding.goods_price_fen} 分。'
+        return '未配置价格匹配的启用微信虚拟支付道具；该组合不能进入支付。'

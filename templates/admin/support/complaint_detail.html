@@ -1,0 +1,41 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+{% block breadcrumbs %}<div class="breadcrumbs"><a href="{% url 'admin:index' %}">首页</a> &rsaquo; <a href="{% url 'admin:support_complaint_changelist' %}">投诉工单</a> &rsaquo; {{ complaint.number }}</div>{% endblock %}
+{% block content %}
+<p class="help">平台内部投诉处理。保存工单不执行自动退款、扣款、冻结账号或其他处罚。</p>
+<div class="module">
+  <h2>原始投诉材料（只读）</h2>
+  <table><tbody>
+    <tr><th>工单编号</th><td>{{ complaint.number }}</td></tr>
+    <tr><th>提交用户</th><td>{{ complaint.user }}</td></tr>
+    <tr><th>关联订单</th><td>{{ complaint.order|default:"未关联" }}</td></tr>
+    <tr><th>类型</th><td>{{ complaint.get_category_display }}</td></tr>
+    <tr><th>描述</th><td>{{ complaint.description|linebreaksbr }}</td></tr>
+    <tr><th>联系方式</th><td>{{ complaint.contact|default:"未填写" }}</td></tr>
+    <tr><th>状态 / 处理人</th><td>{{ complaint.get_status_display }} / {{ complaint.assigned_to|default:"未分配" }}</td></tr>
+    <tr><th>创建 / 更新</th><td>{{ complaint.created_at }} / {{ complaint.updated_at }}</td></tr>
+  </tbody></table>
+</div>
+<div class="module"><h2>证据附件（须登录且具备工单权限）</h2>
+  <ul>{% for attachment in attachments %}<li><a href="{% url 'admin:support_complaint_attachment' complaint.pk attachment.pk %}" target="_blank" rel="noopener noreferrer">查看证据 #{{ attachment.pk }}</a></li>{% empty %}<li>暂无附件</li>{% endfor %}</ul>
+</div>
+<div class="module"><h2>沟通记录（不可编辑）</h2>
+{% for message in ticket_messages %}
+  <fieldset class="module aligned"><h3>{% if message.is_internal %}内部备注 · 仅客服可见{% else %}公开内容 · 投诉用户可见{% endif %}</h3>
+  <p>{{ message.created_at }} · {{ message.author }}</p><p>{{ message.content|linebreaksbr }}</p></fieldset>
+{% empty %}<p>暂无沟通记录</p>{% endfor %}
+</div>
+<div class="module"><h2>状态轨迹</h2>
+<p>状态和变更时间对投诉用户可见；处理说明仅客服可见。</p>
+<ul>{% for event in status_history %}<li>{{ event.created_at }} · {{ event.from_status }} → {{ event.to_status }} · {{ event.reason }}</li>{% empty %}<li>暂无状态变更</li>{% endfor %}</ul>
+</div>
+<div class="module"><h2>后台操作轨迹（仅客服可见）</h2>
+<ul>{% for entry in handling_history %}<li>{{ entry.action_time }} · {{ entry.user }} · {{ entry.change_message }}</li>{% empty %}<li>暂无后台处理记录</li>{% endfor %}</ul>
+</div>
+{% if can_handle %}
+<div class="module"><h2>处理工单</h2>
+<p>仅“公开回复”的内容会展示给投诉用户；处理说明和内部备注仅客服可见。关闭后不可追加处理。</p>
+<form method="post">{% csrf_token %}<input type="hidden" name="operation" value="handle">
+{{ form.as_p }}<div class="submit-row"><input type="submit" value="保存处理记录" class="default"></div></form></div>
+{% elif complaint.status == 'closed' %}<p>工单已关闭，记录仅供查阅。</p>{% else %}<p>您只有查阅权限，无法提交处理记录。</p>{% endif %}
+{% endblock %}

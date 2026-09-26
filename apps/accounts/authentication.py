@@ -41,3 +41,31 @@ class LegacyPlayerTokenAuthentication(BaseAuthentication):
             player.user = user
             player.save(update_fields=['user', 'updated_at'])
         return user
+
+
+class LenientJWTAuthentication(BaseAuthentication):
+    """宽容版 JWT 认证：令牌无效/过期时返回 None 而不是抛异常。
+
+    标准版 JWTAuthentication 会在令牌无效时直接抛 AuthenticationFailed，
+    导致 AllowAny 的接口也返回 403。这个版本静默失败，让上层权限类自己决定是否阻止访问。
+    """
+
+    def authenticate(self, request):
+        header = request.headers.get('Authorization', '')
+        if not header.startswith('Bearer '):
+            return None
+        token_str = header[7:].strip()
+        if not token_str:
+            return None
+
+        from rest_framework_simplejwt.authentication import JWTAuthentication
+        from rest_framework_simplejwt.exceptions import TokenError
+
+        auth = JWTAuthentication()
+        try:
+            validated_token = auth.get_validated_token(token_str)
+            user = auth.get_user(validated_token)
+            return (user, validated_token)
+        except (TokenError, AuthenticationFailed):
+            # 令牌无效/过期 → 静默跳过，不阻止 AllowAny 视图
+            return None

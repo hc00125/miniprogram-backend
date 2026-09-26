@@ -5,6 +5,7 @@
 # Database
 *.sqlite3
 db.sqlite3
+db.sqlite3.backup
 
 # Python
 __pycache__/
@@ -36,6 +37,13 @@ staticfiles/
 *.pem
 certs/
 secrets/
+
+# Virtualenv
+.venv/
+venv/
+
+# Media files (user uploads, not code)
+media/
 
 # Temp
 *.tmp

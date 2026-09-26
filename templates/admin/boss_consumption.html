@@ -1,0 +1,78 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+:root{--p:#1f7c4b;--gold:#a87520;--bg:#f4f6f3;--card:#fff;--line:#dfe7df;--text:#172116;--muted:#6f7b70;--red:#b33a32}
+body{background:var(--bg)}
+.wrap{max-width:1280px;margin:0 auto;padding:24px 0}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 24px rgba(27,56,37,.05)}
+.search{padding:24px;margin-bottom:20px}.search h2{margin:0 0 18px;color:var(--text)}.form{display:grid;grid-template-columns:minmax(220px,1fr) 170px 170px auto auto;gap:14px;align-items:end}.field{display:flex;flex-direction:column;gap:6px}.field label{color:var(--muted);font-size:12px;font-weight:700}.field input{height:40px;padding:0 12px;border:1px solid #cfd8cf;border-radius:10px;background:#fff}.check{height:40px;display:flex;align-items:center;gap:8px}.btn{height:42px;padding:0 24px;border:0;border-radius:999px;color:#fff;background:var(--p);font-weight:800;cursor:pointer}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:20px}.summary>div{padding:20px}.label{color:var(--muted);font-size:12px;font-weight:800}.value{display:block;margin-top:5px;color:var(--p);font-size:30px;font-weight:900}.hint{padding:30px;text-align:center;color:var(--muted)}
+.boss{margin-bottom:16px;overflow:hidden}.boss-head{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 22px;background:linear-gradient(135deg,#f7fbf7,#fffaf0);cursor:pointer}.identity{display:flex;align-items:center;gap:14px}.avatar{width:46px;height:46px;display:flex;align-items:center;justify-content:center;border-radius:14px;color:#fff;background:linear-gradient(135deg,#173426,#2f9b63);font-size:18px;font-weight:900}.name{font-size:17px;font-weight:900;color:var(--text)}.openid{margin-top:3px;color:var(--muted);font:12px monospace}.vip{display:inline-flex;margin-top:6px;padding:4px 10px;border-radius:999px;color:#6a4814;background:#fff1c8;font-size:12px;font-weight:900}.stats{display:flex;align-items:center;gap:28px}.stat{text-align:right}.stat strong{display:block;color:var(--text);font-size:20px}.stat span{color:var(--muted);font-size:11px}.toggle{color:var(--muted)}
+.boss-body{display:none;padding:20px 22px}.boss-body.open{display:block}.section-title{margin:0 0 10px;color:var(--text);font-size:15px}.table{width:100%;border-collapse:collapse;margin-bottom:22px}.table th,.table td{padding:10px 8px;border-bottom:1px solid #eef2ee;text-align:left;font-size:13px}.table th{color:var(--muted);font-size:11px;text-transform:uppercase;background:#fafcfa}.plus{color:var(--p);font-weight:900}.minus{color:var(--red);font-weight:900}.mono{font-family:monospace}.empty{padding:16px;color:var(--muted);background:#fafcfa;border-radius:10px}
+@media(max-width:900px){.form{grid-template-columns:1fr 1fr}.summary{grid-template-columns:1fr}.boss-head{align-items:flex-start;flex-direction:column}.stats{width:100%;justify-content:space-between}.table{display:block;overflow-x:auto;white-space:nowrap}}
+</style>
+{% endblock %}
+
+{% block title %}{{ title }} | {{ site_title|default:'管理后台' }}{% endblock %}
+{% block breadcrumbs %}<div class="breadcrumbs"><a href="{% url 'admin:index' %}">首页</a> &rsaquo; {{ title }}</div>{% endblock %}
+
+{% block content %}
+<div class="wrap">
+  <div class="card search">
+    <h2>老板消费、VIP与流水查询</h2>
+    <form class="form" method="get">
+      <div class="field"><label for="id_q">昵称或OPENID</label><input id="id_q" name="q" value="{{ query }}" placeholder="输入昵称或OPENID" autofocus></div>
+      <div class="field"><label for="id_from">开始日期</label><input id="id_from" type="date" name="date_from" value="{{ date_from }}"></div>
+      <div class="field"><label for="id_to">结束日期</label><input id="id_to" type="date" name="date_to" value="{{ date_to }}"></div>
+      <label class="check"><input type="checkbox" name="total_all" value="1"{% if total_all %} checked{% endif %}>累计全部</label>
+      <button class="btn" type="submit">查询</button>
+    </form>
+  </div>
+
+  {% if query and results %}
+  <div class="summary">
+    <div class="card"><span class="label">匹配老板</span><span class="value">{{ results|length }}</span></div>
+    <div class="card"><span class="label">已完成订单</span><span class="value">{{ grand_count }}</span></div>
+    <div class="card"><span class="label">有效消费</span><span class="value">¥{{ grand_total|floatformat:2 }}</span></div>
+  </div>
+
+  {% for item in results %}
+  <div class="card boss">
+    <div class="boss-head" onclick="toggleBody(this)">
+      <div class="identity">
+        <div class="avatar">{{ item.profile.nickname|first|default:'?' }}</div>
+        <div><div class="name">{{ item.profile.nickname }}</div><div class="openid">{{ item.profile.openid }}</div><span class="vip">{{ item.vip_tier.name|default:'普通会员' }}</span></div>
+      </div>
+      <div class="stats">
+        <div class="stat"><strong>{{ item.order_count }}</strong><span>完成订单</span></div>
+        <div class="stat"><strong>¥{{ item.total_spent|floatformat:2 }}</strong><span>{% if total_all %}累计有效消费{% else %}期间消费变动{% endif %}</span></div>
+        <span class="toggle">展开 ▼</span>
+      </div>
+    </div>
+    <div class="boss-body">
+      <h3 class="section-title">最近消费流水</h3>
+      {% if item.recent_ledgers %}
+      <table class="table"><thead><tr><th>时间</th><th>来源</th><th>变动</th><th>变动后累计</th><th>订单/来源号</th><th>原因</th><th>管理员</th></tr></thead><tbody>
+      {% for row in item.recent_ledgers %}<tr><td>{{ row.created_at|date:'Y-m-d H:i' }}</td><td>{{ row.get_source_type_display }}</td><td class="{% if row.amount >= 0 %}plus{% else %}minus{% endif %}">{% if row.amount > 0 %}+{% endif %}{{ row.amount|floatformat:2 }}</td><td>¥{{ row.balance_after|floatformat:2 }}</td><td class="mono">{{ row.reference_id|default:row.order.order_no|default:'-' }}</td><td>{{ row.reason|default:'-' }}</td><td>{{ row.operator.username|default:'系统' }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<div class="empty">当前范围暂无消费流水。部署后请执行 backfill_boss_consumption 补齐历史记录。</div>{% endif %}
+
+      <h3 class="section-title">最近完成订单</h3>
+      {% if item.recent_orders %}
+      <table class="table"><thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>下单时间</th></tr></thead><tbody>
+      {% for order in item.recent_orders %}<tr><td class="mono">{{ order.order_no }}</td><td>{{ order.package_name_snapshot|default:order.package.name }}</td><td class="plus">¥{{ order.total_amount|floatformat:2 }}</td><td>{{ order.created_at|date:'Y-m-d H:i' }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<div class="empty">当前范围暂无已完成订单。</div>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% elif query %}
+  <div class="card hint">未找到匹配的老板。</div>
+  {% else %}
+  <div class="card hint">输入老板昵称或OPENID，可查看累计消费、VIP等级、订单和人工调整/退款流水。</div>
+  {% endif %}
+</div>
+<script>function toggleBody(head){var body=head.nextElementSibling;body.classList.toggle('open');var t=head.querySelector('.toggle');if(t)t.textContent=body.classList.contains('open')?'收起 ▲':'展开 ▼'}</script>
+{% endblock %}

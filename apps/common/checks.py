@@ -1,3 +1,5 @@
+import os
+
 from django.conf import settings
 from django.core.checks import Error, Warning, Tags, register
 
@@ -52,6 +54,34 @@ def production_security_settings_check(app_configs, **kwargs):
         messages.append(Error(
             '生产环境必须设置 DJANGO_SECRET_KEY',
             id='miniprogram.E006',
+        ))
+
+    if not getattr(settings, 'WECHAT_CONTENT_SECURITY_ENABLED', False):
+        messages.append(Error(
+            '生产环境必须开启 WECHAT_CONTENT_SECURITY_ENABLED',
+            id='miniprogram.E007',
+        ))
+
+    message_token = str(
+        getattr(settings, 'WECHAT_MESSAGE_TOKEN', '')
+        or os.environ.get('WECHAT_MESSAGE_TOKEN', '')
+        or ''
+    ).strip()
+    if not message_token:
+        messages.append(Error(
+            '生产环境必须配置 WECHAT_MESSAGE_TOKEN，用于校验微信消息推送回调签名',
+            id='miniprogram.E008',
+        ))
+
+    encoding_aes_key = str(
+        getattr(settings, 'WECHAT_MESSAGE_ENCODING_AES_KEY', '')
+        or os.environ.get('WECHAT_MESSAGE_ENCODING_AES_KEY', '')
+        or ''
+    ).strip()
+    if encoding_aes_key and len(encoding_aes_key) != 43:
+        messages.append(Error(
+            'WECHAT_MESSAGE_ENCODING_AES_KEY 必须为微信后台提供的 43 位 EncodingAESKey',
+            id='miniprogram.E009',
         ))
 
     if settings.DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3':
