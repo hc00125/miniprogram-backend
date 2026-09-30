@@ -1,5 +1,6 @@
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 
+from apps.accounts.access import ensure_account_operational
 from apps.players.models import Player
 
 
@@ -18,6 +19,16 @@ def current_player(user):
 class IsAdminUser(BasePermission):
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated and request.user.is_staff)
+
+
+class IsAccountOperational(BasePermission):
+    """允许查询和售后读取；对受限账户阻止新增/修改业务操作。"""
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        ensure_account_operational(request.user)
+        return True
 
 
 class IsApprovedPlayer(BasePermission):

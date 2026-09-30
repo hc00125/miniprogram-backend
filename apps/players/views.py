@@ -1,9 +1,13 @@
+import uuid
+
+from django.conf import settings
 from django.contrib.auth.models import User
-from django.db import transaction
-from django.db.models import Case, Exists, ExpressionWrapper, F, FloatField, OuterRef, Value, When
+from django.core.files.storage import default_storage
+from django.db.models import Avg, Case, Count, Exists, ExpressionWrapper, F, FloatField, OuterRef, Value, When
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
@@ -11,15 +15,58 @@ from apps.accounts.models import ClientProfile
 from apps.catalog.models import PlayerType
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.common.tokens import generate_session_token
-from apps.orders.models import Order
-from apps.orders.serializers import AvailableOrderSerializer, OrderActionSerializer, PlayerOrderDetailSerializer, PlayerOrderListSerializer
+from apps.orders.models import Order, Rating
+from apps.orders.serializers import AvailableOrderSerializer, OrderActionSerializer, OrderKookRoomSerializer, PlayerOrderDetailSerializer, PlayerOrderListSerializer
 from apps.orders.services import can_player_grab_order, complete_order as complete_order_service, grab_order as grab_order_service, pause_order, resume_order, start_timer
-from .models import Player, PlayerApplication
+from .models import Player, PlayerApplication, PlayerOrderNoticeSubscription
 from .serializers import PlayerApplicationCreateSerializer, PlayerApplicationSerializer, PlayerLoginSerializer, PlayerSerializer
+
+
+RATING_RESULT_LIMIT = 10
 
 
 def django_operator(user):
     return user if isinstance(user, User) else None
+
+
+def build_absolute_media_url(request, path):
+    media_url = default_storage.url(path)
+    if not media_url.startswith(('http://', 'https://', '/')):
+        media_url = f'/{media_url}'
+    return request.build_absolute_uri(media_url)
+
+
+def build_player_ratings_payload(player, limit=RATING_RESULT_LIMIT):
+    ratings = Rating.objects.filter(player=player).select_related('order__package').order_by('-created_at')
+    summary = ratings.aggregate(
+        average_rating=Avg('rating'),
+        rating_count=Count('id'),
+    )
+    results = []
+    for rating in ratings[:limit]:
+        order = rating.order
+        package_name = (
+            order.package_name_snapshot
+            or getattr(order.package, 'name', '')
+            or '陪玩服务'
+        )
+        results.append({
+            'id': rating.id,
+            'rating': rating.rating,
+            'comment': rating.comment or '',
+            'package_name': package_name,
+            'created_at': rating.created_at.isoformat(),
+        })
+    return {
+        'player_id': player.id,
+        'player_name': player.name,
+        'summary': {
+            'average_rating': round(float(summary['average_rating'] or 0), 1),
+            'rating_count': summary['rating_count'] or 0,
+            'total_orders': player.total_orders or 0,
+        },
+        'results': results,
+    }
 
 
 @api_view(['POST'])
@@ -78,6 +125,118 @@ def update_online_status(request):
 @permission_classes([IsApprovedPlayer])
 def me(request):
     return Response(PlayerSerializer(current_player(request.user)).data)
+
+
+@api_view(['GET'])
+@permission_classes([IsApprovedPlayer])
+def order_notice_config(request):
+    template_id = (settings.WECHAT_PLAYER_ORDER_TEMPLATE_ID or '').strip()
+    player = current_player(request.user)
+    subscription = PlayerOrderNoticeSubscription.objects.filter(
+        player=player,
+        template_id=template_id,
+    ).first() if template_id else None
+    return Response({
+        'enabled': bool(template_id),
+        'template_id': template_id,
+        'page': settings.WECHAT_PLAYER_ORDER_TEMPLATE_PAGE,
+        'available_count': subscription.available_count if subscription else 0,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsApprovedPlayer])
+def confirm_order_notice_subscription(request):
+    template_id = str(request.data.get('template_id') or '').strip()
+    accepted = request.data.get('accepted') is True
+    configured_template = (settings.WECHAT_PLAYER_ORDER_TEMPLATE_ID or '').strip()
+    if not configured_template or template_id != configured_template:
+        return Response({'detail': '接单订阅消息模板未配置或已更新'}, status=status.HTTP_400_BAD_REQUEST)
+    if not accepted:
+        return Response({
+            'message': '未授权接单订阅消息',
+            'enabled': True,
+            'template_id': configured_template,
+            'page': settings.WECHAT_PLAYER_ORDER_TEMPLATE_PAGE,
+            'available_count': 0,
+        })
+
+    player = current_player(request.user)
+    subscription, _ = PlayerOrderNoticeSubscription.objects.get_or_create(
+        player=player,
+        defaults={'template_id': configured_template},
+    )
+    if subscription.template_id != configured_template:
+        subscription.template_id = configured_template
+        subscription.available_count = 0
+    subscription.available_count += 1
+    subscription.last_subscribed_at = timezone.now()
+    subscription.save(update_fields=['template_id', 'available_count', 'last_subscribed_at', 'updated_at'])
+    return Response({
+        'message': '已开启下一次接单提醒',
+        'enabled': True,
+        'template_id': configured_template,
+        'page': settings.WECHAT_PLAYER_ORDER_TEMPLATE_PAGE,
+        'available_count': subscription.available_count,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def player_ratings(request, player_id):
+    player = Player.objects.filter(id=player_id, status=Player.STATUS_APPROVED).first()
+    if not player:
+        return Response({'detail': '陪玩师不存在或已下架'}, status=status.HTTP_404_NOT_FOUND)
+    return Response(build_player_ratings_payload(player))
+
+
+@api_view(['GET'])
+@permission_classes([IsApprovedPlayer])
+def my_ratings(request):
+    return Response(build_player_ratings_payload(current_player(request.user)))
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
+def upload_application_audio(request):
+    file_obj = request.FILES.get('file')
+    if not file_obj:
+        return Response({'detail': '缺少音频文件'}, status=status.HTTP_400_BAD_REQUEST)
+
+    allowed_types = {
+        'audio/mpeg': 'mp3',
+        'audio/mp3': 'mp3',
+        'audio/mp4': 'm4a',
+        'audio/x-m4a': 'm4a',
+        'audio/aac': 'aac',
+        'audio/wav': 'wav',
+        'audio/x-wav': 'wav',
+    }
+    extension = allowed_types.get(file_obj.content_type)
+    if not extension:
+        original_name = (getattr(file_obj, 'name', '') or '').lower()
+        if original_name.endswith('.mp3'):
+            extension = 'mp3'
+        elif original_name.endswith('.m4a'):
+            extension = 'm4a'
+        elif original_name.endswith('.aac'):
+            extension = 'aac'
+        elif original_name.endswith('.wav'):
+            extension = 'wav'
+    if not extension:
+        return Response({'detail': '只支持 MP3/M4A/AAC/WAV 音频'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if file_obj.size > 20 * 1024 * 1024:
+        return Response({'detail': '音频文件不能超过 20MB'}, status=status.HTTP_400_BAD_REQUEST)
+
+    path = default_storage.save(f'player-audio/{request.user.id}_{uuid.uuid4().hex}.{extension}', file_obj)
+    audio_url = build_absolute_media_url(request, path)
+    title = request.data.get('title') or getattr(file_obj, 'name', '') or '音频自我介绍'
+    return Response({
+        'audio_intro_url': audio_url,
+        'audio_intro_title': title,
+    })
 
 
 @api_view(['POST'])
@@ -155,12 +314,41 @@ def order_detail(request, order_no):
 
 @api_view(['POST'])
 @permission_classes([IsApprovedPlayer])
+def set_kook_room(request, order_no):
+    player = current_player(request.user)
+    order = Order.objects.filter(order_no=order_no).first()
+    if not order:
+        return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    if not order.order_players.filter(player=player).exists():
+        return Response({'detail': '您不是这个订单的打手'}, status=status.HTTP_403_FORBIDDEN)
+    if order.status in {Order.STATUS_COMPLETED, Order.STATUS_CANCELLED}:
+        return Response({'detail': '当前订单状态不能填写 KOOK 房间号'}, status=status.HTTP_400_BAD_REQUEST)
+
+    serializer = OrderKookRoomSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    room_number = serializer.validated_data['kook_room_number']
+    order.kook_room_number = room_number
+    order.kook_room_updated_at = timezone.now()
+    order.kook_room_updated_by = django_operator(request.user)
+    order.save(update_fields=['kook_room_number', 'kook_room_updated_at', 'kook_room_updated_by'])
+    return Response({
+        'message': 'KOOK 房间号已保存',
+        'order_no': order.order_no,
+        'kook_room_number': order.kook_room_number,
+        'kook_room_updated_at': order.kook_room_updated_at,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsApprovedPlayer])
 def start_timer_view(request):
     serializer = OrderActionSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     order = Order.objects.filter(order_no=serializer.validated_data['order_no']).first()
     if not order:
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    if not order.kook_room_number:
+        return Response({'detail': '请先填写 KOOK 房间号'}, status=status.HTTP_400_BAD_REQUEST)
     order = start_timer(order, current_player(request.user))
     return Response({'message': '计时已开始', 'timer_started_at': order.timer_started_at.isoformat()})
 
@@ -173,6 +361,8 @@ def complete(request):
     order = Order.objects.filter(order_no=serializer.validated_data['order_no']).first()
     if not order:
         return Response({'detail': '订单不存在'}, status=status.HTTP_404_NOT_FOUND)
+    if not order.kook_room_number:
+        return Response({'detail': '请先填写 KOOK 房间号'}, status=status.HTTP_400_BAD_REQUEST)
     order = complete_order_service(order, current_player(request.user), django_operator(request.user))
     return Response({'message': '已标记完成', 'order_no': order.order_no, 'status': order.status})
 
@@ -212,17 +402,14 @@ def list(request):
         ),
     )
 
-    # 按类型筛选
     type_id = request.query_params.get('type_id')
     if type_id:
         queryset = queryset.filter(player_type_id=type_id)
 
-    # 按在线状态筛选
     is_online = request.query_params.get('is_online')
     if is_online is not None:
         queryset = queryset.filter(is_online=is_online.lower() == 'true')
 
-    # 搜索名字
     search = request.query_params.get('search')
     if search:
         queryset = queryset.filter(name__icontains=search)
@@ -250,12 +437,15 @@ def list(request):
             'name': player.name,
             'avatar_url': avatar_url,
             'bio': player.bio,
+            'audio_intro_url': player.audio_intro_url,
+            'audio_intro_title': player.audio_intro_title,
             'player_type': {
                 'id': player.player_type.id,
                 'name': player.player_type.name,
                 'price_extra': player.player_type.price_extra or 0,
             } if player.player_type else None,
             'avg_rating': round(player.avg_rating, 1) if player.avg_rating else 0,
+            'rating_count': player.rating_count or 0,
             'total_orders': player.total_orders or 0,
             'is_online': player.is_online,
             'status': '接单中' if player.has_active_order else ('在线' if player.is_online else '离线'),

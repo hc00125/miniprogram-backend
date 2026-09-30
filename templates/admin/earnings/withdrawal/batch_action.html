@@ -1,0 +1,63 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  .batch-summary { max-width: 860px; margin: 20px 0; padding: 18px 22px; border: 1px solid var(--hairline-color); border-radius: 8px; background: var(--darkened-bg); }
+  .batch-summary strong { font-size: 16px; }
+  .batch-summary p { margin: 8px 0 0; }
+  .batch-form { max-width: 860px; }
+  .batch-form .form-row { padding: 12px 0; }
+  .batch-form label { display: block; margin-bottom: 6px; font-weight: 600; }
+  .batch-form input[type="text"], .batch-form select, .batch-form textarea { width: min(100%, 720px); box-sizing: border-box; }
+  .batch-form .helptext { display: block; margin-top: 5px; color: var(--body-quiet-color); }
+  .batch-objects { max-width: 860px; margin-top: 24px; }
+  .batch-objects ul { max-height: 260px; overflow: auto; padding-left: 22px; }
+  .submit-row { max-width: 860px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <div class="batch-summary">
+    <strong>本次共选择 {{ selected_count }} 笔提现</strong>
+    <p>合计金额：{{ total_amount }} 鱼干</p>
+    <p>系统会自动记录操作管理员、时间和内部付款批次号；外部流水号、备注及凭证均可留空。</p>
+  </div>
+
+  <form method="post" class="batch-form">
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    {% for field in form %}
+      <div class="form-row{% if field.errors %} errors{% endif %}">
+        {{ field.errors }}
+        {{ field.label_tag }}
+        {{ field }}
+        {% if field.help_text %}<span class="helptext">{{ field.help_text }}</span>{% endif %}
+      </div>
+    {% endfor %}
+
+    {% for obj in queryset %}
+      <input type="hidden" name="{{ action_checkbox_name }}" value="{{ obj.pk }}">
+    {% endfor %}
+    <input type="hidden" name="action" value="{{ action_name }}">
+    <input type="hidden" name="confirm_batch_action" value="1">
+    <input type="hidden" name="select_across" value="0">
+
+    <div class="submit-row">
+      <input type="submit" value="{{ submit_label }}" class="default">
+      <a href="../" class="button cancel-link">取消</a>
+    </div>
+  </form>
+
+  <div class="batch-objects">
+    <h2>本次处理的提现申请</h2>
+    <ul>
+      {% for obj in queryset %}
+        <li>{{ obj.withdrawal_no }}｜{{ obj.player }}｜{{ obj.amount }} 鱼干｜{{ obj.get_status_display }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endblock %}
