@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     'apps.accounts',
     'apps.catalog',
     'apps.gifts.apps.GiftsConfig',
+    'apps.patronage.apps.PatronageConfig',
     'apps.players',
     'apps.kook_integration.apps.KookIntegrationConfig',
     'apps.orders',
@@ -220,6 +221,7 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https') if env_bool('SECUR
 # Foundation release: no transaction endpoints, no payment or settlement activation.
 GIFT_CATALOG_ENABLED = env_bool('GIFT_CATALOG_ENABLED', 'true')
 GIFT_PURCHASE_ENABLED = False
+PATRONAGE_PURCHASE_ENABLED = env_bool('PATRONAGE_PURCHASE_ENABLED', 'false')
 GIFT_INVENTORY_SEND_ENABLED = False
 GIFT_EARNINGS_RELEASE_ENABLED = False
 GIFT_REFUND_ENABLED = False

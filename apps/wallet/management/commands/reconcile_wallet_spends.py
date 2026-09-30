@@ -31,6 +31,11 @@ class Command(BaseCommand):
                     from apps.gifts.services.purchases import fulfill
                     if not GiftPurchase.objects.filter(attempt=attempt).exists():
                         raise ValueError('ORPHAN_BUSINESS_RECORD')
+                elif attempt.kind == 'patronage':
+                    from apps.patronage.models import PatronagePurchase
+                    from apps.patronage.fulfillment import fulfill
+                    if not PatronagePurchase.objects.filter(attempt=attempt).exists():
+                        raise ValueError('ORPHAN_BUSINESS_RECORD')
                 elif attempt.kind == 'surcharge':
                     from apps.orders.surcharge_models import OrderSurcharge
                     from apps.orders.surcharge_payment import fulfill

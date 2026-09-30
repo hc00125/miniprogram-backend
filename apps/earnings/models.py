@@ -298,6 +298,7 @@ class WalletLedger(models.Model):
     TYPE_WITHDRAWAL_PAID = 'withdrawal_paid'
     TYPE_ADMIN_ADJUSTMENT = 'admin_adjustment'
     TYPE_GIFT_INCOME = 'gift_income'
+    TYPE_PATRONAGE_INCOME = 'patronage_income'
     ENTRY_TYPE_CHOICES = [
         (TYPE_EARNING_CREATED, '工资进入审核'),
         (TYPE_EARNING_RELEASED, '工资审核通过'),
@@ -308,6 +309,7 @@ class WalletLedger(models.Model):
         (TYPE_WITHDRAWAL_PAID, '提现完成'),
         (TYPE_ADMIN_ADJUSTMENT, '管理员调整'),
         (TYPE_GIFT_INCOME, '礼物收益'),
+        (TYPE_PATRONAGE_INCOME, '冠名/包天收益'),
     ]
 
     wallet = models.ForeignKey(PlayerWallet, on_delete=models.PROTECT, related_name='ledger_entries')

@@ -13,6 +13,7 @@ from django.utils import timezone
 from apps.earnings.models import PlayerEarning, WalletLedger, Withdrawal
 from apps.payments.models import Payment, Refund
 from apps.wallet.models import ClientWalletLedger, RechargeOrder
+from apps.wallet.diamonds import yuan_to_diamonds
 
 
 ZERO = Decimal('0.00')
@@ -178,7 +179,16 @@ def build_daily_billing_report(day, end_day=None):
     withdrawal_fish = _sum(paid_withdrawals, 'amount')
     withdrawal_yuan = _yuan_from_fish(withdrawal_fish)
 
+    # Manual adjustments change diamond balances, not verified cash receipts.
+    manual_ledgers = boss_ledgers.filter(entry_type=ClientWalletLedger.TYPE_ADMIN_ADJUST)
+    manual_added = yuan_to_diamonds(_sum(manual_ledgers.filter(amount__gt=ZERO), 'amount'))
+    manual_deducted = -yuan_to_diamonds(_sum(manual_ledgers.filter(amount__lt=ZERO), 'amount'))
+
     summary = {
+        'manual_diamond_added': manual_added,
+        'manual_diamond_deducted': manual_deducted,
+        'manual_diamond_net': manual_added - manual_deducted,
+        'manual_diamond_count': manual_ledgers.count(),
         'recharge_received': recharge_received,
         'linked_checkout_received': linked_checkout_received,
         'direct_order_received': direct_order_received,

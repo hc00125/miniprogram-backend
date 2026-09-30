@@ -1,7 +1,8 @@
 """Shared short-transaction reserve / dispatch / finalize protocol.
 
-Lock order: domain row (if any), wallet, attempt. One active spend per wallet
-intentionally serializes provenance. Unknown never expires and never re-dispatches.
+Order kinds lock their parent order first, then wallet and attempt. Patronage
+locks wallet -> attempt -> purchase -> player income wallet; never purchase first.
+One active spend per wallet serializes provenance. Unknown never re-dispatches.
 """
 import hashlib
 import json
@@ -35,7 +36,7 @@ def reserved(wallet, exclude=None):
 
 def reserve(profile, *, kind, business_no, key, amount, intent, user_ip='127.0.0.1'):
     from .coin_balance_service import _reserved_checkout_amount
-    if kind not in ('gift', 'surcharge', 'order_checkout', 'order') or not key or len(key) > 100:
+    if kind not in ('gift', 'surcharge', 'order_checkout', 'order', 'patronage') or not key or len(key) > 100:
         fail('INVALID_REQUEST')
     if not isinstance(amount, Decimal) or not amount.is_finite() or amount <= 0 or amount != amount.quantize(Decimal('.01')):
         fail('INVALID_AMOUNT')
@@ -132,6 +133,9 @@ def cancel_prepared(attempt_id, *, user=None, reason='PREPARED_CANCELLED', stric
         if attempt.kind == 'gift':
             from apps.gifts.models import GiftPurchase
             GiftPurchase.objects.filter(attempt=attempt).update(status='failed')
+        elif attempt.kind == 'patronage':
+            from apps.patronage.models import PatronagePurchase
+            PatronagePurchase.objects.filter(attempt=attempt).update(payment_status='failed')
         else:
             from apps.orders.surcharge_models import OrderSurcharge
             OrderSurcharge.objects.filter(attempt=attempt).update(status='failed')
@@ -140,6 +144,9 @@ def cancel_prepared(attempt_id, *, user=None, reason='PREPARED_CANCELLED', stric
 
 
 def finalize(attempt_id, apply=None):
+    if apply is None and WalletSpendAttempt.objects.filter(pk=attempt_id, kind='patronage').exists():
+        from apps.patronage.fulfillment import fulfill
+        apply = fulfill
     if apply is None and WalletSpendAttempt.objects.filter(pk=attempt_id, kind='order').exists():
         from .order_spend import fulfill
         apply = fulfill
@@ -176,10 +183,13 @@ def execute(attempt_id, *, adapter=None, code='', apply=None):
         return finalize(attempt_id, apply)
     if attempt.status != 'prepared':
         return attempt
-    if attempt.kind == 'order_checkout':
+    if attempt.kind in ('order_checkout', 'patronage'):
         # A closed checkout gate must not even exchange a login code. Keep the
         # locked authorization below as well: flags may change during auth.
-        from apps.orders.checkout_payment import ensure_dispatch_enabled
+        if attempt.kind == 'patronage':
+            from apps.patronage.purchases import ensure_dispatch_enabled
+        else:
+            from apps.orders.checkout_payment import ensure_dispatch_enabled
         try:
             ensure_dispatch_enabled(attempt)
         except ValidationError:
@@ -210,6 +220,8 @@ def execute(attempt_id, *, adapter=None, code='', apply=None):
                 from apps.orders.checkout_payment import authorize_dispatch
             elif attempt.kind == 'order':
                 from .order_spend import authorize_dispatch
+            elif attempt.kind == 'patronage':
+                from apps.patronage.purchases import authorize_dispatch
             else:
                 from apps.orders.surcharge_payment import authorize_dispatch
             authorization = authorize_dispatch(attempt)

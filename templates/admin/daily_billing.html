@@ -58,6 +58,7 @@ body{background:var(--bill-bg)}
     <div class="bill-card metric"><span class="metric-label">新增应计陪玩工资</span><strong class="metric-value">¥{{ summary.player_wages_yuan|floatformat:2 }}</strong><span class="metric-note">{{ summary.player_wages_fish|floatformat:2 }} 鱼干，按所选范围内工资创建时间</span></div>
     <div class="bill-card metric negative"><span class="metric-label">提现已打款</span><strong class="metric-value">−¥{{ summary.withdrawal_yuan|floatformat:2 }}</strong><span class="metric-note">{{ summary.withdrawal_fish|floatformat:2 }} 鱼干 / {{ summary.withdrawal_count }} 笔</span></div>
     <div class="bill-card metric"><span class="metric-label">钱包充值实收</span><strong class="metric-value">¥{{ summary.recharge_received|floatformat:2 }}</strong><span class="metric-note">不含为订单即时购买的内部桥接充值</span></div>
+    <div class="bill-card metric" id="manual-diamond-summary"><span class="metric-label">人工钻石变动</span><strong class="metric-value">{% if summary.manual_diamond_net > 0 %}+{% endif %}{{ summary.manual_diamond_net|floatformat:"-1u" }} 钻石</strong><span class="metric-note">增加 +{{ summary.manual_diamond_added|floatformat:"-1u" }} · 扣减 −{{ summary.manual_diamond_deducted|floatformat:"-1u" }} 钻石</span><span class="metric-note">{{ summary.manual_diamond_count }} 笔人工调整 · 净变动，不计入现金实收或净现金流</span></div>
   </section>
 
   <div class="bill-card audit-note">

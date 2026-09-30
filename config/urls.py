@@ -29,6 +29,7 @@ urlpatterns = [
     path('api/client/wallet/', include('apps.wallet.urls')),
     path('api/catalog/', include('apps.catalog.urls')),
     path('api/gifts/', include('apps.gifts.urls')),
+    path('api/patronage/', include('apps.patronage.urls')),
     path('api/boss/', include('apps.orders.boss_urls')),
     path('api/player/', include('apps.players.urls')),
     path('api/player/earnings/', include('apps.earnings.urls')),

@@ -116,6 +116,82 @@ class DailyBillingReportTests(TestCase):
         )
         Withdrawal.objects.filter(pk=withdrawal.pk).update(created_at=local_noon, updated_at=local_noon)
 
+    def test_manual_diamonds_are_separate_from_cash_and_shown_on_page(self):
+        local_noon = timezone.make_aware(
+            datetime.combine(self.day, datetime.min.time()) + timedelta(hours=12)
+        )
+        for amount in ('200.00', '-3.25'):
+            row = ClientWalletLedger.objects.create(
+                wallet=self.client_ledger.wallet,
+                entry_type=ClientWalletLedger.TYPE_ADMIN_ADJUST,
+                amount=Decimal(amount), balance_after=Decimal('200.00'),
+                note='充值（调整）',
+            )
+            ClientWalletLedger.objects.filter(pk=row.pk).update(created_at=local_noon)
+        self.client.force_login(self.admin)
+        before = list(ClientWalletLedger.objects.order_by('id').values())
+        response = self.client.get(reverse('admin_daily_billing'), {'date': self.day.isoformat()})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '人工钻石变动')
+        summary = response.context['summary']
+        self.assertEqual(summary['manual_diamond_added'], Decimal('2000.0'))
+        self.assertEqual(summary['manual_diamond_deducted'], Decimal('32.5'))
+        self.assertEqual(summary['manual_diamond_net'], Decimal('1967.5'))
+        self.assertEqual(summary['manual_diamond_count'], 2)
+        for text in ('增加 +2000', '扣减 −32.5', '+1967.5', '不计入现金实收或净现金流'):
+            self.assertContains(response, text)
+        self.assertEqual(summary['cash_received'], Decimal('170.00'))
+        self.assertEqual(summary['net_cash_flow'], Decimal('150.00'))
+        self.assertEqual(summary['recharge_received'], Decimal('100.00'))
+        self.assertEqual(before, list(ClientWalletLedger.objects.order_by('id').values()))
+
+    def test_manual_diamond_empty_and_negative_net(self):
+        report = build_daily_billing_report(self.day)
+        for key in ('manual_diamond_added', 'manual_diamond_deducted', 'manual_diamond_net', 'manual_diamond_count'):
+            self.assertEqual(report['summary'][key], 0)
+        self.client.force_login(self.admin)
+        empty = self.client.get(reverse('admin_daily_billing'), {'date': self.day.isoformat()})
+        self.assertContains(empty, '0 笔人工调整')
+        local_noon = timezone.make_aware(datetime.combine(self.day, datetime.min.time()) + timedelta(hours=12))
+        row = ClientWalletLedger.objects.create(
+            wallet=self.client_ledger.wallet, entry_type=ClientWalletLedger.TYPE_ADMIN_ADJUST,
+            amount=Decimal('-0.01'), balance_after=Decimal('1.00'),
+        )
+        ClientWalletLedger.objects.filter(pk=row.pk).update(created_at=local_noon)
+        response = self.client.get(reverse('admin_daily_billing'), {'date': self.day.isoformat()})
+        self.assertContains(response, '-0.1 钻石')
+        self.assertEqual(response.context['summary']['manual_diamond_net'], Decimal('-0.1'))
+        self.assertEqual(response.context['summary']['manual_diamond_added'], 0)
+
+    def test_manual_diamond_range_uses_shanghai_boundaries_and_only_admin_adjustments(self):
+        from datetime import date
+        from .daily_billing import SHANGHAI_TZ
+        start = datetime(2026, 1, 31, tzinfo=SHANGHAI_TZ)
+        end = datetime(2026, 2, 3, tzinfo=SHANGHAI_TZ)
+        for i, moment in enumerate((start - timedelta(microseconds=1), start,
+                                    end - timedelta(microseconds=1), end)):
+            row = ClientWalletLedger.objects.create(
+                wallet=self.client_ledger.wallet, entry_type=ClientWalletLedger.TYPE_ADMIN_ADJUST,
+                amount=Decimal('1.00'), balance_after=Decimal('10.00'),
+                reference_id='MANUAL-BOUNDARY-%s' % i,
+            )
+            ClientWalletLedger.objects.filter(pk=row.pk).update(created_at=moment)
+        for entry_type, _label in ClientWalletLedger.ENTRY_TYPE_CHOICES:
+            if entry_type == ClientWalletLedger.TYPE_ADMIN_ADJUST:
+                continue
+            row = ClientWalletLedger.objects.create(
+                wallet=self.client_ledger.wallet, entry_type=entry_type,
+                amount=Decimal('100.00'), balance_after=Decimal('100.00'),
+                note='人工充值（不是人工调整类型）',
+            )
+            ClientWalletLedger.objects.filter(pk=row.pk).update(created_at=start)
+        with timezone.override('UTC'):
+            report = build_daily_billing_report(date(2026, 1, 31), date(2026, 2, 2))
+        self.assertEqual(report['summary']['manual_diamond_added'], Decimal('20.0'))
+        self.assertEqual(report['summary']['manual_diamond_net'], Decimal('20.0'))
+        self.assertEqual(report['summary']['manual_diamond_deducted'], 0)
+        self.assertEqual(report['summary']['manual_diamond_count'], 2)
+
     def test_range_includes_both_days_and_preserves_refund_event_times(self):
         self.client.force_login(self.admin)
         first = self.day - timedelta(days=1)
