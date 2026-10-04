@@ -39,7 +39,16 @@ def quote(user, *, gift_code, quantity, recipient_id):
 def deliver_direct(record):
     # A successful debit must not deliver to a now-restricted account. Leave
     # persisted succeeded evidence + reservation for audited recovery instead.
-    recipient_for(record.buyer, record.recipient_id, {'recipient_ids': [record.recipient_id]})
+    # Archive revokes new authorization, not a debit already confirmed before
+    # archival. Keep account restriction handling distinct from player departure.
+    from apps.players.models import Player
+    recipient = Player.objects.get(pk=record.recipient_id)
+    if recipient.is_archived and record.attempt_id and record.attempt.status in ('succeeded', 'completed'):
+        if recipient.status != 'approved' or not recipient.user_id:
+            spend.fail('RECIPIENT_INELIGIBLE')
+        profile_for(recipient.user)
+    else:
+        recipient_for(record.buyer, record.recipient_id, {'recipient_ids': [record.recipient_id]})
     transfer = GiftTransfer.objects.create(transfer_no='GT' + uuid.uuid4().hex,
         sender=record.buyer, recipient=record.recipient, gift=record.gift, quantity=record.quantity,
         source='direct', purchase=record, idempotency_key='purchase:' + record.purchase_no,

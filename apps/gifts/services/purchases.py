@@ -61,7 +61,7 @@ def profile_for(user):
 
 def recipient_for(user, recipient_id, p):
     from apps.players.models import Player
-    player = Player.objects.filter(pk=recipient_id, status='approved', is_publicly_visible=True,
+    player = Player.objects.filter(pk=recipient_id, is_archived=False, status='approved', is_publicly_visible=True,
                                    user__is_active=True).select_related('user').first()
     allowed = p.get('recipient_ids')
     if not player or player.user_id == user.pk or (allowed is not None and player.pk not in allowed):

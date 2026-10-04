@@ -19,6 +19,9 @@ def create_listing_order(validated_data, listing_id, user=None):
     if validated_data.get('surcharge_diamonds', 0):
         raise ValidationError({'code': 'SURCHARGE_DESIGNATED_FLOW_UNAVAILABLE',
             'detail': '指定邀请流程尚未接入整单加价'})
+    from apps.players.archive import ensure_new_business
+    player_id = PlayerServiceListing.objects.filter(pk=listing_id).values_list('player_id', flat=True).first()
+    ensure_new_business([player_id])
     listing = (
         PlayerServiceListing.objects
         .select_for_update(of=('self',))

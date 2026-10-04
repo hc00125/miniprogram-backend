@@ -119,7 +119,7 @@ def player_service_products(request, player_id):
     stale player-owned Package.
     """
     player = Player.objects.filter(
-        pk=player_id,
+        pk=player_id, is_archived=False,
         status=Player.STATUS_APPROVED,
         can_be_designated=True,
         is_publicly_visible=True,
@@ -151,7 +151,7 @@ def player_service_products(request, player_id):
 def player_offers(request, player_id):
     """Legacy package-family offer endpoint retained until its callers are removed."""
     player = Player.objects.filter(
-        pk=player_id,
+        pk=player_id, is_archived=False,
         status=Player.STATUS_APPROVED,
     ).select_related('user__client_profile').first()
     if not player or (player.user and account_restriction_payload(player.user)):

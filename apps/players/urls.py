@@ -7,6 +7,7 @@ from . import application_views, cancellation_views, designation_views, escort_v
 
 urlpatterns = [
     path('list', profile_views.public_list),
+    path('<int:player_id>/detail', profile_views.public_detail),
     path('presence/heartbeat', presence_views.heartbeat),
     path('ratings/me', views.my_ratings),
     path('<int:player_id>/ratings', views.player_ratings),

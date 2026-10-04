@@ -167,6 +167,19 @@ class Order(models.Model):
         verbose_name='指定服务陪玩师名称快照',
     )
 
+    def save(self, *args, **kwargs):
+        from django.db import transaction
+        from apps.players.archive import ensure_new_business
+        with transaction.atomic():
+            old = type(self).objects.filter(pk=self.pk).first() if self.pk else None
+            if old is None:
+                ids = [self.target_player_id]
+                ids.extend(int(value) for value in (self.designated_players or []) if str(value).isdigit())
+                ensure_new_business(ids)
+            elif self.target_player_id and self.target_player_id != old.target_player_id:
+                ensure_new_business([self.target_player_id])
+            return super().save(*args, **kwargs)
+
     class Meta:
         db_table = 'orders'
         verbose_name = '订单'
@@ -332,9 +345,15 @@ class OrderPlayer(models.Model):
         unique_together = [('order', 'player')]
 
     def save(self, *args, **kwargs):
-        if not self.pk and not self.room_join_deadline:
-            self.room_join_deadline = timezone.now() + timedelta(minutes=10)
-        super().save(*args, **kwargs)
+        from django.db import transaction
+        from apps.players.archive import ensure_new_business
+        with transaction.atomic():
+            old = type(self).objects.filter(pk=self.pk).first() if self.pk else None
+            if old is None or old.player_id != self.player_id:
+                ensure_new_business([self.player_id])
+            if not self.pk and not self.room_join_deadline:
+                self.room_join_deadline = timezone.now() + timedelta(minutes=10)
+            super().save(*args, **kwargs)
 
     def refresh_room_join_status(self, now=None, save=True):
         now = now or timezone.now()
@@ -379,6 +398,27 @@ class OrderDesignation(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['order', 'player'], name='uniq_order_designated_player'),
         ]
+
+    def save(self, *args, **kwargs):
+        from django.db import transaction
+        from apps.players.archive import ensure_new_business
+        confirmed_payment = kwargs.pop('confirmed_payment', None)
+        with transaction.atomic():
+            old = type(self).objects.filter(pk=self.pk).first() if self.pk else None
+            historical_capture = False
+            if confirmed_payment is not None and old is None and self.status == self.STATUS_PENDING:
+                # Narrow bookkeeping exception, never an eligibility/acceptance bypass.
+                # Re-read persisted facts under the same parent lock as payment finalization.
+                from apps.payments.models import Payment
+                order = Order.objects.select_for_update().get(pk=self.order_id)
+                historical_capture = (
+                    order.paid and order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED
+                    and order.target_player_id == self.player_id
+                    and Payment.objects.filter(pk=confirmed_payment.pk, order=order, status='paid').exists()
+                )
+            if not historical_capture and (old is None or old.player_id != self.player_id or (old.status != self.status and self.status in ('pending', 'accepted'))):
+                ensure_new_business([self.player_id])
+            super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.order.order_no} - {self.player.name} - {self.get_status_display()}'

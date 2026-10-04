@@ -1,0 +1,20 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p>仅移除陪玩身份，不封禁老板账号，不清空资金，不取消订单或权益。未结事项须另行跟进。恢复仅恢复资料，接单、指定、公开展示及服务上架仍关闭。</p>
+{% if error %}<p class="errornote">{{ error }}</p>{% endif %}
+<form method="post">{% csrf_token %}
+{% for row in rows %}
+<fieldset class="module"><h2>ID {{ row.player.pk }} · {{ row.player.name }}{% if row.player.is_archived %}（已离开）{% endif %}</h2>
+<h3>未结订单（{{ row.orders|length }}）</h3><ul>{% for item in row.orders %}<li>ID {{ item.id }} · {{ item.order_no }} · {{ item.status }}</li>{% empty %}<li>无</li>{% endfor %}</ul>
+<h3>陪玩钱包（鱼干）</h3>
+{% if row.wallet %}<p>审核中 {{ row.wallet.pending_balance }} / 可提现 {{ row.wallet.available_balance }} / 提现中 {{ row.wallet.withdrawing_balance }} / 待抵扣 {{ row.wallet.debt_balance }} / 累计已提现 {{ row.wallet.withdrawn_total }}</p>{% else %}<p>无钱包</p>{% endif %}
+<h3>待处理提现（{{ row.withdrawals|length }}）</h3><ul>{% for item in row.withdrawals %}<li>ID {{ item.id }} · {{ item.withdrawal_no }} · {{ item.amount }} 鱼干 · {{ item.status }}</li>{% empty %}<li>无</li>{% endfor %}</ul>
+<h3>有效冠名（含未来权益，{{ row.crowns|length }}）</h3><ul>{% for item in row.crowns %}<li>权益ID {{ item.id }} · {{ item.purchase__purchase_no }} · 到期 {{ item.expires_at|date:"Y-m-d H:i:s" }}</li>{% empty %}<li>无</li>{% endfor %}</ul>
+<h3>未决冠名/包天支付（{{ row.pending|length }}）</h3><ul>{% for item in row.pending %}<li>ID {{ item.id }} · {{ item.purchase_no }} · {{ item.payment_status }}</li>{% empty %}<li>无</li>{% endfor %}</ul>
+<input type="hidden" name="_selected_action" value="{{ row.player.pk }}"></fieldset>
+{% endfor %}
+<input type="hidden" name="action" value="{{ action_name }}"><input type="hidden" name="preview_token" value="{{ preview_token }}">
+<p><label>操作原因（必填）：<textarea name="reason" required maxlength="2000"></textarea></label></p>
+<p><label><input type="checkbox" name="confirm" value="yes" required>已核对以上准确ID、昵称和未结事项，确认操作</label></p>
+<button type="submit">确认{{ title }}</button>
+</form>{% endblock %}

@@ -30,6 +30,10 @@ class KeyInputSerializer(serializers.Serializer):
 
 class RecordSerializer(serializers.ModelSerializer):
     player_id = serializers.IntegerField(read_only=True)
+    # Keep the patronage wire contract independent of global DRF coercion.
+    amount_yuan = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True,
+    )
     amount_diamonds = serializers.SerializerMethodField()
 
     def get_amount_diamonds(self, obj):
@@ -37,6 +41,9 @@ class RecordSerializer(serializers.ModelSerializer):
 
     def to_representation(self, obj):
         data = super().to_representation(obj)
+        data['player_archived'] = obj.player.is_archived
+        if obj.player.is_archived:
+            data['player_name'] = obj.player_name + '（已离开）'
         attempt = obj.attempt
         if attempt:
             if attempt.status == 'unknown':

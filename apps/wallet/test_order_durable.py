@@ -108,20 +108,19 @@ class OriginalOrderDurableTests(TransactionTestCase):
         self.assertEqual(ClientWalletLedger.objects.filter(reference_id=a.external_id).count(), 1)
         self.assertEqual(len(adapter.calls), 1)
 
-    def test_bad_code_cancels_undispatched_without_spend(self):
+    def test_bad_code_does_not_create_attempt_or_spend(self):
         adapter = RecordingAdapter(self)
         with patch.object(adapter, 'authenticate', side_effect=ValidationError('bad code')):
             with self.assertRaises(ValidationError): self.runpay(adapter)
-        a = WalletSpendAttempt.objects.get(kind='order')
-        self.assertEqual((a.status, a.reserved_amount, adapter.calls), ('failed', Decimal('0'), []))
+        self.assertFalse(WalletSpendAttempt.objects.exists())
+        self.assertEqual(adapter.calls, [])
 
     def test_platform_closed_zero_external_calls(self):
         with override_settings(SHARED_SPEND_PLATFORM_APPROVED=False), \
              patch('apps.wallet.spend_adapter.user_xpay_post') as external:
             with self.assertRaises(ValidationError): pay(self.order.order_no, self.user, code='bad')
         external.assert_not_called()
-        a = WalletSpendAttempt.objects.get(kind='order')
-        self.assertEqual(a.status, 'failed')
+        self.assertFalse(WalletSpendAttempt.objects.exists())
 
     def test_first_dispatch_revalidates_price_identity_status_and_eligibility(self):
         from .order_spend import prepare, fulfill
@@ -194,7 +193,7 @@ class OriginalOrderDurableTests(TransactionTestCase):
         with patch.object(adapter, 'authenticate', side_effect=revoke):
             with self.assertRaises(ValidationError): self.runpay(adapter)
         self.assertEqual(adapter.calls, [])
-        self.assertEqual(WalletSpendAttempt.objects.get().status, 'failed')
+        self.assertFalse(WalletSpendAttempt.objects.exists())
 
     def test_prepared_cancel_and_local_failure_roll_back_together(self):
         from .order_spend import prepare

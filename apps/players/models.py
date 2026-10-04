@@ -34,6 +34,11 @@ class Player(models.Model):
     total_orders = models.IntegerField(default=0)
     total_rating = models.FloatField(default=0)
     rating_count = models.IntegerField(default=0)
+    is_archived = models.BooleanField(default=False, db_index=True, editable=False, verbose_name='已移除')
+    archived_at = models.DateTimeField(null=True, blank=True, editable=False)
+    archived_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+', editable=False)
+    archive_reason = models.TextField(blank=True, default='', editable=False)
+    archived_name = models.CharField(max_length=50, blank=True, default='', editable=False)
     is_online = models.BooleanField(default=False)
     presence_seen_at = models.DateTimeField(blank=True, null=True, editable=False, verbose_name='小程序最近活跃时间')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_APPROVED)
@@ -56,10 +61,73 @@ class Player(models.Model):
         verbose_name = '陪玩师'
         verbose_name_plural = '陪玩师列表'
 
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._loaded_values = dict(zip(field_names, values))
+        return instance
+
+    def refresh_from_db(self, using=None, fields=None):
+        super().refresh_from_db(using=using, fields=fields)
+        loaded = getattr(self, '_loaded_values', {}).copy()
+        for field in self._meta.concrete_fields:
+            if (fields is None or field.name in fields or field.attname in fields) and field.attname in self.__dict__:
+                loaded[field.attname] = self.__dict__[field.attname]
+        self._loaded_values = loaded
+
+    def save(self, *args, **kwargs):
+        from django.db import transaction
+        metadata = ('is_archived', 'archived_at', 'archived_by_id', 'archive_reason', 'archived_name')
+        closed_fields = ('is_online', 'can_accept_orders', 'can_be_designated', 'is_publicly_visible', 'presence_seen_at')
+        with transaction.atomic():
+            old = type(self).objects.select_for_update().filter(pk=self.pk).first() if self.pk else None
+            if old:
+                loaded = getattr(self, '_loaded_values', {})
+                # archived_at is retained on restore and replaced on every new
+                # archive. Together with is_archived it fences both transitions,
+                # including a full archive/restore cycle (the ABA case).
+                stale = any(field not in loaded or loaded[field] != getattr(old, field)
+                            for field in ('archived_at', 'is_archived'))
+                if stale:
+                    requested = kwargs.get('update_fields')
+                    if requested is None:
+                        # Merge only edits made by this instance, not its entire
+                        # stale row (counters, contact details, etc. may be newer).
+                        requested = {f.attname for f in self._meta.concrete_fields
+                                     if f.attname in self.__dict__
+                                     and self.__dict__[f.attname] != loaded.get(f.attname)}
+                    requested = set(requested) - set(metadata) - set(closed_fields) - {'id', 'archived_by'}
+                    for field in self._meta.concrete_fields:
+                        if field.name not in requested and field.attname not in requested:
+                            setattr(self, field.attname, getattr(old, field.attname))
+                    kwargs['update_fields'] = requested
+                # Only audited archive/restore services may change metadata.
+                for field in metadata:
+                    setattr(self, field, getattr(old, field))
+                if old.is_archived:
+                    self.is_online = self.can_accept_orders = self.can_be_designated = self.is_publicly_visible = False
+                    self.presence_seen_at = None
+            result = super().save(*args, **kwargs)
+            # A partial save must not mark unrelated in-memory edits as saved.
+            # After merging a stale instance, unsaved columns came from old.
+            baseline = ({f.attname: getattr(old, f.attname) for f in self._meta.concrete_fields}
+                        if old and stale else getattr(self, '_loaded_values', {}).copy())
+            saved_fields = kwargs.get('update_fields')
+            for field in self._meta.concrete_fields:
+                if field.attname in self.__dict__ and (saved_fields is None or
+                        field.name in saved_fields or field.attname in saved_fields):
+                    baseline[field.attname] = self.__dict__[field.attname]
+            self._loaded_values = baseline
+            return result
+
+    @property
+    def display_name(self):
+        return f'{self.archived_name or self.name}（已离开）' if self.is_archived else self.name
+
     @property
     def presence_online(self):
         # Public activity indicator, NOT permission or willingness to accept orders.
-        if self.presence_seen_at is None:
+        if self.is_archived or self.presence_seen_at is None:
             return False
         age = (timezone.now() - self.presence_seen_at).total_seconds()
         return 0 <= age < 900
@@ -86,6 +154,15 @@ class Player(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class PlayerArchiveEvent(models.Model):
+    player = models.ForeignKey(Player, on_delete=models.PROTECT, related_name='archive_events')
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    action = models.CharField(max_length=16)
+    reason = models.TextField()
+    player_name = models.CharField(max_length=50)
+    created_at = models.DateTimeField(auto_now_add=True)
 
 
 class PlayerOrderNoticeSubscription(models.Model):
@@ -262,7 +339,7 @@ class PlayerServiceListing(models.Model):
         player = self.player
         spec = self.spec
         package = spec.package
-        if player.status != Player.STATUS_APPROVED:
+        if player.is_archived or player.status != Player.STATUS_APPROVED:
             return '陪玩师账号尚未通过审核'
         if not player.can_accept_orders or not player.can_be_designated:
             return '陪玩师当前未开放接单或指定权限'
@@ -281,6 +358,7 @@ class PlayerServiceListing(models.Model):
         return bool(
             self.status == self.STATUS_APPROVED
             and self.is_available
+            and not self.player.is_archived
             and self.player.status == Player.STATUS_APPROVED
             and self.player.can_accept_orders
             and self.player.can_be_designated

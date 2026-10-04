@@ -86,6 +86,8 @@ def _resolve_players(player_ids, *, family, base_type, required_players):
     if not player_ids:
         return []
 
+    from apps.players.archive import ensure_new_business
+    ensure_new_business(player_ids)
     players = list(
         Player.objects.filter(id__in=player_ids, status=Player.STATUS_APPROVED)
         .select_related('player_type', 'minimum_designated_player_type')

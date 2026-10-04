@@ -126,7 +126,7 @@ def online_players(request):
         status=Order.STATUS_IN_PROGRESS,
         order_type=Order.ORDER_TYPE_NORMAL,
     )
-    players = Player.objects.filter(is_online=True).select_related('player_type').annotate(
+    players = Player.objects.filter(is_online=True, is_archived=False).select_related('player_type').annotate(
         has_active_order=Exists(active_orders),
     )
     result = []

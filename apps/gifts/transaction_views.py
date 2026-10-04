@@ -121,7 +121,7 @@ def purchase_list(request):
         return dict(purchase_data(record),
             gift_name=record.snapshot.get('name') or record.gift.name,
             image_url=gift_image(record.gift, request), quantity=record.quantity,
-            mode=record.mode, recipient_name=record.recipient.name if record.recipient_id else None,
+            mode=record.mode, recipient_name=record.recipient.display_name if record.recipient_id else None,
             created_at=record.created_at.isoformat())
     return paginated(request, GiftPurchase.objects.filter(buyer=request.user)
         .select_related('attempt', 'gift', 'recipient').order_by('-id'), render)
@@ -177,7 +177,7 @@ def transfer_data(row, request=None):
     return {'transfer_no': row.transfer_no, 'gift_code': row.gift.code, 'quantity': row.quantity,
             'gift_name': gift_name or row.gift.name, 'image_url': gift_image(row.gift, request),
             'sender_name': sender_name or '未设置昵称的用户',
-            'recipient_name': (row.recipient.name or '').strip() or '未设置昵称的陪玩师',
+            'recipient_name': (row.recipient.display_name or '').strip() or '未设置昵称的陪玩师',
             'status': row.status, 'created_at': row.created_at.isoformat()}
 
 

@@ -11,6 +11,7 @@ from apps.common.content_security import SCENE_PROFILE, ensure_text_safe, user_o
 from apps.common.permissions import IsApprovedPlayer, current_player
 
 from .escort_qualification import player_has_approved_escort_qualification
+from .archive import ensure_new_business
 from .models import PlayerServiceListing
 
 
@@ -142,6 +143,7 @@ def service_listings(request):
     ensure_text_safe(custom_description, openid=user_openid(request.user), scene=SCENE_PROFILE)
 
     with transaction.atomic():
+        player = ensure_new_business([player.pk])[0]
         listing, created = PlayerServiceListing.objects.select_for_update().get_or_create(
             player=player,
             spec=spec,
@@ -178,10 +180,12 @@ def service_listings(request):
 
 @api_view(['PATCH'])
 @permission_classes([IsApprovedPlayer])
+@transaction.atomic
 def service_listing_detail(request, listing_id):
-    player = current_player(request.user)
+    # Player before listing: same lock order as archive, including PATCH races.
+    player = ensure_new_business([current_player(request.user).pk])[0]
     listing = (
-        PlayerServiceListing.objects
+        PlayerServiceListing.objects.select_for_update(of=('self',))
         .filter(pk=listing_id, player=player)
         .select_related('spec__package', 'spec__required_player_type')
         .first()

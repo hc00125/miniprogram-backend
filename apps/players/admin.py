@@ -7,23 +7,25 @@ from django.utils import timezone
 from apps.accounts.models import ClientProfile
 from apps.catalog.models import PlayerType
 
+from .archive_admin import ArchiveFilter, PlayerArchiveAdminMixin
 from .approval import approve_player_application, validate_player_name_available
 from .models import Player, PlayerApplication, PlayerProfileUpdateRequest
 
 
 @admin.register(Player)
-class PlayerAdmin(admin.ModelAdmin):
+class PlayerAdmin(PlayerArchiveAdminMixin, admin.ModelAdmin):
     list_display = [
         'id', 'name', 'player_type', 'minimum_designated_player_type', 'status', 'is_online', 'is_publicly_visible',
         'can_accept_orders', 'can_be_designated', 'can_withdraw', 'has_audio_intro',
         'total_orders', 'created_at',
     ]
     list_filter = [
-        'status', 'is_online', 'is_publicly_visible', 'can_accept_orders',
+        ArchiveFilter, 'status', 'is_online', 'is_publicly_visible', 'can_accept_orders',
         'can_be_designated', 'can_withdraw', 'player_type', 'minimum_designated_player_type',
     ]
     search_fields = ['name', 'contact_wechat', 'audio_intro_url', 'audio_intro_title']
     fieldsets = (
+        ('移除记录', {'fields': ('is_archived', 'archived_at', 'archived_by', 'archive_reason', 'archived_name')}),
         ('基础信息', {
             'fields': ('user', 'name', 'player_type', 'minimum_designated_player_type', 'status', 'is_online', 'contact_wechat', 'bio'),
             'description': '“陪玩类型”表示实际能力与接单资格；“最低指定计费类型”只决定老板点名指定时该名额的最低价格，留空则按陪玩自身类型计费。',
@@ -45,7 +47,7 @@ class PlayerAdmin(admin.ModelAdmin):
             'classes': ('collapse',),
         }),
     )
-    readonly_fields = ['created_at', 'updated_at']
+    readonly_fields = ['created_at', 'updated_at', 'is_archived', 'archived_at', 'archived_by', 'archive_reason', 'archived_name']
 
     @admin.display(description='音频介绍')
     def has_audio_intro(self, obj):

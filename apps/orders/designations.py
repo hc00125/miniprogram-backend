@@ -44,6 +44,8 @@ def validate_designated_players(raw_ids, required_players):
     if not player_ids:
         return []
 
+    from apps.players.archive import ensure_new_business
+    ensure_new_business(player_ids)
     players = list(
         Player.objects
         .filter(id__in=player_ids, status=Player.STATUS_APPROVED)
@@ -168,22 +170,26 @@ def create_designations(order, players):
 
 
 @order_event_boundary
-def create_targeted_designation(order):
+@transaction.atomic
+def create_targeted_designation(order, *, confirmed_payment=None):
     """Create the invitation only after a designated-product order is paid."""
     if order.fulfillment_mode != Order.FULFILLMENT_MODE_TARGETED:
         return None
     if not order.target_player_id:
         raise ValidationError({'detail': '指定商品缺少所属陪玩师，无法发送邀请'})
 
-    designation, created = OrderDesignation.objects.get_or_create(
-        order=order,
-        player_id=order.target_player_id,
-        defaults={
-            'status': OrderDesignation.STATUS_PENDING,
-            'extra_amount': DESIGNATION_EXTRA_AMOUNT,
-            'expires_at': timezone.now() + timedelta(minutes=DESIGNATION_TTL_MINUTES),
-        },
-    )
+    # Serialize idempotent creation with mark_payment_paid and other callers.
+    order = Order.objects.select_for_update().get(pk=order.pk)
+    designation = OrderDesignation.objects.filter(order=order, player_id=order.target_player_id).first()
+    created = designation is None
+    if created:
+        designation = OrderDesignation(
+            order=order, player_id=order.target_player_id,
+            status=OrderDesignation.STATUS_PENDING,
+            extra_amount=DESIGNATION_EXTRA_AMOUNT,
+            expires_at=timezone.now() + timedelta(minutes=DESIGNATION_TTL_MINUTES),
+        )
+        designation.save(confirmed_payment=confirmed_payment)
     if created:
         sync_designated_players_snapshot(order)
         OrderStatusLog.objects.create(
@@ -319,6 +325,8 @@ def finalize_lineup_if_full(order, operator=None, reason='接单人数已满，�
 @transaction.atomic
 @order_event_boundary
 def accept_designation(order_no, player, operator=None):
+    from apps.players.archive import ensure_new_business
+    player = ensure_new_business([player.pk])[0]
     order = Order.objects.select_for_update().get(order_no=order_no)
     expire_due_designations(order=order)
     if order.order_type != Order.ORDER_TYPE_NORMAL or order.status != Order.STATUS_WAITING:

@@ -24,7 +24,7 @@ def query_player(request):
         Player.objects.select_related('user__client_profile'),
         pk=serializer.validated_data['player_id'],
     )
-    if not player_is_available(player):
+    if not player.is_archived and not player_is_available(player):
         raise Http404
     return player
 

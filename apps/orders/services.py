@@ -128,6 +128,8 @@ def is_targeted_product(package):
 
 def validate_targeted_product(package):
     """Validate a one-person product without trusting any player id from the client."""
+    from apps.players.archive import ensure_new_business
+    ensure_new_business([package.owner_player_id])
     player = package.owner_player
     if not player:
         raise ValidationError({'detail': '该陪玩师商品未配置所属陪玩师，暂时无法下单'})
@@ -402,6 +404,8 @@ def can_player_grab_order(order, player):
 
 def can_player_grab_order_readonly(order, player):
     """Same slot predicate without lazy expiry writes (navigation/outbox reads)."""
+    if player.is_archived:
+        return False
     if order.fulfillment_mode == Order.FULFILLMENT_MODE_TARGETED:
         return False
     if order.order_players.filter(player=player).exists():
@@ -440,6 +444,8 @@ def assign_designated_slot(order, player):
 @transaction.atomic
 @order_event_boundary
 def grab_order(order_no, player, operator=None):
+    from apps.players.archive import ensure_new_business
+    player = ensure_new_business([player.pk])[0]
     order = Order.objects.select_for_update(of=('self',)).select_related('package', 'addon').get(order_no=order_no)
     if order.surcharge_guarded:
         from .surcharge_lifecycle import paid_sources

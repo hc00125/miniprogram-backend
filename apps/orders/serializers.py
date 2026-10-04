@@ -118,7 +118,7 @@ class OrderPricingLineSerializer(serializers.ModelSerializer):
 
 class OrderPlayerSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(source='player.id')
-    name = serializers.CharField(source='player.name')
+    name = serializers.CharField(source='player.display_name')
     type_name = serializers.CharField(source='player.player_type.name')
     avatar_url = serializers.SerializerMethodField()
     room_join_status = serializers.SerializerMethodField()
@@ -215,6 +215,12 @@ def renewal_snapshot(obj):
 
 
 class RenewalFieldsMixin(serializers.ModelSerializer):
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        if 'target_player_name_snapshot' in data and obj.target_player_id and obj.target_player.is_archived:
+            data['target_player_name_snapshot'] = (obj.target_player_name_snapshot or obj.target_player.archived_name or obj.target_player.name) + '（已离开）'
+        return data
+
     parent_order_no = serializers.CharField(source='parent_order.order_no', read_only=True, allow_null=True)
     renewal_count = serializers.SerializerMethodField()
     renewal_booked_hours = serializers.SerializerMethodField()

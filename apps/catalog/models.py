@@ -379,7 +379,7 @@ class PlayerOfferQuerySet(models.QuerySet):
     def available(self):
         """可展示给指定流程的分配，不把陪玩师在线状态混入商品配置。"""
         return self.active().filter(
-            player__status='approved',
+            player__status='approved', player__is_archived=False,
             player__can_be_designated=True,
         )
 

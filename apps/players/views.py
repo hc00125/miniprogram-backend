@@ -388,7 +388,7 @@ def list(request):
         order_players__player=OuterRef('pk'),
         status=Order.STATUS_IN_PROGRESS,
     )
-    queryset = Player.objects.filter(status=Player.STATUS_APPROVED).select_related(
+    queryset = Player.objects.filter(is_archived=False, status=Player.STATUS_APPROVED).select_related(
         'player_type', 'user', 'user__client_profile',
     ).annotate(
         has_active_order=Exists(active_orders),

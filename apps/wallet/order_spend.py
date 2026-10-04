@@ -4,7 +4,7 @@ No external call in prepare/finalize/cancel. Recovery is not a new purchase:
 only first dispatch checks current authorization. Historical ambiguity stays
 an explicit manual blocker, never a newly fabricated failed attempt.
 """
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
 from django.db import connection, transaction
 from django.utils import timezone
@@ -42,7 +42,8 @@ def _profile(user, lock=False):
     return profile
 
 
-def prepare(order_no, user, *, user_ip='127.0.0.1', allow_credited_checkout_recovery=False):
+def prepare(order_no, user, *, user_ip='127.0.0.1', allow_credited_checkout_recovery=False,
+            _before_reserve=None, _expected_intent=None):
     # Resume before payment-window or account checks: remote capture is already
     # authorized; expired code/account/window cannot turn recovery into a charge.
     order = Order.objects.filter(order_no=order_no).first()
@@ -54,6 +55,9 @@ def prepare(order_no, user, *, user_ip='127.0.0.1', allow_credited_checkout_reco
         if previous.blocker:
             spend.fail(previous.blocker)
         return previous.attempt
+    if _expected_intent is not None and intent_for(
+            order, get_order_amount(order), allow_credited_checkout_recovery) != _expected_intent:
+        spend.fail('PRICE_CHANGED')
     ensure_payment_window_open(order_no, user,
         allow_credited_checkout_recovery=allow_credited_checkout_recovery)
     # Legacy in-flight goods payments are verified outside all local locks.
@@ -67,6 +71,30 @@ def prepare(order_no, user, *, user_ip='127.0.0.1', allow_credited_checkout_reco
         if synced.status == 'paid' or synced.order.paid:
             spend.fail('ORDER_ALREADY_PAID')
         verified.add(payment.pk)
+    expected_intent = _expected_intent
+    if _before_reserve is not None:
+        # Authentication is non-financial and must precede a durable binding.
+        # Revalidate all eligibility/source/amount checks under locks below.
+        if order.paid or order.status != Order.STATUS_PENDING_PAYMENT:
+            spend.fail('ORDER_NOT_ELIGIBLE')
+        if OrderWalletSpend.objects.filter(order__boss_user=user).exclude(blocker='').exists():
+            spend.fail('LEGACY_COIN_REVIEW_REQUIRED')
+        profile = _profile(user)
+        from .models import ClientWallet
+        from .coin_balance_service import _reserved_checkout_amount
+        wallet = ClientWallet.objects.filter(profile=profile).first()
+        if wallet is not None and spend.reserved(wallet):
+            spend.fail('PAYMENT_PENDING')
+        if _reserved_checkout_amount(profile, exclude_order_no=order_no):
+            spend.fail('CHECKOUT_RECOVERY_PENDING')
+        amount = get_order_amount(order)
+        if not amount.is_finite() or amount <= 0:
+            spend.fail('INVALID_AMOUNT')
+        if wallet is None or wallet.balance < amount:
+            spend.fail('INSUFFICIENT_BALANCE')
+        if expected_intent is None:
+            expected_intent = intent_for(order, amount, allow_credited_checkout_recovery)
+        _before_reserve(profile)
     with transaction.atomic():
         order = Order.objects.select_for_update().get(pk=order.pk)
         ensure_order_owner(order, user)
@@ -89,6 +117,8 @@ def prepare(order_no, user, *, user_ip='127.0.0.1', allow_credited_checkout_reco
         profile = _profile(user)
         get_or_lock_wallet(profile)
         intent = intent_for(order, amount, allow_credited_checkout_recovery)
+        if expected_intent is not None and intent != expected_intent:
+            spend.fail('PRICE_CHANGED')
         attempt = spend.reserve(profile, kind='order', business_no=order.order_no,
             key='order:' + str(order.pk), amount=amount, intent=intent, user_ip=user_ip)
         OrderWalletSpend.objects.create(order=order, attempt=attempt, intent=intent)
@@ -99,6 +129,14 @@ def prepare(order_no, user, *, user_ip='127.0.0.1', allow_credited_checkout_reco
 def authorize_dispatch(attempt):
     binding = OrderWalletSpend.objects.select_related('order').get(attempt=attempt)
     order = binding.order
+    # First dispatch only: caller holds the parent/wallet/attempt transaction.
+    # Keep player locks until the durable dispatch decision commits, matching
+    # archive's player lock. Recovery/fulfill deliberately do not call this gate.
+    from apps.players.archive import ensure_new_business
+    player_ids = [order.target_player_id]
+    player_ids.extend(int(value) for value in (order.designated_players or []) if str(value).isdigit())
+    player_ids.extend(order.designations.filter(status__in=('pending', 'accepted')).values_list('player_id', flat=True))
+    ensure_new_business(player_ids)
     profile = _profile(order.boss_user, lock=True)
     if profile.pk != attempt.wallet.profile_id or profile.openid != attempt.request_payload['openid']:
         spend.fail('IDENTITY_CHANGED')
@@ -157,22 +195,42 @@ def pay(order_no, user, *, code='', user_ip='127.0.0.1', allow_credited_checkout
         idempotency_key=None):
     if connection.in_atomic_block:
         raise RuntimeError('Original wallet payment requires committed prepare before dispatch')
-    # Deferred refund sync is only for committed local refunds, outside the
-    # capture transaction. Cancellation and capture recovery never call it.
+    from .order_login import OrderLogin
+    login = OrderLogin(code, order_no)
+    expected_intent = None
+
+    # Preserve the committed-refund entry point before new-payment eligibility.
+    # Existing bindings are recovery-only and must never trigger refund login.
     if not OrderWalletSpend.objects.filter(order__order_no=order_no).exists():
         order = Order.objects.filter(order_no=order_no).first()
         if order is None:
             spend.fail('ORDER_NOT_FOUND')
         ensure_order_owner(order, user)
         profile = _profile(user)
-        from .coin_sync import has_pending_coin_refunds, _request_session, sync_pending_coin_refunds
+        from .coin_sync import has_pending_coin_refunds, sync_pending_coin_refunds
         if has_pending_coin_refunds(profile):
-            if not getattr(settings, 'SHARED_SPEND_PLATFORM_APPROVED', False):
-                spend.fail('POLICY_UNCONFIRMED')
-            sync_pending_coin_refunds(profile, _request_session(profile, code), user_ip)
+            # Snapshot only: new-payment gates must not block a committed refund.
+            # get_order_amount also enforces payment policy, so read its amount
+            # source directly until refund synchronization has completed.
+            raw_amount = order.total_amount if order.total_amount is not None else order.total_price_per_hour
+            amount = Decimal(str(raw_amount or 0)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            expected_intent = intent_for(order, amount, allow_credited_checkout_recovery)
+            sync_pending_coin_refunds(profile, login.acquire(profile, for_refund=True), user_ip)
+
+    def before_reserve(profile):
+        from .coin_sync import coin_backed_wallet_amount
+        if coin_backed_wallet_amount(profile):
+            login.acquire(profile)
+
     attempt = prepare(order_no, user, user_ip=user_ip,
-        allow_credited_checkout_recovery=allow_credited_checkout_recovery)
-    result = spend.execute(attempt.pk, code=code, apply=fulfill)
+        allow_credited_checkout_recovery=allow_credited_checkout_recovery,
+        _before_reserve=before_reserve, _expected_intent=expected_intent)
+    if attempt.status == 'prepared' and attempt.source_snapshot['coin_units']:
+        # Handles a pre-existing prepared intent or a racing coin credit. Any
+        # login failure occurs outside execute(), leaving an undispatched intent
+        # retryable, never changing a failed/unknown/dispatching terminal fact.
+        login.acquire(_profile(user))
+    result = spend.execute(attempt.pk, code=code, adapter=login, apply=fulfill)
     return payment_data(order_no, result)
 
 

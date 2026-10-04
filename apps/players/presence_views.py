@@ -13,12 +13,14 @@ from .models import Player
 @permission_classes([IsAuthenticated])
 def heartbeat(request):
     player = current_player(request.user)
-    if not player or player.status != Player.STATUS_APPROVED:
+    if not player or player.is_archived or player.status != Player.STATUS_APPROVED:
         return Response({'tracked': False})
     now = timezone.now()
     # Update only this caller's timestamp; never toggle rest/discipline/admin flags.
     # Conditional update prevents a delayed concurrent request regressing the clock.
-    Player.objects.filter(pk=player.pk).filter(
+    updated = Player.objects.filter(pk=player.pk, is_archived=False).filter(
         Q(presence_seen_at__isnull=True) | Q(presence_seen_at__lt=now)
     ).update(presence_seen_at=now)
+    if not updated and Player.objects.filter(pk=player.pk, is_archived=True).exists():
+        return Response({'tracked': False})
     return Response({'tracked': True, 'player_id': player.pk, 'presence_online': True})

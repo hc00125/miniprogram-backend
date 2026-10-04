@@ -27,7 +27,7 @@ def configuration(player=None):
 
 def player_is_available(player):
     # No account auto-unban, no order-acceptance or service timer restrictions.
-    if player.status != 'approved' or not player.is_publicly_visible:
+    if player.is_archived or player.status != 'approved' or not player.is_publicly_visible:
         return False
     if player.user_id:
         profile = getattr(player.user, 'client_profile', None)
@@ -74,10 +74,10 @@ def catalog_data(player=None, *, config_pair=None):
             package['bonus_naming_days'] = 7
         packages.append(package)
     profile = getattr(player.user, 'client_profile', None) if player and player.user_id else None
-    player_data = None if player is None else dict(id=player.pk, name=player.name,
+    player_data = None if player is None else dict(id=player.pk, name=player.display_name, is_archived=player.is_archived,
         avatar_url=profile.avatar_url if profile else '',
         hourly_rate_yuan=None if hourly is None or not hourly.is_finite() else f'{hourly:.2f}')
-    return dict(contract_version='1.0', purchase_enabled=bool(config.purchase_enabled and
+    return dict(contract_version='1.0', purchase_enabled=bool((player is None or not player.is_archived) and config.purchase_enabled and
         getattr(settings, 'PATRONAGE_PURCHASE_ENABLED', False)), player=player_data,
         commission_rate=decimal_text(config.commission_rate) if config.commission_rate.is_finite() else None,
         packages=packages)

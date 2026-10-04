@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from apps.admin_api.daily_billing import daily_billing_view
 from apps.dispatch.claims import client_claims
 from apps.common.wechat_callbacks import content_security_callback
+from apps.patronage.announcements import announcements
 
 
 @api_view(['GET'])
@@ -18,6 +19,7 @@ def health(_request):
 
 
 urlpatterns = [
+    path('api/announcements/', announcements, name='announcements'),
     path('dispatch/', include('apps.dispatch.urls')),
     path('api/client/history-claims/', client_claims),
     path('admin/daily-billing/', admin.site.admin_view(daily_billing_view), name='admin_daily_billing'),

@@ -91,6 +91,8 @@ def cancellation_preview(order, relation, player, now=None):
 
 
 def discipline_block_reason(player, now=None):
+    if player.is_archived:
+        return '该陪玩已离开，不能接收新业务'
     now = now or timezone.now()
     discipline = PlayerDiscipline.objects.filter(player=player).first()
     if discipline and discipline.suspended_until and discipline.suspended_until > now:

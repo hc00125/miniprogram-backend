@@ -320,7 +320,7 @@ def mark_payment_paid(payment, third_trade_no='', payload=None):
             from apps.orders.designations import create_targeted_designation
             from apps.orders.targeted_notifications import notify_paid_targeted_order
 
-            create_targeted_designation(order)
+            create_targeted_designation(order, confirmed_payment=payment)
             transaction.on_commit(lambda order_id=order.id: notify_paid_targeted_order(order_id))
         if old_status != order.status:
             OrderStatusLog.objects.create(

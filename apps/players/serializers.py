@@ -30,7 +30,7 @@ class PlayerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Player
         fields = [
-            'id', 'name', 'type_id', 'type_name',
+            'id', 'name', 'is_archived', 'type_id', 'type_name',
             'designated_billing_type_id', 'designated_billing_type_name', 'designated_billing_type_priority',
             'contact_wechat', 'bio', 'audio_intro_url', 'audio_intro_title',
             'is_online', 'presence_online', 'total_orders', 'avg_rating', 'rating_count',
