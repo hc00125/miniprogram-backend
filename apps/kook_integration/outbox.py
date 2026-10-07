@@ -88,11 +88,18 @@ def schedule_delivery(event, scope, binding=None, operation=None):
     delivery,_=KookDelivery.objects.get_or_create(event=event,scope=scope,target_id=target,operation=operation,defaults={'binding':binding,'binding_version':binding.version if binding else None,'stream':stream})
     return delivery
 
-def send_allowed(binding=None,scope='dm'):
+def dm_recipient_allowlisted(binding):
+    """Legacy canary lists remain fail-closed, including explicit None."""
+    return bool(binding and
+                binding.kook_user_id in (getattr(settings, 'KOOK_DM_ALLOWLIST', []) or []) and
+                binding.player_id in (getattr(settings, 'KOOK_PLAYER_ALLOWLIST', []) or []))
+
+
+def send_allowed(binding=None,scope='dm',designated=False):
     if not getattr(settings,'KOOK_ENABLED',False) or not getattr(settings,'KOOK_SEND_ENABLED',False):
         return False
     if scope=='dm':
-        return bool(getattr(settings,'KOOK_DM_SEND_ENABLED',False) and binding and binding.active and binding.notifications_enabled and binding.bot_key==bot_key() and binding.kook_user_id in getattr(settings,'KOOK_DM_ALLOWLIST',[]) and binding.player_id in getattr(settings,'KOOK_PLAYER_ALLOWLIST',[]))
+        return bool(getattr(settings,'KOOK_DM_SEND_ENABLED',False) and binding and binding.active and binding.notifications_enabled and binding.bot_key==bot_key() and (dm_recipient_allowlisted(binding) or (designated and getattr(settings, 'KOOK_DESIGNATED_DM_OPEN_ENABLED', False) is True)))
     version=getattr(settings,'KOOK_TARGET_CONFIG_VERSION','')
     return bool(getattr(settings,'KOOK_CHANNEL_SEND_ENABLED',False) and version and version==getattr(settings,'KOOK_VERIFIED_CONFIG_VERSION',None) and getattr(settings,'KOOK_VERIFIED_BOT_KEY','')==bot_key() and getattr(settings,'KOOK_VERIFIED_CHANNEL_ID','') and getattr(settings,'KOOK_VERIFIED_GUILD_ID',''))
 
@@ -163,7 +170,9 @@ def fresh(delivery):
         profile=getattr(binding.player.user,'client_profile',None) if binding.player.user else None
         if not profile or not profile.openid or not binding.player.user.is_active or profile.account_status!='active':
             return False,'ACCOUNT_RESTRICTED'
-        if not send_allowed(binding):
+        designated = (delivery.scope == 'dm' and event.event_type in {'designation.created', 'designation.closed'}
+                      and event.payload.get('audience') == 'designated_dm')
+        if not send_allowed(binding, designated=designated):
             return False,'SEND_DISABLED'
     elif not send_allowed(scope='channel') or delivery.target_id!=getattr(settings,'KOOK_VERIFIED_CHANNEL_ID',''):
         return False,'SEND_DISABLED'

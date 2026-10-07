@@ -65,7 +65,7 @@ def scoped_dm_binding(row):
     """Shared capture/send DM authorization in every notification scope."""
     from django.utils.dateparse import parse_datetime
     from apps.kook_integration.models import KookBinding
-    from apps.kook_integration.outbox import send_allowed
+    from apps.kook_integration.outbox import send_allowed, dm_recipient_allowlisted
     from apps.kook_integration.secrets import bot_key
     raw = getattr(settings, 'KOOK_ORDER_DM_INVITATIONS_SINCE', '')
     try:
@@ -76,8 +76,18 @@ def scoped_dm_binding(row):
         return None
     binding = KookBinding.objects.filter(bot_key=bot_key(), player_id=row.player_id,
         active=True, notifications_enabled=True).first()
-    if not send_allowed(binding):
+    if not send_allowed(binding, designated=True):
         return None
+    if not dm_recipient_allowlisted(binding):
+        # Fixed opening boundary for newly eligible recipients; never replay old
+        # invitations on unrelated order edits. Shared by capture and revalidation.
+        raw = getattr(settings, 'KOOK_DESIGNATED_DM_OPEN_SINCE', '')
+        try:
+            opened_since = parse_datetime(raw) if isinstance(raw, str) else None
+        except ValueError:
+            return None
+        if not opened_since or timezone.is_naive(opened_since) or row.invited_at < opened_since:
+            return None
     from apps.players.escort_qualification import escort_order_block_reason
     player = eligible_player(row.player_id)
     if not player or not player.can_be_designated or escort_order_block_reason(row.order, player):

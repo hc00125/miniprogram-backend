@@ -10,6 +10,7 @@ from apps.admin_api.daily_billing import daily_billing_view
 from apps.dispatch.claims import client_claims
 from apps.common.wechat_callbacks import content_security_callback
 from apps.patronage.announcements import announcements
+from apps.orders.rankings import rankings
 
 
 @api_view(['GET'])
@@ -19,6 +20,7 @@ def health(_request):
 
 
 urlpatterns = [
+    path('api/rankings/', rankings, name='rankings'),
     path('api/announcements/', announcements, name='announcements'),
     path('dispatch/', include('apps.dispatch.urls')),
     path('api/client/history-claims/', client_claims),
