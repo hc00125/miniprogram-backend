@@ -1,0 +1,12 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+  {% if can_manual_adjust_wallet %}
+    <li>
+      <a href="{% url 'admin:wallet_clientwallet_manual_adjust' %}" class="addlink">
+        手动调整用户钻石
+      </a>
+    </li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}
