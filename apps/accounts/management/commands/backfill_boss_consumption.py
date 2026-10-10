@@ -34,7 +34,7 @@ class Command(BaseCommand):
         order_created = 0
         refund_created = 0
         for order in orders.iterator() if not limit else orders:
-            entry = record_completed_order(order)
+            entry = record_completed_order(order, publish_upgrade=False)
             if entry:
                 order_created += 1
         for refund in refunds.iterator():

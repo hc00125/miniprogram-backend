@@ -70,6 +70,21 @@ class PlayerPatronageConfig(models.Model):
         return f'{self.player.name} 包天计价'
 
 
+class PlayerNamingServiceConfig(models.Model):
+    player = models.ForeignKey('players.Player', on_delete=models.PROTECT, related_name='naming_service_configs')
+    package_code = models.CharField(max_length=16, choices=PACKAGE_CHOICES[:-1])
+    service_hours = models.DecimalField(max_digits=12, decimal_places=1)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=('player', 'package_code'), name='naming_service_player_package'),
+            models.CheckConstraint(check=Q(package_code__in=['day', 'week', 'month', 'quarter', 'year']), name='naming_service_package'),
+            models.CheckConstraint(check=Q(service_hours__gt=0), name='naming_service_positive'),
+            models.CheckConstraint(check=Q(service_hours=Floor(models.F('service_hours') * 2) / Decimal('2')), name='naming_service_half_hour'),
+        ]
+
+
 class PatronagePurchase(models.Model):
     """Immutable purchase snapshots, NOT an earnings ledger or service order."""
     STATUS_CHOICES = [(s, s) for s in ('created', 'processing', 'unknown', 'paid', 'failed')]

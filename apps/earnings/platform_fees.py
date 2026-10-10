@@ -172,6 +172,9 @@ def _payment_fee(order, payment):
 
 def protect_order_margin(order):
     """Apply a fee-aware commission override before PlayerEarning is created."""
+    if order.commission_policy == 'standard25-mini16-v1':
+        # New policy is not channel-cost plus margin; explicit overrides remain.
+        return OrderCommissionOverride.objects.filter(order=order).first()
     payment = order.payments.filter(status='paid').order_by('-paid_at', '-id').first()
     if not payment:
         return None

@@ -81,12 +81,34 @@ def patronage_data(row):
     }
 
 
-def all_data(request, start, page_size):
-    gifts, patronages = gift_rows(), patronage_rows()
-    # Page only scalar event keys in PostgreSQL, not each source independently.
-    # kind + numeric PK are a total tie-breaker even when both tables share IDs.
+def vip_rows():
+    from apps.accounts.models import VipUpgradeEvent
+    # Do not repair expired restrictions on anonymous reads.
+    return VipUpgradeEvent.objects.filter(
+        profile__user__is_active=True, occurred_at__lte=timezone.now(),
+    ).filter(Q(profile__account_status='active') | Q(
+        profile__account_status='suspended', profile__account_suspended_until__lte=timezone.now()))
+
+
+def vip_data(row):
+    return {
+        'id': f'vip_upgrade:{row.pk}', 'kind': 'vip_upgrade',
+        'boss_name': row.boss_name, 'boss_avatar_url': row.boss_avatar_url,
+        'from_tier_name': row.from_tier_name, 'to_tier_name': row.to_tier_name,
+        'occurred_at': row.occurred_at.isoformat(),
+        'text': f'恭喜老板「{row.boss_name}」从「{row.from_tier_name}」升级为「{row.to_tier_name}」',
+    }
+
+
+def all_data(request, start, page_size, *, popular=False):
+    gifts = gift_rows()
+    other_kind = 'vip_upgrade' if popular else 'patronage'
+    others = vip_rows() if popular else patronage_rows()
+    other_time = 'occurred_at' if popular else 'paid_at'
+    serialize_other = vip_data if popular else patronage_data
+    # UNION ALL scalar keys globally before slicing; legacy all remains gift+patronage.
     events = gifts.order_by().values('pk', event_at=F('created_at'), event_kind=Value('gift')).union(
-        patronages.order_by().values('pk', event_at=F('paid_at'), event_kind=Value('patronage')),
+        others.order_by().values('pk', event_at=F(other_time), event_kind=Value(other_kind)),
         all=True,
     ).order_by('-event_at', '-event_kind', '-pk')
     count = events.count()
@@ -94,9 +116,9 @@ def all_data(request, start, page_size):
         return count, []
     keys = list(events[start:start + page_size])
     gift_ids = [event['pk'] for event in keys if event['event_kind'] == 'gift']
-    patronage_ids = [event['pk'] for event in keys if event['event_kind'] == 'patronage']
+    other_ids = [event['pk'] for event in keys if event['event_kind'] == other_kind]
     data = {('gift', row.pk): gift_data(row, request) for row in gifts.filter(pk__in=gift_ids)}
-    data.update({('patronage', row.pk): patronage_data(row) for row in patronages.filter(pk__in=patronage_ids)})
+    data.update({(other_kind, row.pk): serialize_other(row) for row in others.filter(pk__in=other_ids)})
     return count, [data[(event['event_kind'], event['pk'])] for event in keys]
 
 
@@ -109,13 +131,13 @@ def announcements(request):
         if not all(value.isascii() and value.isdecimal() for value in (raw_page, raw_size)):
             raise ValueError
         page, page_size = int(raw_page), int(raw_size)
-        if kind not in ('patronage', 'gift', 'all') or page < 1 or not 1 <= page_size <= 50:
+        if kind not in ('patronage', 'gift', 'all', 'popular') or page < 1 or not 1 <= page_size <= 50:
             raise ValueError
     except ValueError:
         return JsonResponse({'detail': '通报类型或分页参数无效'}, status=400)
     start = (page - 1) * page_size
-    if kind == 'all':
-        count, results = all_data(request, start, page_size)
+    if kind in ('all', 'popular'):
+        count, results = all_data(request, start, page_size, popular=kind == 'popular')
     else:
         rows, serialize = ((patronage_rows(), patronage_data) if kind == 'patronage'
                            else (gift_rows(), lambda row: gift_data(row, request)))

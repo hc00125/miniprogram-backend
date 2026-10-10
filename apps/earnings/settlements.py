@@ -12,13 +12,16 @@ from .models import OrderCommissionOverride, PlayerEarning, WalletLedger
 from .wallet import ZERO, get_earnings_config, get_or_lock_wallet, qmoney, write_ledger
 
 
-def get_commission_rate(order):
+def get_commission_rate(order, order_player=None):
     try:
         override = order.commission_override
     except OrderCommissionOverride.DoesNotExist:
         override = None
     if override is not None:
         return qmoney(override.commission_rate)
+    if order.commission_policy == 'standard25-mini16-v1':
+        # Missing new-style roster snapshot is conservative: never infer a past level.
+        return qmoney(order_player.commission_rate_snapshot if order_player is not None and order_player.commission_rate_snapshot is not None else 25)
     return qmoney(get_earnings_config().default_commission_rate)
 
 
@@ -84,6 +87,7 @@ def create_order_earnings(order, completed_at=None):
             results.append(existing[order_player.player_id])
             continue
 
+        rate = get_commission_rate(order, order_player)
         gross = qmoney(gross_amounts[index])
         commission = qmoney(gross * rate / Decimal('100'))
         net = qmoney(gross - commission)
@@ -231,6 +235,8 @@ def recalculate_pending_order_earnings(order, operator=None):
     gross_amounts = split_money(total_yugan, len(earnings))
 
     for index, earning in enumerate(earnings):
+        if order.commission_policy == 'standard25-mini16-v1':
+            rate = get_commission_rate(order, order.order_players.filter(player_id=earning.player_id).first())
         gross = qmoney(gross_amounts[index])
         commission = qmoney(gross * rate / Decimal('100'))
         net = qmoney(gross - commission)

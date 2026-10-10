@@ -20,7 +20,8 @@ def refresh_expired_account_restriction(profile):
     ):
         return profile
 
-    with transaction.atomic():
+    from apps.common.gift_opening import gift_opening_write
+    with gift_opening_write():
         locked = ClientProfile.objects.select_for_update().get(pk=profile.pk)
         if (
             locked.account_status == ClientProfile.ACCOUNT_STATUS_SUSPENDED

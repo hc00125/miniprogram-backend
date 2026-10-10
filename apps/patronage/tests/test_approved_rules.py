@@ -26,7 +26,7 @@ class ApprovedConfigurationTests(TestCase):
         config = PlayerPatronageConfig.objects.get()
         self.assertEqual(config.hourly_rate_yuan, Decimal('50.50'))
         package = APIClient().get('/api/patronage/catalog/', {'player_id': player.pk}).json()['packages'][-1]
-        self.assertEqual(Decimal(package['amount_yuan']), Decimal('50.5')*8*Decimal('.85'))
+        self.assertEqual(Decimal(package['amount_yuan']), Decimal('50.5')*7)
 
     def test_half_yuan_step_is_enforced_in_database_and_stale_catalog(self):
         from django.db import IntegrityError, transaction

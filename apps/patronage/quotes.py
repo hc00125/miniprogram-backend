@@ -52,7 +52,8 @@ def quote_data(user, player, code, *, config_pair=None, exclude_attempt=None):
                 'config_updated_at': config.updated_at.isoformat() if config.updated_at else None,
                 'player_config_updated_at': individual.updated_at.isoformat() if individual else None}
     version = hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
-    return dict(contract_version='1.0', player_id=player.pk, package_code=code,
+    from .service_duration import TERM_FIELDS
+    return dict(**{key: package[key] for key in TERM_FIELDS}, contract_version='1.0', player_id=player.pk, package_code=code,
                 amount_yuan=package['amount_yuan'], amount_diamonds=package['amount_diamonds'],
                 commission_rate=catalog['commission_rate'],
                 platform_amount_yuan=decimal_text(platform),

@@ -126,25 +126,8 @@ def public_list(request):
     return Response(result)
 
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def public_detail(request, player_id):
-    player = Player.objects.select_related('player_type', 'user__client_profile').filter(pk=player_id).first()
-    if not player or (not player.is_archived and (player.status != Player.STATUS_APPROVED or not player.is_publicly_visible)):
-        return Response({'detail': '陪玩师不存在或已下架'}, status=404)
-    if player.is_archived:
-        return Response({'id': player.pk, 'name': player.archived_name or player.name,
-            'is_archived': True, 'status': '已离开', 'is_online': False, 'presence_online': False,
-            'can_be_designated': False, 'can_accept_orders': False})
-    if player.user_id:
-        profile = getattr(player.user, 'client_profile', None)
-        if not player.user.is_active or (profile and profile.account_status != 'active'):
-            return Response({'detail': '陪玩师不存在或已下架'}, status=404)
-    data = PlayerSerializer(player).data
-    data.pop('contact_wechat', None)
-    profile = getattr(player.user, 'client_profile', None) if player.user_id else None
-    data['avatar_url'] = profile.avatar_url if profile else ''
-    return Response(data)
+# Shared public whitelist/read-only detail, including this tree's archived-profile contract.
+from .public_detail import public_detail
 
 
 def profile_settings_payload(player):

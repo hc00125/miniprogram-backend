@@ -58,7 +58,10 @@ def validate_player_name_available(
     return normalized
 
 
-@transaction.atomic
+from apps.common.gift_opening import gift_opening_write
+
+
+@gift_opening_write()
 def approve_player_application(
     application_id,
     reviewer,

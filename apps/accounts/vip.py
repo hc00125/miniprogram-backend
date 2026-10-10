@@ -1,6 +1,6 @@
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -133,6 +133,7 @@ def record_consumption(
     reference_id='',
     reason='',
     operator=None,
+    publish_upgrade=True,
 ):
     delta = qmoney(amount)
     if delta == ZERO:
@@ -158,31 +159,38 @@ def record_consumption(
         # 例如累计消费已经为0时再次收到退款回调，不再制造无意义流水。
         return None
 
+    old_tier = profile.vip_tier
     tier = resolve_vip_tier(new_total)
     profile.cumulative_consumption = new_total
     profile.vip_tier = tier
     profile.vip_updated_at = timezone.now()
     profile.save(update_fields=['cumulative_consumption', 'vip_tier', 'vip_updated_at', 'updated_at'])
 
-    try:
-        return BossConsumptionLedger.objects.create(
-            profile=profile,
-            amount=applied_delta,
-            balance_after=new_total,
-            source_type=source_type,
-            order=order,
-            reference_id=reference_id,
-            reason=(reason or '')[:500],
-            operator=_operator_or_none(operator),
+    ledger = BossConsumptionLedger.objects.create(
+        profile=profile,
+        amount=applied_delta,
+        balance_after=new_total,
+        source_type=source_type,
+        order=order,
+        reference_id=reference_id,
+        reason=(reason or '')[:500],
+        operator=_operator_or_none(operator),
+    )
+    if (publish_upgrade and source_type == BossConsumptionLedger.TYPE_ORDER and applied_delta > ZERO
+            and tier and tier.min_consumption > old_total
+            and (old_tier is None or tier.min_consumption > old_tier.min_consumption)):
+        from .models import VipUpgradeEvent
+        VipUpgradeEvent.objects.create(
+            profile=profile, source=ledger,
+            from_tier_id_snapshot=old_tier.pk if old_tier else None,
+            to_tier_id_snapshot=tier.pk,
+            from_tier_name=old_tier.name if old_tier else '普通会员',
+            to_tier_name=tier.name,
+            boss_name=profile.nickname.strip() or '老板',
+            boss_avatar_url=profile.avatar_url or '',
+            occurred_at=ledger.created_at,
         )
-    except IntegrityError:
-        if reference_id:
-            return BossConsumptionLedger.objects.get(
-                profile=profile,
-                source_type=source_type,
-                reference_id=reference_id,
-            )
-        raise
+    return ledger
 
 
 def resolve_order_profile(order):
@@ -229,7 +237,7 @@ def apply_vip_kook_room_to_order(order):
     return True
 
 
-def record_completed_order(order):
+def record_completed_order(order, *, publish_upgrade=True):
     from apps.orders.models import Order
 
     if not order.paid or order.status != Order.STATUS_COMPLETED:
@@ -247,6 +255,7 @@ def record_completed_order(order):
         order=order,
         reference_id=order.order_no,
         reason=f'订单 {order.order_no} 完成并计入累计消费',
+        publish_upgrade=publish_upgrade,
     )
 
 

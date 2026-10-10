@@ -1,8 +1,10 @@
 from django.urls import path
 from . import views
+from .service_duration_views import my_service_durations
 
 app_name = 'patronage'
 urlpatterns = [
+    path('my-service-durations/', my_service_durations, name='my-service-durations'),
     path('catalog/', views.catalog, name='catalog'),
     path('quotes/', views.quotes, name='quotes'),
     path('records/', views.records, name='records'),

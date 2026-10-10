@@ -46,9 +46,11 @@ def catalog_data(player=None, *, config_pair=None):
         common_blockers.append('COMMISSION_INVALID')
     if player and not player_is_available(player):
         common_blockers.append('PLAYER_UNAVAILABLE')
+    from .service_duration import service_terms, duration_overrides
+    overrides = duration_overrides(player)
     packages = []
     for code, name, days, _ in (*PACKAGES, ('day_pass', '包天', None, None)):
-        price = hourly * Decimal('8') * Decimal('0.85') if code == 'day_pass' and hourly is not None else (
+        price = hourly * Decimal('7') if code == 'day_pass' and hourly is not None else (
             None if code == 'day_pass' else getattr(config, f'{code}_price_yuan'))
         blockers = list(common_blockers)
         if code == 'day_pass':
@@ -72,6 +74,7 @@ def catalog_data(player=None, *, config_pair=None):
             blockers=list(dict.fromkeys(blockers)))
         if code == 'day_pass':
             package['bonus_naming_days'] = 7
+        package.update(service_terms(player, code, price, overrides))
         packages.append(package)
     profile = getattr(player.user, 'client_profile', None) if player and player.user_id else None
     player_data = None if player is None else dict(id=player.pk, name=player.display_name, is_archived=player.is_archived,

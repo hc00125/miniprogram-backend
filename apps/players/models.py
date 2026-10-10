@@ -77,9 +77,13 @@ class Player(models.Model):
 
     def save(self, *args, **kwargs):
         from django.db import transaction
+        from apps.common.gift_opening import gift_opening_write
         metadata = ('is_archived', 'archived_at', 'archived_by_id', 'archive_reason', 'archived_name')
         closed_fields = ('is_online', 'can_accept_orders', 'can_be_designated', 'is_publicly_visible', 'presence_seen_at')
-        with transaction.atomic():
+        fields = kwargs.get('update_fields')
+        eligibility_fields = {'user', 'user_id', 'status', 'is_publicly_visible'}
+        opening_write = fields is None or bool(set(fields) & eligibility_fields)
+        with gift_opening_write() if opening_write else transaction.atomic():
             old = type(self).objects.select_for_update().filter(pk=self.pk).first() if self.pk else None
             if old:
                 loaded = getattr(self, '_loaded_values', {})
@@ -108,6 +112,10 @@ class Player(models.Model):
                     self.is_online = self.can_accept_orders = self.can_be_designated = self.is_publicly_visible = False
                     self.presence_seen_at = None
             result = super().save(*args, **kwargs)
+            from django.apps import apps
+            if opening_write and apps.is_installed('apps.gifts'):
+                from apps.gifts.services.auto_open import open_missing
+                open_missing(player_id=self.pk)
             # A partial save must not mark unrelated in-memory edits as saved.
             # After merging a stale instance, unsaved columns came from old.
             baseline = ({f.attname: getattr(old, f.attname) for f in self._meta.concrete_fields}

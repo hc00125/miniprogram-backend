@@ -276,7 +276,7 @@ class PatronageHTTPTests(TransactionTestCase):
         self.assertEqual(grants[1].expires_at-grants[0].expires_at, timedelta(days=7))
         self.assertEqual(grants[2].expires_at-grants[1].expires_at, timedelta(days=365))
         self.assertEqual(PatronageEarning.objects.count(), 3)
-        self.assertEqual(PatronageEarning.objects.get(purchase__idempotency_key='bonus').net_amount, Decimal('2575.50'))
+        self.assertEqual(PatronageEarning.objects.get(purchase__idempotency_key='bonus').net_amount, Decimal('50.5') * 7 * Decimal('.75') * 10)
         other = get_user_model().objects.create_user('second-http-boss')
         profile = ClientProfile.objects.create(user=other, openid='second-boss', nickname='second-boss')
         ClientWallet.objects.update_or_create(profile=profile, defaults={'balance':Decimal('500')})

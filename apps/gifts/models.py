@@ -56,8 +56,20 @@ class Gift(models.Model):
             raise ValidationError({'kind': '用途创建后不可修改'})
 
     def save(self, *args, **kwargs):
-        self.full_clean()
-        return super().save(*args, **kwargs)
+        from apps.common.gift_opening import gift_opening_write
+        from .services.auto_open import open_missing
+        with gift_opening_write():
+            old = type(self).objects.select_for_update().filter(pk=self.pk).first() if self.pk else None
+            fields = kwargs.get('update_fields')
+            listing_written = fields is None or 'is_active' in fields
+            if self.kind == self.KIND_GIFT and self.is_active and listing_written and (old is None or not old.is_active):
+                self.send_enabled = True
+                if fields is not None:
+                    kwargs['update_fields'] = set(fields) | {'send_enabled'}
+            self.full_clean()
+            result = super().save(*args, **kwargs)
+            open_missing(gift_id=self.pk)
+            return result
 
     def __str__(self):
         return self.name
@@ -95,7 +107,8 @@ class PlayerGiftConfig(models.Model):
 
 class PlayerGiftConfigAudit(models.Model):
     config = models.ForeignKey(PlayerGiftConfig, on_delete=models.PROTECT, related_name='audits')
-    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    # NULL identifies the automatic system service; human operations still require an actor.
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True)
     reason = models.CharField(max_length=300)
     before = models.JSONField(default=dict, blank=True)
     after = models.JSONField()

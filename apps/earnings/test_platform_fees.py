@@ -33,6 +33,7 @@ class PlatformFeeMarginProtectionTests(TestCase):
 
     def _order(self, suffix, platform):
         order = Order.objects.create(
+            commission_policy="",  # Legacy-money fixtures retain their original settlement policy.
             order_no=f'FEE{suffix}',
             boss_user=self.owner,
             boss_wechat='fee-boss',

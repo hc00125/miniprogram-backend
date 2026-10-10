@@ -41,6 +41,9 @@ class RecordSerializer(serializers.ModelSerializer):
 
     def to_representation(self, obj):
         data = super().to_representation(obj)
+        from .service_duration import TERM_FIELDS
+        snapshot = (getattr(obj, 'config_snapshot', None) or {}).get('quote', {})
+        data.update({key: snapshot.get(key) for key in TERM_FIELDS})
         data['player_archived'] = obj.player.is_archived
         if obj.player.is_archived:
             data['player_name'] = obj.player_name + '（已离开）'

@@ -19,6 +19,21 @@ from .models import (
     VipTier,
 )
 from .vip import create_manual_consumption_adjustment
+from django.contrib.auth import get_user_model
+from django.contrib.auth.admin import UserAdmin
+from apps.common.gift_opening import gift_opening_write
+
+
+class GiftEligibilityUserAdmin(UserAdmin):
+    @gift_opening_write()
+    def save_model(self, request, obj, form, change):
+        # Acquire before Django's full User UPDATE and eligibility signal, not
+        # after row locks (approval can insert a Player FK referencing User).
+        return super().save_model(request, obj, form, change)
+
+
+admin.site.unregister(get_user_model())
+admin.site.register(get_user_model(), GiftEligibilityUserAdmin)
 
 
 class BossConsumptionLedgerAdminForm(forms.ModelForm):

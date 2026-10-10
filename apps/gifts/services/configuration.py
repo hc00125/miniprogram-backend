@@ -19,7 +19,22 @@ def snapshot(config):
             'version': config.version, 'is_enabled': config.is_enabled}
 
 
+from apps.common.gift_opening import gift_opening_write
+
+
 @transaction.atomic
+def _create_missing_config(*, player_id, gift_id, actor, reason):
+    """Caller serializes opening writes; never updates existing manual choices."""
+    if PlayerGiftConfig.objects.filter(player_id=player_id, gift_id=gift_id).exists():
+        return 0
+    config = PlayerGiftConfig(player_id=player_id, gift_id=gift_id,
+                              commission_rate=Decimal('25.00'), is_enabled=True)
+    config.save(_audited=True)
+    PlayerGiftConfigAudit.objects.create(config=config, actor=actor, reason=reason, after=snapshot(config))
+    return 1
+
+
+@gift_opening_write()
 def initialize_configs(*, actor, players, gifts, reason):
     require_operator(actor, 'gifts.add_playergiftconfig', reason)
     gift_ids = sorted({gift.pk for gift in gifts})
@@ -29,10 +44,7 @@ def initialize_configs(*, actor, players, gifts, reason):
         for gift_id in gift_ids:
             if PlayerGiftConfig.objects.filter(player=player, gift_id=gift_id).exists():
                 continue
-            config = PlayerGiftConfig(player=player, gift_id=gift_id)
-            config.save(_audited=True)
-            PlayerGiftConfigAudit.objects.create(config=config, actor=actor, reason=reason.strip(), after=snapshot(config))
-            created += 1
+            created += _create_missing_config(player_id=player.pk, gift_id=gift_id, actor=actor, reason=reason.strip())
     return created
 
 

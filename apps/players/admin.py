@@ -197,7 +197,8 @@ class PlayerApplicationAdmin(admin.ModelAdmin):
 
         if requested_status == PlayerApplication.STATUS_APPROVED and obj.user:
             # 单条审批也必须和正式陪玩创建处于同一事务，避免只保存 approved 状态。
-            with transaction.atomic():
+            from apps.common.gift_opening import gift_opening_write
+            with gift_opening_write():
                 super().save_model(request, obj, form, change)
                 approve_player_application(obj.pk, request.user)
             return

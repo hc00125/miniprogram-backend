@@ -33,7 +33,10 @@ class PurchaseFlowTests(TransactionTestCase):
         receiver = User.objects.create_user('synthetic-receiver')
         ClientProfile.objects.create(user=receiver, openid='synthetic-receiver', nickname='synthetic-receiver')
         player = Player.objects.create(user=receiver, name='Synthetic receiver', player_type=PlayerType.objects.create(name='synthetic', priority=1))
-        PlayerGiftConfig(player=player, gift=self.gift, commission_rate=Decimal('0')).save(_audited=True)
+        # Auto-opening now creates this association; retain this zero-rate fixture.
+        config = PlayerGiftConfig.objects.get(player=player, gift=self.gift)
+        config.commission_rate = Decimal('0')
+        config.save(_audited=True)
         p = {'version': 'test-only-v1', 'platform_approved': True, 'max_quantity': 10,
              'max_diamonds': 1000, 'daily_diamonds': 2000, 'recipient_ids': [player.pk]}
         service = self.service()
@@ -74,7 +77,10 @@ class PurchaseFlowTests(TransactionTestCase):
         receiver = User.objects.create_user('recover-receiver')
         ClientProfile.objects.create(user=receiver, openid='recover-receiver', nickname='recover-receiver')
         player = Player.objects.create(user=receiver, name='recover-receiver', player_type=PlayerType.objects.create(name='recover-type', priority=1))
-        PlayerGiftConfig(player=player, gift=self.gift, commission_rate=Decimal('0')).save(_audited=True)
+        # Auto-opening now creates this association; retain this zero-rate fixture.
+        config = PlayerGiftConfig.objects.get(player=player, gift=self.gift)
+        config.commission_rate = Decimal('0')
+        config.save(_audited=True)
         p = {'version': 'test-v1', 'platform_approved': True, 'max_quantity': 10,
              'max_diamonds': 1000, 'daily_diamonds': 2000, 'recipient_ids': [player.pk]}
         service = self.service()

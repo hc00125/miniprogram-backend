@@ -10,7 +10,29 @@ class GiftAdmin(admin.ModelAdmin):
     search_fields = ('name', 'code')
     ordering = ('sort_order', 'id')
     readonly_fields = ('preview', 'created_at', 'updated_at')
-    actions = None
+    actions = ('publish_selected', 'unpublish_selected')
+
+    @admin.action(description='上架普通礼物并补齐收礼配置', permissions=['change'])
+    def publish_selected(self, request, queryset):
+        self._set_listing(request, queryset, True)
+
+    @admin.action(description='下架普通礼物（保留已购库存赠送）', permissions=['change'])
+    def unpublish_selected(self, request, queryset):
+        self._set_listing(request, queryset, False)
+
+    def _set_listing(self, request, queryset, active):
+        from apps.common.gift_opening import gift_opening_write
+        from django.core.exceptions import PermissionDenied
+        if not self.has_change_permission(request):
+            raise PermissionDenied
+        with gift_opening_write():
+            # Do not use update/bulk_update: those bypass validation and opening.
+            for gift in queryset.filter(kind=Gift.KIND_GIFT).order_by('pk'):
+                if gift.is_active == active:
+                    continue
+                gift.is_active = active
+                gift.save(update_fields=['is_active', 'updated_at'])
+                self.log_change(request, gift, '自动补齐收礼配置的批量上架' if active else '批量下架')
 
     def get_readonly_fields(self, request, obj=None):
         return self.readonly_fields + (('code', 'kind') if obj else ())

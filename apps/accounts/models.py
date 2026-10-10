@@ -114,6 +114,14 @@ class ClientProfile(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    def save(self, *args, **kwargs):
+        from apps.common.gift_opening import gift_opening_write
+        fields = kwargs.get('update_fields')
+        if fields is None or set(fields) & {'account_status', 'user', 'user_id'}:
+            with gift_opening_write():
+                return super().save(*args, **kwargs)
+        return super().save(*args, **kwargs)
+
     class Meta:
         db_table = 'client_profiles'
         verbose_name = '客户资料'
@@ -195,6 +203,23 @@ class ClientVipKookRoom(models.Model):
     def __str__(self):
         room_number = self.kook_room_number or '待配置'
         return f'{self.profile} - {room_number}'
+
+
+class VipUpgradeEvent(models.Model):
+    """Append-only consumption upgrade fact; never reconstructed from today's rules."""
+    profile = models.ForeignKey(ClientProfile, on_delete=models.PROTECT)
+    source = models.OneToOneField('BossConsumptionLedger', on_delete=models.PROTECT)
+    from_tier_id_snapshot = models.BigIntegerField(null=True)
+    to_tier_id_snapshot = models.BigIntegerField()
+    from_tier_name = models.CharField(max_length=50)
+    to_tier_name = models.CharField(max_length=50)
+    boss_name = models.CharField(max_length=100)
+    boss_avatar_url = models.URLField(blank=True, default='')
+    occurred_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        db_table = 'vip_upgrade_events'
+        ordering = ['-occurred_at', '-pk']
 
 
 class BossConsumptionLedger(models.Model):

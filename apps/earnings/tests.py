@@ -50,6 +50,7 @@ class EarningsSettlementTests(TestCase):
             for index in range(2)
         ]
         self.order = Order.objects.create(
+            commission_policy="",  # Legacy-money fixtures retain their original settlement policy.
             order_no='EARNROOT001',
             boss_user=self.owner,
             boss_wechat='earnings-boss',
@@ -88,6 +89,7 @@ class EarningsSettlementTests(TestCase):
 
     def test_paid_renewal_amount_is_included_in_wages(self):
         Order.objects.create(
+            commission_policy="",  # Legacy-money fixtures retain their original settlement policy.
             order_no='EARNRENEW01',
             boss_user=self.owner,
             boss_wechat='earnings-boss',
@@ -160,6 +162,7 @@ class WalletWithdrawalTests(TestCase):
             status=Player.STATUS_APPROVED,
         )
         self.order = Order.objects.create(
+            commission_policy="",  # Legacy-money fixtures retain their original settlement policy.
             order_no='WALLETROOT1',
             boss_user=self.owner,
             boss_wechat='wallet-boss',

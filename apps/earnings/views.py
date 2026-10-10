@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django.db.models import Sum
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -51,7 +52,9 @@ def overview(request):
         'player_name': player.name,
         'completed_orders': earnings.count(),
         'accepted_orders': player.total_orders or 0,
-        'default_commission_rate': config.default_commission_rate,
+        'default_commission_rate': Decimal('25.00'),
+        'commission_policy': 'standard25-mini16-v1',
+        'mini_ordinary_commission_rate': Decimal('16.00'),
         'review_days': config.review_days,
         'min_withdrawal_amount': config.min_withdrawal_amount,
         'pending_balance': wallet.pending_balance,

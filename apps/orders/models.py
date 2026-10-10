@@ -70,6 +70,7 @@ class Order(models.Model):
     end_time = models.DateTimeField(blank=True, null=True)
     duration_minutes = models.IntegerField(blank=True, null=True)
     total_amount = models.FloatField(blank=True, null=True)
+    commission_policy = models.CharField(max_length=32, default='standard25-mini16-v1', editable=False)
     surcharge_guarded = models.BooleanField(default=False, editable=False)
     paid = models.BooleanField(default=False)
     payment_method = models.CharField(max_length=20, blank=True, null=True)
@@ -326,6 +327,7 @@ class OrderPlayer(models.Model):
     player = models.ForeignKey('players.Player', on_delete=models.CASCADE, related_name='order_players')
     is_designated = models.BooleanField(default=False)
     designated_type_id = models.IntegerField(blank=True, null=True)
+    commission_rate_snapshot = models.DecimalField(max_digits=5, decimal_places=2, null=True, editable=False)
     grab_time = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, default='已接单')
     room_join_deadline = models.DateTimeField(blank=True, null=True, db_index=True, verbose_name='进入房间截止时间')
@@ -351,6 +353,11 @@ class OrderPlayer(models.Model):
             old = type(self).objects.filter(pk=self.pk).first() if self.pk else None
             if old is None or old.player_id != self.player_id:
                 ensure_new_business([self.player_id])
+            if old is None and self.order.commission_policy == 'standard25-mini16-v1':
+                from apps.earnings.commission_policy import ordinary_rate
+                self.commission_rate_snapshot = ordinary_rate(self.order, self.player)
+            elif old is not None:
+                self.commission_rate_snapshot = old.commission_rate_snapshot
             if not self.pk and not self.room_join_deadline:
                 self.room_join_deadline = timezone.now() + timedelta(minutes=10)
             super().save(*args, **kwargs)

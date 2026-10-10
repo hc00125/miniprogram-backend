@@ -18,6 +18,11 @@ class PlayerPatronageConfigAdmin(admin.ModelAdmin):
     autocomplete_fields = ('player',)
     readonly_fields = ('updated_at',)
 
+    def formfield_for_dbfield(self, db_field, request, **kwargs):
+        if db_field.name == 'hourly_rate_yuan':
+            kwargs['help_text'] = '填写已批准的普通点单时薪，不填包天总价；按0.5元步长。包天 = 时薪 × 7小时；为空时禁售。计价不是履约计时。'
+        return super().formfield_for_dbfield(db_field, request, **kwargs)
+
 
 class ReadOnlyRecordAdmin(admin.ModelAdmin):
     def has_add_permission(self, request):
