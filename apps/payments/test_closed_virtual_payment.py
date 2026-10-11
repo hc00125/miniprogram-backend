@@ -39,7 +39,7 @@ class ClosedVirtualPaymentRecoveryTests(TestCase):
             is_active=True,
         )
         self.order = Order.objects.create(
-            order_no='CLOSED_VIRTUAL_ORDER_001',
+            order_no='CLOSED_VIRTUAL_001',
             boss_user=self.user,
             boss_wechat='closed_virtual_user',
             package=package,

@@ -29,7 +29,7 @@ class PaymentAdminSearchTests(TestCase):
             base_price=10,
         )
         self.order = Order.objects.create(
-            order_no='ADMIN_SEARCH_ORDER_001',
+            order_no='ADMIN_SEARCH_001',
             boss_user=self.user,
             boss_wechat='chen-search',
             package=self.package,
