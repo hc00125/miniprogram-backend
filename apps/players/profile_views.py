@@ -12,6 +12,7 @@ from apps.common.media_security import ensure_tracked_media_reference
 from apps.common.permissions import IsApprovedPlayer, current_player
 from apps.orders.models import Order
 
+from .discovery import discovery_params, order_players, presence_online
 from .models import Player, PlayerProfileUpdateRequest
 from .serializers import (
     PlayerProfileUpdateCreateSerializer,
@@ -23,6 +24,7 @@ from .serializers import (
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def public_list(request):
+    discovery, shuffle_key = discovery_params(request.query_params)
     active_orders = Order.objects.filter(
         order_players__player=OuterRef('pk'),
         status=Order.STATUS_IN_PROGRESS,
@@ -84,6 +86,8 @@ def public_list(request):
         '-created_at': ('-created_at', 'id'),
     }
     queryset = queryset.order_by(*ordering_map.get(ordering, ordering_map['-avg_rating']))
+    if discovery:
+        queryset = order_players(queryset, discovery, now, shuffle_key)
 
     result = []
     for player in queryset:
@@ -118,7 +122,7 @@ def public_list(request):
             'rating_count': player.rating_count or 0,
             'total_orders': player.total_orders or 0,
             'is_online': player.is_online,
-            'presence_online': player.presence_online,
+            'presence_online': presence_online(player, now) if discovery else player.presence_online,
             'can_be_designated': False if settings.FEATURE_DESIGNATE_DISABLED else player.can_be_designated,
             'status': '接单中' if player.has_active_order else ('在线' if player.is_online else '离线'),
             'created_at': player.created_at.isoformat() if player.created_at else None,
