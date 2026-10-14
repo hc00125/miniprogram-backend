@@ -1,5 +1,6 @@
 """Discovery contract: synthetic fixtures, real endpoint/ORM/PostgreSQL."""
 from datetime import datetime, timedelta
+from decimal import Decimal
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -12,7 +13,8 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import ClientProfile
 from apps.catalog.models import Package, PlayerType
-from apps.orders.models import Order, OrderPlayer
+from apps.orders.models import Order, OrderDesignation, OrderPlayer
+from apps.patronage.models import CrownGrant, PatronagePurchase
 from apps.players.models import Player, PlayerProfileUpdateRequest
 
 NOW = datetime(2026, 10, 11, 12, tzinfo=ZoneInfo('Asia/Shanghai'))
@@ -26,7 +28,10 @@ class LegacyDiscoveryCompatibilityTests(SimpleTestCase):
         self.assertFalse(presence_online(legacy_player, NOW + timedelta(seconds=900)))
 
 
-@override_settings(FEATURE_DESIGNATE_DISABLED=False)
+@override_settings(
+    FEATURE_DESIGNATE_DISABLED=False,
+    WECHAT_CONTENT_SECURITY_ENABLED=False,
+)
 class DiscoveryTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -48,6 +53,27 @@ class DiscoveryTests(TestCase):
         OrderPlayer.objects.filter(pk=relation.pk).update(grab_time=at)
         return order
 
+    def patronage(self, player, package='day', paid_at=NOW, status='paid'):
+        self.serial += 1
+        boss = User.objects.create_user(username=f'discovery-patronage-{self.serial}')
+        return PatronagePurchase.objects.create(
+            purchase_no=f'DISCPN{self.serial}', boss=boss, player=player, player_name=player.name,
+            package_code=package, package_name='包天' if package == 'day_pass' else '日冠',
+            amount_yuan=Decimal('100.00'), commission_rate=Decimal('0.2500'),
+            platform_amount_yuan=Decimal('25.000000'), player_amount_yuan=Decimal('75.000000'),
+            price_version='discovery-support-v1', config_snapshot={'test': True},
+            idempotency_key=f'discovery-support-{self.serial}', payment_status=status,
+            paid_at=paid_at if status == 'paid' else None,
+            bonus_naming_days=7 if package == 'day_pass' else 0,
+        )
+
+    def grant(self, purchase, source='purchase', starts_at=NOW, expires_at=NOW + timedelta(days=1)):
+        return CrownGrant.objects.create(
+            purchase=purchase, source=source,
+            package_name='包天赠送周冠' if source == 'day_pass_bonus' else '日冠',
+            starts_at=starts_at, expires_at=expires_at,
+        )
+
     def rows(self, mode='quality', **params):
         response = self.client.get('/api/player/list', {'discovery': mode, **params})
         self.assertEqual(response.status_code, 200, response.data)
@@ -67,14 +93,162 @@ class DiscoveryTests(TestCase):
         available = self.player('可接单新人', is_online=True, can_accept_orders=True)
         self.assertEqual(self.ids(), [available.pk, forbidden.pk, resting.pk])
 
-    def test_quality_real_recent_completion_beats_stars_and_legacy_total(self):
+    def test_three_hard_layers_put_idle_before_serving_before_resting(self):
+        idle = self.player('空闲可接单', is_online=True, can_accept_orders=True)
+        serving = self.player(
+            '服务中仍可接单', is_online=True, can_accept_orders=True,
+            presence_seen_at=NOW, bio='高分但仍在服务',
+        )
+        self.order(serving, status=Order.STATUS_IN_PROGRESS, member='已接单')
+        resting = self.player('休息中', is_online=False, can_accept_orders=True)
+        forbidden = self.player('禁止接单', is_online=True, can_accept_orders=False)
+
+        quality = self.ids()
+        self.assertEqual(quality[:2], [idle.pk, serving.pk])
+        self.assertCountEqual(quality[2:], [resting.pk, forbidden.pk])
+        random_ids = self.ids('random', shuffle_key='three-layers')
+        self.assertEqual(random_ids[:2], [idle.pk, serving.pk])
+        self.assertCountEqual(random_ids[2:], [resting.pk, forbidden.pk])
+
+    def test_quality_verified_service_band_beats_stars_and_legacy_total(self):
         legacy = self.player('旧评分高', is_online=True, total_orders=999999,
                              rating_count=100, total_rating=500)
         completed = self.player('真实近期完单', is_online=True)
         self.order(completed)
+        self.order(completed)
         self.assertEqual(self.ids(ordering='-total_orders'), [completed.pk, legacy.pk])
         Player.objects.filter(pk=legacy.pk).update(total_orders=0, rating_count=0, total_rating=0)
         self.assertEqual(self.ids(), [completed.pk, legacy.pk])
+
+    def test_active_naming_purchase_uses_frozen_v2_tiers(self):
+        from .discovery import patronage_bonuses
+        expected = {'day': 8, 'week': 12, 'month': 16, 'quarter': 20, 'year': 25}
+        players = []
+        for package_code, score in expected.items():
+            player = self.player(f'有效冠名{package_code}')
+            purchase = self.patronage(player, package=package_code)
+            self.grant(
+                purchase,
+                starts_at=NOW - timedelta(hours=1),
+                expires_at=NOW + timedelta(hours=23),
+            )
+            players.append(player)
+        self.assertEqual(
+            patronage_bonuses([player.pk for player in players], NOW),
+            {player.pk: expected[player.patronage_purchases.get().package_code] for player in players},
+        )
+
+    def test_day_pass_adds_twenty_for_twenty_four_hours_and_uses_highest_only(self):
+        from .discovery import patronage_bonuses
+        both = self.player('冠名加包天')
+        naming = self.patronage(both)
+        self.grant(naming, starts_at=NOW - timedelta(hours=1), expires_at=NOW + timedelta(hours=23))
+        both_day_pass = self.patronage(both, package='day_pass', paid_at=NOW - timedelta(hours=24))
+        self.grant(both_day_pass, source='day_pass_bonus', expires_at=NOW + timedelta(days=7))
+        annual = self.player('年冠加包天')
+        annual_purchase = self.patronage(annual, package='year')
+        self.grant(annual_purchase, starts_at=NOW - timedelta(hours=1), expires_at=NOW + timedelta(days=365))
+        annual_day_pass = self.patronage(annual, package='day_pass', paid_at=NOW)
+        self.grant(annual_day_pass, source='day_pass_bonus', expires_at=NOW + timedelta(days=7))
+        expired = self.player('过期包天')
+        expired_day_pass = self.patronage(expired, package='day_pass', paid_at=NOW - timedelta(hours=24, microseconds=1))
+        self.grant(expired_day_pass, source='day_pass_bonus', expires_at=NOW + timedelta(days=7))
+        future = self.player('未来包天')
+        future_day_pass = self.patronage(future, package='day_pass', paid_at=NOW + timedelta(microseconds=1))
+        self.grant(future_day_pass, source='day_pass_bonus', starts_at=NOW + timedelta(microseconds=1),
+            expires_at=NOW + timedelta(days=7))
+        unpaid = self.player('未支付包天')
+        unpaid_day_pass = self.patronage(unpaid, package='day_pass', status='failed')
+        self.grant(unpaid_day_pass, source='day_pass_bonus', expires_at=NOW + timedelta(days=7))
+        ids = [both.pk, annual.pk, expired.pk, future.pk, unpaid.pk]
+        self.assertEqual(patronage_bonuses(ids, NOW), {both.pk: 20, annual.pk: 25})
+
+    def test_day_pass_requires_active_unrevoked_grant_with_inclusive_payment_window(self):
+        from .discovery import patronage_bonuses
+        future_start = self.player('未来开始包天grant')
+        self.grant(
+            self.patronage(future_start, package='day_pass', paid_at=NOW),
+            source='day_pass_bonus',
+            starts_at=NOW + timedelta(microseconds=1),
+            expires_at=NOW + timedelta(days=7),
+        )
+        exact_start = self.player('恰好开始包天grant')
+        self.grant(
+            self.patronage(exact_start, package='day_pass', paid_at=NOW),
+            source='day_pass_bonus',
+            starts_at=NOW,
+            expires_at=NOW + timedelta(days=7),
+        )
+        expired = self.player('已过期包天grant')
+        self.grant(
+            self.patronage(expired, package='day_pass', paid_at=NOW),
+            source='day_pass_bonus',
+            starts_at=NOW - timedelta(days=7),
+            expires_at=NOW - timedelta(microseconds=1),
+        )
+        exact_expiry = self.player('恰好到期包天grant')
+        self.grant(
+            self.patronage(exact_expiry, package='day_pass', paid_at=NOW),
+            source='day_pass_bonus',
+            starts_at=NOW - timedelta(days=7),
+            expires_at=NOW,
+        )
+        revoked = self.player('已撤销包天grant')
+        revoked_grant = self.grant(
+            self.patronage(revoked, package='day_pass', paid_at=NOW),
+            source='day_pass_bonus',
+            starts_at=NOW - timedelta(days=1),
+            expires_at=NOW + timedelta(days=6),
+        )
+        revoked_grant.revoked_at = NOW
+        revoked_grant.save(update_fields=['revoked_at'])
+        payment_boundary = self.player('恰好二十四小时付款')
+        self.grant(
+            self.patronage(
+                payment_boundary,
+                package='day_pass',
+                paid_at=NOW - timedelta(hours=24),
+            ),
+            source='day_pass_bonus',
+            starts_at=NOW - timedelta(hours=24),
+            expires_at=NOW + timedelta(days=6),
+        )
+
+        player_ids = [
+            future_start.pk,
+            exact_start.pk,
+            expired.pk,
+            exact_expiry.pk,
+            revoked.pk,
+            payment_boundary.pk,
+        ]
+        self.assertEqual(
+            patronage_bonuses(player_ids, NOW),
+            {exact_start.pk: 20, payment_boundary.pk: 20},
+        )
+
+    def test_paid_day_pass_without_fulfillment_grant_has_no_support_bonus(self):
+        from .discovery import patronage_bonuses
+        player = self.player('只有支付状态')
+        self.patronage(player, package='day_pass', paid_at=NOW)
+        self.assertEqual(patronage_bonuses([player.pk], NOW), {})
+
+    def test_quality_support_bonus_changes_recommendation_order(self):
+        historical = self.player('历史五单', is_online=True)
+        for _ in range(5):
+            self.order(historical, at=NOW - timedelta(days=90))
+        naming_player = self.player('冠名陪玩', is_online=True)
+        naming = self.patronage(naming_player)
+        CrownGrant.objects.create(purchase=naming, source='purchase', package_name='日冠',
+            starts_at=NOW - timedelta(hours=1), expires_at=NOW + timedelta(hours=23))
+        recent = self.player('近期一单', is_online=True)
+        self.order(recent)
+        day_pass = self.player('包天陪玩', is_online=True)
+        day_pass_purchase = self.patronage(day_pass, package='day_pass', paid_at=NOW)
+        self.grant(day_pass_purchase, source='day_pass_bonus', expires_at=NOW + timedelta(days=7))
+        ordered = self.ids()
+        self.assertEqual(ordered[:2], [day_pass.pk, naming_player.pk])
+        self.assertCountEqual(ordered[2:], [recent.pk, historical.pk])
 
     def test_final_order_and_member_gates_exclude_cancelled_exited_and_nonmembers(self):
         polluted = self.player('非完单', is_online=True)
@@ -89,6 +263,92 @@ class DiscoveryTests(TestCase):
         third = self.player('别人成员', is_publicly_visible=False)
         self.order(third)
         self.assertEqual(self.ids(), [verified.pk, polluted.pk])
+
+    def test_service_metrics_use_verified_distinct_orders_bosses_and_designations(self):
+        from .discovery import service_metrics
+        player = self.player('商业认可统计')
+        repeat_boss = User.objects.create_user(username='discovery-repeat-boss')
+        invited_boss = User.objects.create_user(username='discovery-invited-boss')
+        single_boss = User.objects.create_user(username='discovery-single-boss')
+        old_boss = User.objects.create_user(username='discovery-old-boss')
+        pending_boss = User.objects.create_user(username='discovery-pending-boss')
+
+        self.order(player, at=NOW - timedelta(days=10), boss_user=repeat_boss, target_player=player)
+        self.order(player, at=NOW - timedelta(days=20), boss_user=repeat_boss)
+        invited = self.order(player, at=NOW - timedelta(days=5), boss_user=invited_boss)
+        OrderDesignation.objects.create(
+            order=invited,
+            player=player,
+            status=OrderDesignation.STATUS_ACCEPTED,
+            expires_at=NOW + timedelta(hours=1),
+        )
+        self.order(player, at=NOW - timedelta(days=1), boss_user=single_boss)
+        pending = self.order(player, at=NOW - timedelta(days=1), boss_user=pending_boss)
+        OrderDesignation.objects.create(
+            order=pending,
+            player=player,
+            status=OrderDesignation.STATUS_PENDING,
+            expires_at=NOW + timedelta(hours=1),
+        )
+        self.order(player, at=NOW - timedelta(days=1))
+        self.order(player, at=NOW - timedelta(days=91), boss_user=old_boss, target_player=player)
+
+        self.assertEqual(service_metrics([player.pk], NOW), {
+            player.pk: {
+                'recent': 6,
+                'history': 7,
+                'boss_coverage': 4,
+                'repeat_bosses': 1,
+                'designated_bosses': 2,
+            },
+        })
+
+    def test_normal_typed_child_orders_are_excluded_from_every_service_metric(self):
+        from .discovery import service_metrics
+        player = self.player('异常普通子订单')
+        boss = User.objects.create_user(username='discovery-abnormal-child-boss')
+        self.serial += 1
+        parent = Order.objects.create(
+            order_no=f'DISC{self.serial}',
+            package=self.package,
+            required_players=1,
+            status=Order.STATUS_COMPLETED,
+            paid=True,
+            total_amount=10,
+        )
+        children = [
+            self.order(
+                player,
+                at=NOW - timedelta(days=1),
+                boss_user=boss,
+                target_player=player,
+                parent_order=parent,
+                order_type=Order.ORDER_TYPE_NORMAL,
+                renewal_index=index,
+            )
+            for index in (1, 2)
+        ]
+        OrderDesignation.objects.create(
+            order=children[0],
+            player=player,
+            status=OrderDesignation.STATUS_ACCEPTED,
+            expires_at=NOW + timedelta(hours=1),
+        )
+
+        self.assertEqual(service_metrics([player.pk], NOW), {})
+
+    def test_endpoint_uses_repeat_coverage_and_designated_boss_metrics(self):
+        anonymous_volume = self.player('匿名刷量', is_online=True)
+        for _ in range(8):
+            self.order(anonymous_volume)
+
+        commercial = self.player('商业认可', is_online=True)
+        for boss_index in range(2):
+            boss = User.objects.create_user(username=f'discovery-commercial-boss-{boss_index}')
+            self.order(commercial, boss_user=boss, target_player=commercial)
+            self.order(commercial, boss_user=boss)
+
+        self.assertEqual(self.ids(), [commercial.pk, anonymous_volume.pk])
 
     def test_real_completion_renewal_and_cancellations_credit_only_completed_root(self):
         from apps.orders.models import OrderItem, OrderStatusLog
@@ -135,7 +395,7 @@ class DiscoveryTests(TestCase):
         self.assertFalse(leaving.order_players.exists())
         self.assertEqual(self.ids(), [reference.pk, player.pk])
 
-    def test_historical_verified_orders_add_twenty_points_without_recent_orders(self):
+    def test_historical_experience_tier_can_beat_one_recent_completion(self):
         historical = self.player('历史经验', is_online=True)
         recent = self.player('近期一单', is_online=True)
         for _ in range(20):
@@ -152,13 +412,16 @@ class DiscoveryTests(TestCase):
         self.assertEqual(completion_counts([player.pk], NOW), {player.pk: {'recent': 2, 'history': 4}})
         self.assertEqual(completion_counts([], NOW), {})
 
-    def test_fixed_recent_ten_and_history_twenty_caps_do_not_rescale_after_filtering(self):
+    def test_completion_quantity_alone_caps_at_fifteen_points(self):
         from .discovery import quality_score
         player = self.player('封顶测试', is_online=True)
-        for recent, history, expected in ((0, 0, 0), (1, 1, 7), (9, 19, 73),
-                (10, 20, 80), (11, 21, 80), (1000, 1000, 80)):
+        for recent, history, expected in ((0, 0, 0), (1, 1, 4), (8, 20, 15),
+                                          (1000, 1000, 15)):
             with self.subTest(recent=recent, history=history):
-                self.assertEqual(quality_score(player, {'recent': recent, 'history': history}, NOW), expected)
+                self.assertEqual(
+                    quality_score(player, {'recent': recent, 'history': history}, NOW),
+                    expected,
+                )
         extra_recent = self.player('封顶 多近期', is_online=True)
         capped = self.player('封顶 满历史', is_online=True)
         for _ in range(11):
@@ -168,10 +431,54 @@ class DiscoveryTests(TestCase):
             self.order(capped, at=NOW - timedelta(days=60))
         self.assertEqual(self.ids(search='封顶 ')[0], capped.pk)
 
-    def test_presence_has_ten_points_only_in_zero_to_899_seconds_not_acceptance_switch(self):
+    def test_v2_component_caps_total_exactly_one_hundred(self):
+        from .discovery import quality_score
+        user = User.objects.create_user(username='discovery-v2-score')
+        ClientProfile.objects.create(
+            user=user,
+            openid='synthetic-v2-score',
+            avatar_url='https://test.invalid/avatar',
+        )
+        player = self.player(
+            '商业认可满分', user=user, presence_seen_at=NOW,
+            bio='完整简介', audio_intro_url='https://test.invalid/voice',
+        )
+        metrics = {
+            'recent': 8,
+            'history': 20,
+            'boss_coverage': 5,
+            'repeat_bosses': 4,
+            'designated_bosses': 3,
+        }
+        self.assertEqual(quality_score(player, metrics, NOW, patronage_bonus=25), 100)
+
+    def test_v2_recent_and_history_use_frozen_decreasing_step_tables(self):
+        from .discovery import quality_score
+        player = self.player('档位分数')
+        for recent, expected in ((0, 0), (1, 3), (2, 5), (3, 7), (4, 7),
+                                 (5, 9), (7, 9), (8, 10), (1000, 10)):
+            with self.subTest(metric='recent', value=recent):
+                self.assertEqual(quality_score(player, {'recent': recent}, NOW), expected)
+        for history, expected in ((0, 0), (1, 1), (2, 1), (3, 2), (4, 2),
+                                  (5, 3), (9, 3), (10, 4), (19, 4), (20, 5), (1000, 5)):
+            with self.subTest(metric='history', value=history):
+                self.assertEqual(quality_score(player, {'history': history}, NOW), expected)
+
+    def test_presence_has_tiered_v2_points_and_future_time_never_scores(self):
         from .discovery import quality_score
         player = self.player('活跃边界', is_online=False, can_accept_orders=False)
-        for age, expected in ((None, 0), (-1, 0), (0, 10), (899.999999, 10), (900, 0), (901, 0)):
+        cases = (
+            (None, 0),
+            (-1, 0),
+            (0, 10),
+            (3599.999999, 10),
+            (3600, 6),
+            (86399.999999, 6),
+            (86400, 2),
+            (604799.999999, 2),
+            (604800, 0),
+        )
+        for age, expected in cases:
             player.presence_seen_at = None if age is None else NOW - timedelta(seconds=age)
             with self.subTest(age=age):
                 self.assertEqual(quality_score(player, {}, NOW), expected)
@@ -207,18 +514,30 @@ class DiscoveryTests(TestCase):
             player = Player.objects.select_related('user__client_profile').get(pk=player.pk)
             player.bio, player.audio_intro_url = bio, audio
             with self.subTest(count=count):
-                self.assertEqual(quality_score(player, {}, NOW), Fraction(10 * count, 3))
+                self.assertEqual(quality_score(player, {}, NOW), Fraction(5 * count, 3))
                 self.assertIsInstance(quality_score(player, {}, NOW), Fraction)
         player.presence_seen_at = NOW
-        self.assertEqual(quality_score(player, {'recent': 100, 'history': 100}, NOW), 100)
+        self.assertEqual(quality_score(player, {'recent': 100, 'history': 100}, NOW), 30)
 
-    def test_profile_fraction_sorting_precedes_blank_and_does_not_round_to_integer(self):
+    def test_profile_fraction_is_exact_before_five_point_banding(self):
+        from .discovery import quality_score
         blank = self.player('空资料', is_online=True)
         partial = self.player('一项资料', is_online=True, bio='已审核简介')
-        historical = self.player('三单历史', is_online=True)
-        for _ in range(3):
-            self.order(historical, at=NOW - timedelta(days=60))
-        self.assertEqual(self.ids(), [partial.pk, historical.pk, blank.pk])
+        historical = self.player('一单历史', is_online=True)
+        self.order(historical, at=NOW - timedelta(days=60))
+        self.assertGreater(quality_score(partial, {}, NOW), quality_score(historical, {'history': 1}, NOW))
+        self.assertGreater(quality_score(historical, {'history': 1}, NOW), quality_score(blank, {}, NOW))
+        self.assertCountEqual(self.ids(), [partial.pk, historical.pk, blank.pk])
+
+    def test_quality_rotates_within_same_five_point_band_not_only_exact_ties(self):
+        blank = self.player('区间空资料', is_online=True)
+        partial = self.player('区间一项资料', is_online=True, bio='已审核简介')
+        first = self.ids()
+        self.assertCountEqual(first, [blank.pk, partial.pk])
+        self.assertEqual(first, self.ids())
+        with patch('django.utils.timezone.now', return_value=NOW + timedelta(days=1)):
+            tomorrow = self.ids()
+        self.assertEqual(tomorrow, first[1:] + first[:1])
 
     def test_quality_equal_scores_cycle_daily_in_beijing_and_ignore_legacy_ordering(self):
         players = [self.player(f'同分{i}', is_online=True, total_orders=i * 100) for i in range(4)]
@@ -361,25 +680,30 @@ class DiscoveryTests(TestCase):
                 self.assertEqual(empty.data, old.data)
 
     def test_query_count_is_bounded_for_all_users_and_only_selects(self):
-        for i in range(55):
+        for i in range(142):
             user = User.objects.create_user(username=f'discovery-batch-{i}')
             ClientProfile.objects.create(user=user, openid=f'synthetic-batch-{i}', nickname=f'批量昵称{i}', avatar_url='https://test.invalid/a')
             player = self.player(f'批量{i}', user=user, bio='资料')
             self.order(player)
-        for mode, bound in (('quality', 2), ('random', 1)):
+        for mode, expected_queries in (('quality', 3), ('random', 1)):
             with self.subTest(mode=mode), CaptureQueriesContext(connection) as queries:
-                self.assertEqual(len(self.rows(mode)), 55)
-            self.assertLessEqual(len(queries), bound)
+                self.assertEqual(len(self.rows(mode)), 142)
+            self.assertEqual(len(queries), expected_queries)
             self.assertTrue(all(q['sql'].lstrip().upper().startswith('SELECT') for q in queries))
             if mode == 'quality':
-                aggregate = [q['sql'] for q in queries if 'COUNT(' in q['sql'].upper()]
-                self.assertEqual(len(aggregate), 1)
-                self.assertIn('DISTINCT', aggregate[0].upper())
+                service_queries = [
+                    q['sql'] for q in queries
+                    if '"order_players"."grab_time"' in q['sql']
+                ]
+                self.assertEqual(len(service_queries), 1)
+                self.assertIn('DISTINCT', service_queries[0].upper())
+                self.assertIn('EXISTS', service_queries[0].upper())
 
     def test_unknown_legacy_grab_time_counts_history_but_not_recent_without_invention(self):
-        from .discovery import completion_counts
+        from .discovery import completion_counts, service_metrics
         player = self.player('未知接受时间')
-        order = self.order(player)
+        boss = User.objects.create_user(username='discovery-unknown-time-boss')
+        order = self.order(player, boss_user=boss, target_player=player)
         # Current schema forbids NULL. A nullable TEMP historical-table fixture
         # exercises actual PG aggregation without changing models or migrations.
         with connection.cursor() as cursor:
@@ -390,6 +714,15 @@ class DiscoveryTests(TestCase):
         try:
             self.assertEqual(completion_counts([player.pk], NOW),
                              {player.pk: {'recent': 0, 'history': 1}})
+            self.assertEqual(service_metrics([player.pk], NOW), {
+                player.pk: {
+                    'recent': 0,
+                    'history': 1,
+                    'boss_coverage': 0,
+                    'repeat_bosses': 0,
+                    'designated_bosses': 0,
+                },
+            })
         finally:
             with connection.cursor() as cursor:
                 cursor.execute('DROP TABLE pg_temp.order_players')
