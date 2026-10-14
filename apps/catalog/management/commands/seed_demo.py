@@ -1,14 +1,26 @@
 from django.contrib.auth.models import User
 from django.core.management.base import BaseCommand
 
-from apps.catalog.models import Addon, Package, PackageGroup, PlayerType
+from apps.catalog.models import Addon, GameService, Package, PackageGroup, PlayerType
 
 
 class Command(BaseCommand):
     help = 'Seed default catalog data for local miniprogram testing.'
 
     def handle(self, *args, **options):
-        group, _ = PackageGroup.objects.get_or_create(name='默认推荐', defaults={'sort_order': 1})
+        game, _ = GameService.objects.get_or_create(
+            code='arena-breakout',
+            defaults={'name': '暗区突围', 'sort_order': 10, 'is_active': True},
+        )
+        GameService.objects.get_or_create(
+            code='delta-force',
+            defaults={'name': '三角洲行动', 'sort_order': 20, 'is_active': True},
+        )
+        group, _ = PackageGroup.objects.get_or_create(
+            game_service=game,
+            name='默认推荐',
+            defaults={'sort_order': 1},
+        )
         packages = [
             ('四套娱乐陪', 4, 15, '默认娱乐陪玩套餐'),
             ('五套五蛋陪', 5, 25, '默认五人套餐'),

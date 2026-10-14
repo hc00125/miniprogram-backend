@@ -1,8 +1,7 @@
-import hashlib
 import json
 import uuid
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -16,9 +15,13 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.common.content_security import SCENE_PROFILE, ensure_image_safe, ensure_text_safe
+from apps.payments.virtualpay import get_access_token
 from apps.players.models import Player
 
 from .models import ClientProfile
+from .nicknames import get_or_create_wechat_profile
+from .phone_models import ClientPhoneBinding
 from .serializers import ClientProfileSerializer, WechatLoginSerializer
 
 
@@ -52,26 +55,32 @@ def resolve_openid(code='', openid=''):
     raise ValueError('微信登录配置不完整，请联系管理员')
 
 
-def make_default_nickname():
-    """生成唯一的默认昵称，如 微信用户001"""
-    prefix = '微信用户'
-    existing = (
-        ClientProfile.objects
-        .filter(nickname__startswith=prefix)
-        .values_list('nickname', flat=True)
-        .order_by('nickname')
+def resolve_phone_number(code):
+    if not code:
+        raise ValueError('缺少手机号授权 code，请重新点击绑定手机号')
+    token = get_access_token()
+    query = urlencode({'access_token': token})
+    request = Request(
+        f'https://api.weixin.qq.com/wxa/business/getuserphonenumber?{query}',
+        data=json.dumps({'code': code}, ensure_ascii=False).encode('utf-8'),
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+        method='POST',
     )
-    used_numbers = set()
-    for nick in existing:
-        num_str = nick[len(prefix):]
-        try:
-            used_numbers.add(int(num_str))
-        except ValueError:
-            pass
-    for i in range(1, 999999):
-        if i not in used_numbers:
-            return f'{prefix}{i:03d}'  # 微信用户001 ~ 微信用户999999
-    return f'{prefix}{999999}'
+    with urlopen(request, timeout=settings.WECHAT_PHONE_NUMBER_HTTP_TIMEOUT) as response:
+        data = json.loads(response.read().decode('utf-8'))
+    if int(data.get('errcode') or 0) != 0:
+        raise ValueError(data.get('errmsg') or '微信手机号验证失败')
+
+    phone_info = data.get('phone_info') or {}
+    phone_number = str(phone_info.get('purePhoneNumber') or phone_info.get('phoneNumber') or '').strip()
+    country_code = str(phone_info.get('countryCode') or '86').strip() or '86'
+    if phone_number.startswith(f'+{country_code}'):
+        phone_number = phone_number[len(country_code) + 1:]
+    elif country_code == '86' and phone_number.startswith('86') and len(phone_number) > 11:
+        phone_number = phone_number[2:]
+    if not phone_number:
+        raise ValueError('微信未返回可用手机号，请重新授权')
+    return phone_number, country_code
 
 
 @api_view(['POST'])
@@ -89,26 +98,26 @@ def wechat_login(request):
         user.set_unusable_password()
         user.save(update_fields=['password'])
 
-    is_new = not hasattr(user, 'client_profile')
-    profile, created = ClientProfile.objects.get_or_create(user=user, defaults={'openid': openid})
+    try:
+        profile, created = get_or_create_wechat_profile(user, openid)
+    except RuntimeError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
     profile.openid = openid
     profile.unionid = unionid or profile.unionid
 
-    if is_new:
-        # 新用户：生成唯一默认昵称
-        profile.nickname = make_default_nickname()
+    if created:
+        # 新用户默认昵称由 OpenID 的不可逆摘要生成，例如“微信用户-4A8F2D91C7”。
         profile.nickname_customized = False
     else:
-        # 老用户：只有从未自定义过昵称，且微信昵称不是默认占位符时，才覆盖
+        # 客户端带回的微信昵称仍属于可展示用户内容，保存前必须经过内容安全检测。
         wx_nickname = serializer.validated_data.get('nickname')
         if wx_nickname and wx_nickname != '微信用户' and not profile.nickname_customized:
+            ensure_text_safe(wx_nickname, openid=openid, scene=SCENE_PROFILE)
             profile.nickname = wx_nickname
 
-    if 'avatar_url' in serializer.validated_data:
-        avatar = serializer.validated_data.get('avatar_url')
-        if avatar:
-            profile.avatar_url = avatar
-
+    # 不再信任登录请求直接携带的 avatar_url。头像只能经过 /profile/avatar
+    # 上传并完成图片内容安全检测后才能成为公开头像，避免绕过审核。
     profile.save()
     return Response({'token': issue_token(user), 'profile': ClientProfileSerializer(profile).data})
 
@@ -136,6 +145,14 @@ def profile(request):
                 return Response({'detail': '昵称已被使用'}, status=status.HTTP_400_BAD_REQUEST)
             if Player.objects.filter(name=nickname).exclude(user=request.user).exists():
                 return Response({'detail': '昵称已被陪玩师使用'}, status=status.HTTP_400_BAD_REQUEST)
+            ensure_text_safe(nickname, openid=profile_obj.openid, scene=SCENE_PROFILE)
+
+        requested_avatar = str(request.data.get('avatar_url') or '') if avatar_provided else None
+        if avatar_provided and requested_avatar and requested_avatar != (profile_obj.avatar_url or ''):
+            return Response(
+                {'detail': '头像必须通过头像上传接口完成安全检测后保存'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             with transaction.atomic():
@@ -144,8 +161,9 @@ def profile(request):
                     profile_obj.nickname = nickname
                     profile_obj.nickname_customized = True
                     profile_update_fields.extend(['nickname', 'nickname_customized'])
-                if avatar_provided:
-                    profile_obj.avatar_url = request.data.get('avatar_url') or ''
+                # 允许清空头像；新的非空头像只能由 avatar 上传接口写入。
+                if avatar_provided and requested_avatar == '' and profile_obj.avatar_url:
+                    profile_obj.avatar_url = ''
                     profile_update_fields.append('avatar_url')
                 if profile_update_fields:
                     profile_obj.save(update_fields=[*profile_update_fields, 'updated_at'])
@@ -155,6 +173,35 @@ def profile(request):
         except IntegrityError:
             return Response({'detail': '昵称已被使用'}, status=status.HTTP_400_BAD_REQUEST)
     return Response(ClientProfileSerializer(profile_obj).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def bind_phone_number(request):
+    profile_obj = getattr(request.user, 'client_profile', None)
+    if not profile_obj:
+        return Response({'detail': '请先微信登录'}, status=status.HTTP_404_NOT_FOUND)
+
+    code = str(request.data.get('code') or '').strip()
+    try:
+        phone_number, country_code = resolve_phone_number(code)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        return Response({'detail': '微信手机号服务暂不可用，请稍后重试'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    ClientPhoneBinding.objects.update_or_create(
+        profile=profile_obj,
+        defaults={
+            'phone_number': phone_number,
+            'country_code': country_code,
+        },
+    )
+    profile_obj.refresh_from_db()
+    return Response({
+        'detail': '手机号绑定成功',
+        'profile': ClientProfileSerializer(profile_obj).data,
+    })
 
 
 @api_view(['POST'])
@@ -175,6 +222,9 @@ def avatar(request):
 
     if file_obj.size > 5 * 1024 * 1024:
         return Response({'detail': '头像文件不能超过 5MB'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 先审核、后落盘、后公开。违规图片永远不会成为公开头像。
+    ensure_image_safe(file_obj, openid=profile_obj.openid)
 
     extension = {
         'image/jpeg': 'jpg',

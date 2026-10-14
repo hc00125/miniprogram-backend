@@ -1,4 +1,5 @@
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -7,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts.models import ClientProfile
-from apps.catalog.models import Addon, Package, PackageGroup, PackageSpec, PlayerType
+from apps.catalog.models import Addon, GameService, Package, PackageGroup, PackageSpec, PlayerType
 from apps.catalog.serializers import (
     AddonSerializer,
     PackageGroupSerializer,
@@ -19,7 +20,8 @@ from apps.catalog.serializers import (
 from apps.common.permissions import IsAdminUser
 from apps.orders.models import Order
 from apps.orders.serializers import BossOrderDetailSerializer, BossOrderListSerializer
-from apps.players.models import Player, PlayerApplication
+from apps.players.approval import approve_player_application
+from apps.players.models import PlayerApplication
 from apps.players.serializers import PlayerApplicationApproveSerializer, PlayerApplicationRejectSerializer, PlayerApplicationSerializer
 
 
@@ -72,31 +74,27 @@ def approve_application(request, application_id):
         return Response({'detail': '申请不存在'}, status=status.HTTP_404_NOT_FOUND)
     serializer = PlayerApplicationApproveSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    player_type_id = serializer.validated_data.get('player_type_id')
-    player_type = PlayerType.objects.filter(id=player_type_id).first() if player_type_id else application.player_type
-    if not player_type:
-        return Response({'detail': '请选择打手类型'}, status=status.HTTP_400_BAD_REQUEST)
 
-    player, _ = Player.objects.update_or_create(
-        user=application.user,
-        defaults={
-            'name': application.name,
-            'player_type': player_type,
-            'contact_wechat': application.contact_wechat,
-            'bio': application.bio,
-            'status': Player.STATUS_APPROVED,
-        },
-    )
-    application.status = PlayerApplication.STATUS_APPROVED
-    application.remark = serializer.validated_data.get('remark', '')
-    application.reviewed_by = request.user
-    application.reviewed_at = timezone.now()
-    application.save()
-    profile = getattr(application.user, 'client_profile', None)
-    if profile:
-        profile.player_status = ClientProfile.PLAYER_STATUS_APPROVED
-        profile.save(update_fields=['player_status', 'updated_at'])
-    return Response({'message': '审核通过', 'application': PlayerApplicationSerializer(application).data, 'player_id': player.id})
+    try:
+        player, application = approve_player_application(
+            application.id,
+            request.user,
+            player_type_id=serializer.validated_data.get('player_type_id'),
+            remark=serializer.validated_data.get('remark', ''),
+        )
+    except ValidationError as exc:
+        return Response(
+            {'detail': '; '.join(exc.messages)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except PlayerApplication.DoesNotExist:
+        return Response({'detail': '申请不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response({
+        'message': '审核通过',
+        'application': PlayerApplicationSerializer(application).data,
+        'player_id': player.id,
+    })
 
 
 @api_view(['POST'])
@@ -146,10 +144,9 @@ def order_detail(request, order_no):
 @permission_classes([IsAdminUser])
 def packages(request):
     if request.method == 'GET':
-        qs = Package.objects.select_related('group').prefetch_related('specs').all()
+        qs = Package.objects.select_related('group', 'group__game_service').prefetch_related('specs').all()
         return Response(PackageSerializer(qs, many=True).data)
 
-    # POST: 新建商品
     serializer = PackageWriteSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     package = serializer.save()
@@ -186,7 +183,6 @@ def specs(request, package_id):
         qs = PackageSpec.objects.filter(package_id=package_id).order_by('sort_order', 'id')
         return Response(PackageSpecSerializer(qs, many=True).data)
 
-    # POST: 新建规格
     if not Package.objects.filter(id=package_id).exists():
         return Response({'detail': '商品不存在'}, status=status.HTTP_404_NOT_FOUND)
     serializer = PackageSpecSerializer(data={**request.data, 'package_id': package_id})
@@ -255,8 +251,18 @@ def disable_addon(request, addon_id):
 @permission_classes([IsAdminUser])
 def package_groups(request):
     if request.method == 'GET':
-        return Response(PackageGroupSerializer(PackageGroup.objects.all(), many=True).data)
+        qs = PackageGroup.objects.select_related('game_service').all()
+        return Response(PackageGroupSerializer(qs, many=True).data)
+
+    game_service_id = request.data.get('game_service_id')
+    game_service = GameService.objects.filter(id=game_service_id).first() if game_service_id else None
+    if not game_service:
+        game_service = GameService.objects.filter(code='arena-breakout').first()
+    if not game_service:
+        return Response({'detail': '请先在Django后台创建游戏服务'}, status=status.HTTP_400_BAD_REQUEST)
+
     group = PackageGroup.objects.create(
+        game_service=game_service,
         name=request.data.get('name', ''),
         sort_order=request.data.get('sort_order') or 0,
     )
